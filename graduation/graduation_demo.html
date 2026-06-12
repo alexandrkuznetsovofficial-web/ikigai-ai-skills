@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Константин Ефимов — AI-Поток 2026</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #F5F4FB;
+    --card: #FFFFFF;
+    --primary: #7C3AED;
+    --teal: #0ABFA3;
+    --grad: linear-gradient(135deg, #7B2FBE 0%, #0ABFA3 100%);
+    --grad-h: linear-gradient(135deg, #6D28D9 0%, #059688 100%);
+    --text: #1A0F2E;
+    --text-muted: rgba(26,15,46,0.52);
+    --text-light: rgba(26,15,46,0.32);
+    --border: rgba(124,58,237,0.12);
+    --shadow: 0 2px 24px rgba(124,58,237,0.09);
+    --shadow-hover: 0 8px 40px rgba(124,58,237,0.18);
+  }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── PROGRESS ── */
+  #progress-bar {
+    position: fixed; top: 0; left: 0; z-index: 100; height: 3px;
+    background: var(--grad);
+    transition: width 0.7s cubic-bezier(0.4,0,0.2,1);
+    box-shadow: 0 0 16px rgba(124,58,237,0.5);
+  }
+
+  /* ── SLIDES ── */
+  #deck { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+
+  .slide {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: clamp(48px,6vw,90px) clamp(48px,8vw,120px);
+    opacity: 0; transform: translateX(70px);
+    transition: opacity 0.6s cubic-bezier(0.4,0,0.2,1), transform 0.6s cubic-bezier(0.4,0,0.2,1);
+    pointer-events: none;
+  }
+  .slide.active  { opacity: 1; transform: translateX(0); pointer-events: all; }
+  .slide.exit-left { opacity: 0; transform: translateX(-70px); }
+
+  /* ── TYPOGRAPHY ── */
+  .eyebrow {
+    font-size: clamp(0.65rem,1vw,0.8rem);
+    font-weight: 600; letter-spacing: 0.2em; text-transform: uppercase;
+    background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 16px;
+  }
+  .rule {
+    width: 56px; height: 3px; border-radius: 2px;
+    background: var(--grad); margin-bottom: 28px;
+  }
+  h1 {
+    font-size: clamp(3.5rem,8vw,6.5rem);
+    font-weight: 800; letter-spacing: -0.03em; line-height: 1;
+    color: var(--text);
+  }
+  h2 {
+    font-size: clamp(2rem,4vw,3.4rem);
+    font-weight: 700; letter-spacing: -0.02em; line-height: 1.15;
+    color: var(--text);
+  }
+  .col { display: flex; flex-direction: column; width: 100%; max-width: 860px; }
+
+  /* ── INTRO ── */
+  .slide-intro { flex-direction: column; text-align: center; }
+  .slide-intro .badge {
+    display: inline-block;
+    background: var(--grad); color: white;
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase;
+    padding: 8px 20px; border-radius: 100px; margin-bottom: 44px;
+  }
+  .slide-intro .sub { color: var(--text-muted); font-size: clamp(1rem,1.8vw,1.35rem); font-weight: 400; margin-top: 20px; }
+  .slide-intro .meta { margin-top: 12px; font-size: 0.85rem; color: var(--text-light); font-weight: 500; }
+
+  /* ── LIST ── */
+  .list-items { list-style: none; width: 100%; }
+  .list-items li {
+    display: flex; gap: 16px;
+    padding: 18px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: clamp(1rem,1.6vw,1.2rem); font-weight: 400; line-height: 1.6; color: var(--text);
+  }
+  .list-items li:last-child { border-bottom: none; }
+  .list-items li::before {
+    content: "→"; font-weight: 700;
+    background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; flex-shrink: 0; margin-top: 2px;
+  }
+
+  /* ── CARDS BASE ── */
+  .card {
+    background: var(--card); border-radius: 16px;
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+    transition: box-shadow 0.3s, transform 0.3s;
+    position: relative; overflow: hidden;
+  }
+  .card:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
+  .card::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(240px at var(--mx,50%) var(--my,50%), rgba(124,58,237,0.08), transparent 70%);
+  }
+  .card .label {
+    font-size: 0.68rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+    background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 12px;
+  }
+  .card p { font-size: clamp(0.9rem,1.15vw,1.05rem); line-height: 1.65; color: var(--text-muted); }
+
+  /* ── BIZ DESCRIPTION ── */
+  .biz-desc {
+    font-size: clamp(1.1rem,1.8vw,1.4rem);
+    font-weight: 400; line-height: 1.75; color: var(--text-muted); max-width: 680px;
+  }
+
+  /* ── BM GRID ── */
+  .bm-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; width: 100%; max-width: 960px; }
+  .bm-card { padding: 28px 24px; }
+
+  /* ── IDEAS ── */
+  .ideas { display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 20px; }
+  .idea {
+    display: flex; gap: 14px; align-items: flex-start;
+    background: var(--card); border-radius: 10px; padding: 14px 18px;
+    box-shadow: var(--shadow); border: 1px solid var(--border);
+    font-size: clamp(0.88rem,1.1vw,1rem); line-height: 1.6; color: var(--text-muted);
+  }
+  .idea-icon { font-weight: 700; background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; flex-shrink: 0; }
+
+  /* ── ACH GRID ── */
+  .ach-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 16px; width: 100%; max-width: 900px; }
+  .ach-card { padding: 28px 24px; }
+  .ach-num {
+    font-size: clamp(2.2rem,4vw,3rem); font-weight: 800; line-height: 1;
+    background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text; margin-bottom: 8px;
+  }
+  .ach-title { font-size: clamp(0.9rem,1.1vw,1rem); font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .ach-desc  { font-size: clamp(0.82rem,0.95vw,0.92rem); color: var(--text-muted); line-height: 1.6; }
+
+  /* ── IKIGAI ── */
+  .ikigai-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%; max-width: 860px; }
+  .ikigai-card { padding: 28px 24px; }
+
+  /* ── STACK ── */
+  .stack { display: flex; flex-direction: column; gap: 12px; width: 100%; max-width: 860px; }
+  .stack-item {
+    display: grid; grid-template-columns: 52px 1fr; gap: 0;
+    background: var(--card); border-radius: 12px;
+    box-shadow: var(--shadow); border: 1px solid var(--border); overflow: hidden;
+    transition: box-shadow 0.3s, transform 0.3s;
+  }
+  .stack-item:hover { box-shadow: var(--shadow-hover); transform: translateY(-2px); }
+  .stack-num-col {
+    background: var(--grad); display: flex; align-items: center; justify-content: center;
+    font-size: 0.72rem; font-weight: 700; color: white; letter-spacing: 0.05em;
+  }
+  .stack-body { padding: 18px 22px; }
+  .stack-name { font-size: clamp(0.95rem,1.2vw,1.1rem); font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .stack-desc { font-size: clamp(0.82rem,1vw,0.92rem); color: var(--text-muted); line-height: 1.6; }
+
+  /* ── COMPARISON ── */
+  .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; width: 100%; max-width: 940px; }
+  .cmp-col { padding: 32px 28px; border-radius: 16px; }
+  .cmp-col.before { background: rgba(26,15,46,0.04); border: 1px solid rgba(26,15,46,0.08); }
+  .cmp-col.after  { background: white; box-shadow: var(--shadow); border: 1px solid var(--border); }
+  .cmp-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 20px; }
+  .before .cmp-label { color: var(--text-light); }
+  .after  .cmp-label { background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .cmp-item { display: flex; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--border);
+    font-size: clamp(0.88rem,1.1vw,1rem); line-height: 1.6; }
+  .cmp-item:last-child { border-bottom: none; }
+  .before .cmp-item { color: var(--text-muted); }
+  .after  .cmp-item { color: var(--text); font-weight: 500; }
+  .before .cmp-item::before { content: "—"; color: var(--text-light); flex-shrink: 0; }
+  .after  .cmp-item::before { content: "✓"; font-weight: 700; background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; flex-shrink: 0; }
+
+  /* ── QUOTE ── */
+  .quote-wrap { max-width: 700px; text-align: center; }
+  .quote-mark { font-size: 7rem; line-height: 0.6; background: var(--grad); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; opacity: 0.35; margin-bottom: 8px; }
+  blockquote { font-size: clamp(1.15rem,2vw,1.5rem); font-weight: 400; font-style: italic; line-height: 1.75; color: var(--text); }
+  .quote-attr { margin-top: 28px; font-size: 0.82rem; color: var(--text-light); font-weight: 500; letter-spacing: 0.08em; }
+
+  /* ── FINALE ── */
+  .finale { flex-direction: column; text-align: center; align-items: center; }
+  .finale h2 { margin-bottom: 20px; max-width: 720px; }
+  .advice-box {
+    margin-top: 40px; padding: 32px 40px; max-width: 660px;
+    background: white; border-radius: 16px; box-shadow: var(--shadow);
+    border-left: 4px solid transparent;
+    background: white;
+    border-image: var(--grad) 1;
+    position: relative;
+  }
+  .advice-box::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px;
+    background: var(--grad); border-radius: 4px 0 0 4px;
+  }
+  .advice-box p { font-size: clamp(0.95rem,1.4vw,1.15rem); font-style: italic; line-height: 1.75; color: var(--text-muted); }
+  .tag-next { margin-top: 16px; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-light); }
+
+  /* ── NAV ── */
+  #nav {
+    position: fixed; bottom: clamp(20px,3vh,40px); left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 20px; z-index: 200;
+    background: white; border-radius: 100px; padding: 10px 24px;
+    box-shadow: 0 4px 24px rgba(124,58,237,0.15);
+    border: 1px solid var(--border);
+  }
+  .nav-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 1.1rem; padding: 6px 12px; border-radius: 8px;
+    transition: all 0.2s; color: var(--primary); font-weight: 700;
+  }
+  .nav-btn:hover { background: rgba(124,58,237,0.08); }
+  #counter { font-size: 0.72rem; font-weight: 600; color: var(--text-muted); min-width: 44px; text-align: center; }
+
+  /* ── DOTS ── */
+  #dots {
+    position: fixed; bottom: clamp(20px,3vh,40px); right: clamp(20px,2.5vw,40px);
+    display: flex; flex-direction: column; gap: 7px; z-index: 200;
+  }
+  .dot { width: 5px; height: 5px; border-radius: 3px; background: rgba(124,58,237,0.18); cursor: pointer; transition: all 0.3s; }
+  .dot.active { background: var(--primary); height: 22px; }
+
+  #slide-label {
+    position: fixed; top: clamp(20px,2.5vh,36px); left: clamp(20px,2.5vw,40px);
+    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--text-light); z-index: 200;
+  }
+
+  @media (max-width: 640px) {
+    .ikigai-grid, .comparison, .bm-grid, .ach-grid { grid-template-columns: 1fr; }
+    .stack-item { grid-template-columns: 1fr; }
+    .stack-num-col { height: 36px; width: 100%; }
+    #dots { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="progress-bar" style="width:9.1%"></div>
+<div id="slide-label">Intro</div>
+
+<div id="deck">
+
+  <!-- 0. INTRO -->
+  <div class="slide active slide-intro">
+    <div class="badge">AI-Поток · Выпуск 2026</div>
+    <h1>Константин<br>Ефимов</h1>
+    <p class="sub">Месяц который изменил мой подход к работе</p>
+    <p class="meta">Май — Июнь 2026 &nbsp;·&nbsp; easyplaner.pro</p>
+  </div>
+
+  <!-- 1. ОТКРЫТИЯ О СЕБЕ -->
+  <div class="slide">
+    <div class="col">
+      <div class="eyebrow">Главные открытия</div>
+      <div class="rule"></div>
+      <h2 style="margin-bottom:36px">Что я узнал о себе</h2>
+      <ul class="list-items">
+        <li>Задача которую команда не решала 2 месяца — я закрыл за один вечер. Дело не в сложности задачи, а в инструменте.</li>
+        <li>Я умею видеть узкие места в процессах. Теперь у меня есть инструмент чтобы их устранять.</li>
+        <li>Claude — это не поисковик. Это партнёр по системному мышлению, который не устаёт.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 2. МОЙ БИЗНЕС -->
+  <div class="slide">
+    <div style="max-width:720px; text-align:center; display:flex; flex-direction:column; align-items:center;">
+      <div class="eyebrow">Мой бизнес</div>
+      <div class="rule" style="margin:0 auto 28px"></div>
+      <h2 style="margin-bottom:32px">easyplaner.pro</h2>
+      <p class="biz-desc">
+        Платформа для управления задачами между бизнес-аналитиками и разработчиками.
+        Убираю разрыв между «что нужно бизнесу» и «что понимает команда» —
+        через структурированные брифы и автоматическую проверку постановок.
+      </p>
+    </div>
+  </div>
+
+  <!-- 3. БИЗНЕС-МОДЕЛЬ -->
+  <div class="slide">
+    <div style="display:flex; flex-direction:column; align-items:center; width:100%; max-width:980px;">
+      <div class="eyebrow" style="text-align:center">Бизнес-модель</div>
+      <div class="rule" style="margin:0 auto 20px"></div>
+      <h2 style="text-align:center; margin-bottom:28px">Как это работает</h2>
+      <div class="bm-grid">
+        <div class="card bm-card">
+          <div class="label">Продукт</div>
+          <p>SaaS-платформа easyplaner.pro — подписка для IT-команд. Клиент платит за место.</p>
+        </div>
+        <div class="card bm-card">
+          <div class="label">Клиент</div>
+          <p>IT-команды 10–100 человек: BA + разработка, где постоянно теряется контекст.</p>
+        </div>
+        <div class="card bm-card">
+          <div class="label">AI-расширение</div>
+          <p>Транскрибационный сервис 1.5 руб/мин. Первые платящие клиенты уже есть.</p>
+        </div>
+      </div>
+      <div style="width:100%; max-width:980px; margin-top:8px;">
+        <p style="font-size:0.72rem; font-weight:700; letter-spacing:0.18em; text-transform:uppercase; background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:12px;">Идеи для развития</p>
+        <div class="ideas">
+          <div class="idea"><span class="idea-icon">↗</span><span>Продать транскрибационный сервис как B2B-продукт — запросы уже есть.</span></div>
+          <div class="idea"><span class="idea-icon">↗</span><span>AI-аналитик внутри easyplaner: выявляет паттерны плохих постановок и предлагает улучшения.</span></div>
+          <div class="idea"><span class="idea-icon">↗</span><span>White-label решение: своя транскрибация + Second Brain под брендом клиента.</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. ДОСТИЖЕНИЯ -->
+  <div class="slide">
+    <div style="display:flex; flex-direction:column; align-items:center; width:100%; max-width:920px;">
+      <div class="eyebrow" style="text-align:center">За месяц работы</div>
+      <div class="rule" style="margin:0 auto 28px"></div>
+      <div class="ach-grid">
+        <div class="card ach-card">
+          <div class="ach-num">1 вечер</div>
+          <div class="ach-title">вместо 2 месяцев ожидания</div>
+          <div class="ach-desc">MVP системы проверки брифов — задача которую бизнес не мог закрыть. Сделал на ПМЭФ в Питере.</div>
+        </div>
+        <div class="card ach-card">
+          <div class="ach-num">−57%</div>
+          <div class="ach-title">к стоимости транскрибации</div>
+          <div class="ach-desc">1.5 руб/мин вместо 3.5 руб на внешних сервисах. Своя инфраструктура.</div>
+        </div>
+        <div class="card ach-card">
+          <div class="ach-num">3</div>
+          <div class="ach-title">рабочих AI-инструмента</div>
+          <div class="ach-desc">Система задач + транскрибация + LMS-виджет. Каждый экономит реальное время ежедневно.</div>
+        </div>
+        <div class="card ach-card">
+          <div class="ach-num">Native</div>
+          <div class="ach-title">AI-разработчик</div>
+          <div class="ach-desc">Разобрался с систематизацией данных и серверной инфрой. Появилась первая платная подписка.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 5. ИКИГАЙ -->
+  <div class="slide">
+    <div style="display:flex; flex-direction:column; align-items:center; width:100%; max-width:880px;">
+      <div class="eyebrow" style="text-align:center">Мой Икигай</div>
+      <div class="rule" style="margin:0 auto 28px"></div>
+      <div class="ikigai-grid">
+        <div class="card ikigai-card">
+          <div class="label">Что я люблю</div>
+          <p>Автоматизировать рутину. Когда система работает сама — это лучшее ощущение от работы.</p>
+        </div>
+        <div class="card ikigai-card">
+          <div class="label">Что умею</div>
+          <p>Видеть узкие места в процессах. Строить решения из минимума ресурсов — быстро.</p>
+        </div>
+        <div class="card ikigai-card">
+          <div class="label">За что платят</div>
+          <p>За технические решения которые сокращают ручной труд и устраняют ошибки согласования.</p>
+        </div>
+        <div class="card ikigai-card">
+          <div class="label">Польза миру</div>
+          <p>Освобождаю время людей от тупой работы, чтобы они делали то, что требует настоящего мышления.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 6. ЧТО СОЗДАЛ -->
+  <div class="slide">
+    <div class="col">
+      <div class="eyebrow">Мой AI-стек</div>
+      <div class="rule"></div>
+      <h2 style="margin-bottom:28px">Что я создал за месяц</h2>
+      <div class="stack">
+        <div class="stack-item">
+          <div class="stack-num-col">01</div>
+          <div class="stack-body">
+            <div class="stack-name">Система проверки постановки задач</div>
+            <div class="stack-desc">Автоматически проверяет брифы от BA на полноту перед передачей в разработку.</div>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-num-col">02</div>
+          <div class="stack-body">
+            <div class="stack-name">Транскрибационный сервис</div>
+            <div class="stack-desc">Whisper на собственном сервере — 1.5 руб/мин. Работает автономно, первые платящие клиенты.</div>
+          </div>
+        </div>
+        <div class="stack-item">
+          <div class="stack-num-col">03</div>
+          <div class="stack-body">
+            <div class="stack-name">LMS-виджет записи аудио</div>
+            <div class="stack-desc">Записывает аудиопоток из онлайн-курсов в реальном времени → транскрипт → Second Brain.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7. ДО / ПОСЛЕ -->
+  <div class="slide">
+    <div style="display:flex; flex-direction:column; align-items:center; width:100%;">
+      <div class="eyebrow" style="text-align:center">Трансформация</div>
+      <div class="rule" style="margin:0 auto 28px"></div>
+      <div class="comparison">
+        <div class="cmp-col before">
+          <div class="cmp-label">Было</div>
+          <div class="cmp-item">2 месяца ждали решения по проверке брифов</div>
+          <div class="cmp-item">Транскрибация: 3.5 руб/мин на чужих сервисах</div>
+          <div class="cmp-item">AI — набор отдельных инструментов без системы</div>
+          <div class="cmp-item">«Что бы ещё цифровизировать?» — без ответа</div>
+        </div>
+        <div class="cmp-col after">
+          <div class="cmp-label">Стало</div>
+          <div class="cmp-item">MVP за один вечер</div>
+          <div class="cmp-item">1.5 руб/мин, своя инфра + первая платная подписка</div>
+          <div class="cmp-item">Системный подход: каждый инструмент на своём месте</div>
+          <div class="cmp-item">Чёткая карта: что автоматизировать и как</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 8. РЕШЕНИЯ -->
+  <div class="slide">
+    <div class="col">
+      <div class="eyebrow">Ключевые решения</div>
+      <div class="rule"></div>
+      <h2 style="margin-bottom:36px">Что решил за этот месяц</h2>
+      <ul class="list-items">
+        <li>Строить собственную инфраструктуру под AI-задачи, не зависеть от внешних сервисов.</li>
+        <li>Каждую задачу которую несут коллеги — сначала проверять: можно ли автоматизировать.</li>
+        <li>Разделить роли AI: GPT формулирует, Claude Code реализует. У каждого своя позиция.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- 9. БЛАГОДАРНОСТЬ -->
+  <div class="slide">
+    <div class="quote-wrap">
+      <div class="eyebrow" style="text-align:center">Слова благодарности</div>
+      <div class="rule" style="margin:0 auto 28px"></div>
+      <div class="quote-mark">"</div>
+      <blockquote>
+        Благодарен Александру за формат — не курс, а живая работа.
+        Участникам за то, что каждый тащил настоящую задачу, а не учебную.
+        И Марине — за виджет который стал первым продуктом сделанным на заказ.
+      </blockquote>
+      <div class="quote-attr">Константин Ефимов · AI-Поток, Выпуск 2026</div>
+    </div>
+  </div>
+
+  <!-- 10. СЛЕДУЮЩИЙ УРОВЕНЬ -->
+  <div class="slide finale">
+    <div class="eyebrow">Следующий уровень</div>
+    <div class="rule" style="margin:0 auto 20px"></div>
+    <h2>80% рутинных задач компании — под управлением AI к концу 2026</h2>
+    <div class="advice-box">
+      <p>«Начни с одной задачи, которая тебя раздражает каждую неделю.
+      Не с "большой идеи". Claude закроет её за 2 часа —
+      и ты сам почувствуешь что изменилось. После этого уже не остановишься.»</p>
+    </div>
+    <div class="tag-next">— следующему участнику AI-Потока</div>
+  </div>
+
+  <!-- 11. ФИНАЛ -->
+  <div class="slide" style="flex-direction:column; text-align:center; align-items:center; justify-content:center; gap:0;">
+    <div class="eyebrow" style="margin-bottom:32px">AI-Поток · Выпуск 2026</div>
+    <div style="font-size:clamp(4rem,10vw,8rem); font-weight:800; letter-spacing:-0.04em; line-height:1;
+      background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+      margin-bottom:32px;">
+      Спасибо
+    </div>
+    <p style="font-size:clamp(1.2rem,2.5vw,1.8rem); font-weight:400; color:var(--text-muted); margin-bottom:48px;">
+      Увидимся на завтраках
+    </p>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <div style="width:40px; height:40px; border-radius:50%; background:var(--grad); opacity:0.25;"></div>
+      <div style="width:56px; height:56px; border-radius:50%; background:var(--grad); opacity:0.45;"></div>
+      <div style="width:40px; height:40px; border-radius:50%; background:var(--grad); opacity:0.25;"></div>
+    </div>
+    <div style="margin-top:32px; font-size:clamp(1.1rem,2vw,1.4rem); font-weight:700; letter-spacing:0.25em;
+      text-transform:uppercase; color:var(--text-light);">
+      ИКИГАЙ
+    </div>
+  </div>
+
+</div><!-- /deck -->
+
+<div id="nav">
+  <button class="nav-btn" onclick="go(-1)">←</button>
+  <span id="counter">1 / 12</span>
+  <button class="nav-btn" onclick="go(1)">→</button>
+</div>
+<div id="dots"></div>
+
+<script>
+  const LABELS = [
+    'Intro','Открытия','Бизнес','Бизнес-модель','Достижения',
+    'Икигай','Создано','До/После','Решения','Благодарность','Следующий уровень','Финал'
+  ];
+
+  const slides = [...document.querySelectorAll('.slide')];
+  const total  = slides.length;
+  const bar    = document.getElementById('progress-bar');
+  const cnt    = document.getElementById('counter');
+  const lbl    = document.getElementById('slide-label');
+  const dotsEl = document.getElementById('dots');
+
+  let cur = 0, anim = false;
+
+  slides.forEach((_,i) => {
+    const d = document.createElement('div');
+    d.className = 'dot' + (i===0?' active':'');
+    d.onclick = () => go(i - cur);
+    dotsEl.appendChild(d);
+  });
+
+  // Spotlight на карточках
+  document.querySelectorAll('.card').forEach(card => {
+    card.addEventListener('mousemove', e => {
+      card.style.setProperty('--mx', e.offsetX + 'px');
+      card.style.setProperty('--my', e.offsetY + 'px');
+    });
+  });
+
+  function updateUI() {
+    bar.style.width = `${((cur+1)/total)*100}%`;
+    cnt.textContent = `${cur+1} / ${total}`;
+    lbl.textContent = LABELS[cur] || '';
+    document.querySelectorAll('.dot').forEach((d,i) => d.classList.toggle('active', i===cur));
+  }
+
+  function go(dir) {
+    if (anim) return;
+    const next = cur + dir;
+    if (next < 0 || next >= total) return;
+    anim = true;
+    slides[cur].classList.add('exit-left');
+    slides[cur].classList.remove('active');
+    cur = next;
+    slides[cur].style.transform = `translateX(${dir>0?70:-70}px)`;
+    slides[cur].style.opacity = '0';
+    slides[cur].classList.add('active');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      slides[cur].style.transform = '';
+      slides[cur].style.opacity = '';
+      updateUI();
+      setTimeout(() => {
+        document.querySelectorAll('.exit-left').forEach(s => s.classList.remove('exit-left'));
+        anim = false;
+      }, 680);
+    }));
+  }
+
+  document.addEventListener('keydown', e => {
+    if (['ArrowRight','ArrowDown','Space','PageDown'].includes(e.key)) { e.preventDefault(); go(1); }
+    if (['ArrowLeft','ArrowUp','PageUp'].includes(e.key)) { e.preventDefault(); go(-1); }
+  });
+
+  let tx = 0;
+  document.addEventListener('touchstart', e => { tx = e.touches[0].clientX; }, { passive:true });
+  document.addEventListener('touchend', e => {
+    if (Math.abs(e.changedTouches[0].clientX - tx) > 50) go(e.changedTouches[0].clientX < tx ? 1 : -1);
+  });
+
+  updateUI();
+</script>
+</body>
+</html>
