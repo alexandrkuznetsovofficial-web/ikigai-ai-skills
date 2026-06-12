@@ -198,6 +198,29 @@
   blockquote { font-size: clamp(1.15rem,2vw,1.5rem); font-weight: 400; font-style: italic; line-height: 1.75; color: var(--text); }
   .quote-attr { margin-top: 28px; font-size: 0.82rem; color: var(--text-light); font-weight: 500; letter-spacing: 0.08em; }
 
+  /* ── REFERRAL ── */
+  .ref-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; width:100%; max-width:960px; }
+  .ref-card { padding:28px 26px; }
+  .social-link {
+    display:flex; align-items:center; gap:10px; padding:10px 14px; border-radius:8px;
+    background:rgba(124,58,237,0.05); border:1px solid var(--border);
+    font-size:clamp(0.82rem,1vw,0.92rem); font-weight:500; color:var(--text);
+    text-decoration:none; transition:all 0.2s; margin-bottom:6px;
+  }
+  .social-link:hover { background:rgba(124,58,237,0.1); border-color:var(--primary); }
+  .ref-bonus {
+    background:linear-gradient(135deg, rgba(123,47,190,0.05) 0%, rgba(10,191,163,0.05) 100%);
+    border-radius:12px; padding:16px 18px; margin-top:14px; border:1px solid var(--border);
+  }
+  .ref-bonus .bname { font-size:0.88rem; font-weight:700; color:var(--text); margin-bottom:4px; }
+  .ref-bonus .bdesc { font-size:0.8rem; color:var(--text-muted); line-height:1.5; }
+  .ref-bonus a {
+    display:inline-block; margin-top:8px; font-size:0.82rem; font-weight:700;
+    background:var(--grad); -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+    background-clip:text; text-decoration:none;
+  }
+  @media (max-width:640px) { .ref-grid { grid-template-columns:1fr; } }
+
   /* ── FINALE ── */
   .finale { flex-direction: column; text-align: center; align-items: center; }
   .finale h2 { margin-bottom: 20px; max-width: 720px; }
@@ -482,7 +505,60 @@
     <div class="tag-next">— следующему участнику AI-Потока</div>
   </div>
 
-  <!-- 11. ФИНАЛ -->
+  <!-- 11. РЕФЕРАЛ -->
+  <div class="slide">
+    <div style="display:flex; flex-direction:column; align-items:center; width:100%; max-width:980px;">
+      <div class="eyebrow" style="text-align:center">Твоя история важна</div>
+      <div class="rule" style="margin:0 auto 20px"></div>
+      <h2 style="text-align:center; margin-bottom:28px">Поделись и порекомендуй</h2>
+      <div class="ref-grid">
+
+        <!-- Расскажи в соцсетях -->
+        <div class="card ref-card">
+          <div class="label">📱 Расскажи о своём выпуске</div>
+          <p style="font-size:clamp(0.88rem,1.1vw,1rem); line-height:1.65; color:var(--text-muted); margin-bottom:18px;">
+            Напиши пост или сторис — что ты создал за месяц, как изменился подход к работе.
+            Отметь нас — это помогает Икигай находить таких же людей.
+          </p>
+          <a href="https://instagram.com/ikigai_community_ru" class="social-link" target="_blank">
+            <span>📸</span> @ikigai_community_ru
+          </a>
+          <a href="https://t.me/alexandr_ikigai" class="social-link" target="_blank">
+            <span>✈️</span> @alexandr_ikigai
+          </a>
+          <a href="https://ikigai-community.com" class="social-link" target="_blank">
+            <span>🌐</span> ikigai-community.com
+          </a>
+        </div>
+
+        <!-- Приведи друга -->
+        <div class="card ref-card" style="border:1.5px solid rgba(124,58,237,0.3);">
+          <div class="label">🎁 Приведи друга</div>
+          <p style="font-size:clamp(0.88rem,1.1vw,1rem); line-height:1.65; color:var(--text-muted); margin-bottom:4px;">
+            Порекомендуй AI-Поток или завтраки Икигай — и получи персональные плюшки
+            на наших мероприятиях. Просто перешли ссылку на сайт или скажи своим словами.
+          </p>
+          <div style="margin-top:10px; padding:12px 14px; border-radius:10px; background:linear-gradient(135deg,rgba(123,47,190,0.08),rgba(10,191,163,0.08)); border:1px solid var(--border);">
+            <p style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:2px;">Что передавать друзьям</p>
+            <a href="https://ikigai-community.com" class="social-link" style="margin-top:8px; margin-bottom:4px;" target="_blank">
+              <span>🌐</span> ikigai-community.com — сайт сообщества
+            </a>
+            <a href="https://t.me/alexandr_ikigai" class="social-link" style="margin-bottom:4px;" target="_blank">
+              <span>✈️</span> @alexandr_ikigai — канал про AI и Икигай
+            </a>
+          </div>
+          <div class="ref-bonus">
+            <div class="bname">🔑 Бонус для друга — инструкция по Claude</div>
+            <div class="bdesc">Если друг не может подключить Claude из России — отправь ему эту ссылку:</div>
+            <a href="https://ikigai-community.com/aistart/" target="_blank">ikigai-community.com/aistart →</a>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- 12. ФИНАЛ -->
   <div class="slide" style="flex-direction:column; text-align:center; align-items:center; justify-content:center; gap:0;">
     <div class="eyebrow" style="margin-bottom:32px">AI-Поток · Выпуск 2026</div>
     <div style="font-size:clamp(4rem,10vw,8rem); font-weight:800; letter-spacing:-0.04em; line-height:1;
@@ -508,7 +584,7 @@
 
 <div id="nav">
   <button class="nav-btn" onclick="go(-1)">←</button>
-  <span id="counter">1 / 12</span>
+  <span id="counter">1 / 13</span>
   <button class="nav-btn" onclick="go(1)">→</button>
 </div>
 <div id="dots"></div>
@@ -516,7 +592,8 @@
 <script>
   const LABELS = [
     'Intro','Открытия','Бизнес','Бизнес-модель','Достижения',
-    'Икигай','Создано','До/После','Решения','Благодарность','Следующий уровень','Финал'
+    'Икигай','Создано','До/После','Решения','Благодарность',
+    'Следующий уровень','Поделись','Финал'
   ];
 
   const slides = [...document.querySelectorAll('.slide')];

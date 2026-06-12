@@ -170,7 +170,8 @@ document.querySelectorAll('.card').forEach(card => {
 | 8 | **Решения** | Список с → из Q10 — каждый пункт как убеждение, не просто факт |
 | 9 | **Благодарность** | Цитатный блок: крупные кавычки gradient, blockquote, имя (из Q11) |
 | 10 | **Следующий уровень** | Цель из Q10 + рамка с советом из Q12 с левым gradient-бордером |
-| 11 | **Финал** | Крупное «Спасибо» (gradient, weight 800, 8rem+), «Увидимся на завтраках» (muted), три орбитальных круга Икигай (gradient, разные opacity), слово «ИКИГАЙ» (uppercase, letter-spacing 0.25em, light color) |
+| 11 | **Поделись и порекомендуй** | 2 карточки рядом: (1) «Расскажи о своём выпуске» — ссылки на @ikigai_community_ru (Instagram), @alexandr_ikigai (Telegram), ikigai-community.com; (2) «Приведи друга» — оффер плюшек на мероприятия + блок «Бонус для друга»: ikigai-community.com/aistart/ |
+| 12 | **Финал** | Крупное «Спасибо» (gradient, weight 800, 8rem+), «Увидимся на завтраках» (muted), три орбитальных круга Икигай (gradient, разные opacity), слово «ИКИГАЙ» (uppercase, letter-spacing 0.25em, light color) |
 
 ### Технические требования
 
