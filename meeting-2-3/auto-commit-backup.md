@@ -153,6 +153,18 @@ launchctl load ~/Library/LaunchAgents/com.user.auto-commit-backup.plist
 schtasks /create /f /sc minute /mo 30 /tn "AutoCommitBackup" /tr "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\scripts\auto_commit_backup.ps1"
 ```
 
+**Linux / VPS-сервер** — если пользователь работает на виртуальном сервере (или хочет защитить и его):
+1. Тот же bash-скрипт что для macOS, положи в `/opt/scripts/auto_commit_backup.sh` (лог — в `/var/log/auto_commit_backup.log`), `chmod +x`.
+2. Расписание через cron:
+   ```
+   (crontab -l 2>/dev/null; echo "*/30 * * * * /opt/scripts/auto_commit_backup.sh") | crontab -
+   ```
+3. Проверь `git config user.name` на сервере — если пусто, настрой.
+
+> **Важно про VPS:** сервер — это НЕ бэкап, это просто другой компьютер. Хостер может удалить VM, диск может умереть, оплата может закончиться. Правило одно для всех машин: коммит каждые 30 минут + push в приватный GitHub (Шаг 6). Для VPS облачная копия даже важнее, чем для ноутбука.
+>
+> **Если проект живёт и на ноутбуке, и на VPS:** git связывает их через общий GitHub-репозиторий (ноут push → сервер pull). Но одно правило: не править один и тот же файл в двух местах одновременно — перед работой делай `git pull`.
+
 ### Шаг 5. Проверь, что работает
 
 1. Запусти скрипт вручную один раз (bash / powershell).
