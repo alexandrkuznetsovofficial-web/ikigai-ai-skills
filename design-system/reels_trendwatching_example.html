@@ -1,0 +1,1248 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Тренд-вотчинг для Reels — ИкигAI Академия · Поток 3</title>
+<style>
+/* ======================================================
+   ИкигAI Академия — Design System v1 (purple / p3 theme)
+   Встроены inline — работает без внешних CSS файлов
+   ====================================================== */
+
+  :root {
+    --bg: #F5F3FF;
+    --sidebar-dark: #160B2E;
+    --sidebar-mid: #1E1040;
+    --purple-primary: #7B2FBE;
+    --purple-light: #9B59B6;
+    --purple-soft: #EDE7FF;
+    --purple-border: #D4C5F9;
+    --accent-gradient: linear-gradient(135deg, #7B2FBE 0%, #C77DFF 100%);
+    --accent-coral: #FF6B6B;
+    --green-ok: #27AE60;
+    --green-soft: #E8F5E9;
+    --text-dark: #1A0A35;
+    --text-mid: #4A4070;
+    --text-light: #8B7DB5;
+    --white: #FFFFFF;
+    --card: #FFFFFF;
+    --card-hover: #EDE7FF;
+    --line: #D4C5F9;
+    --line2: #E8DFFF;
+    --warn-bg: #FFF3E0;
+    --warn-border: #FFB74D;
+    --warn-text: #E65100;
+    --radius-lg: 16px;
+    --radius-md: 12px;
+    --radius-sm: 8px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+    background: var(--bg);
+    color: var(--text-dark);
+    font-size: 16px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== HEADER ===== */
+  .page-header {
+    background: var(--sidebar-dark);
+    padding: 20px 40px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .page-header .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: white;
+    font-weight: 700;
+    font-size: 17px;
+    text-decoration: none;
+  }
+  .page-header .logo-icon {
+    width: 32px; height: 32px;
+    background: var(--accent-gradient);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+  }
+  .page-header .stream-badge {
+    background: rgba(123,47,190,0.4);
+    border: 1px solid rgba(199,125,255,0.4);
+    color: #C77DFF;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 20px;
+  }
+  .page-header .meta {
+    font-size: 12px;
+    color: rgba(255,255,255,0.4);
+  }
+
+  /* ===== LAYOUT ===== */
+  .layout {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    min-height: calc(100vh - 60px);
+  }
+
+  /* ===== TOC SIDEBAR ===== */
+  .toc {
+    background: #1E1040;
+    padding: 28px 0;
+    position: sticky;
+    top: 60px;
+    height: calc(100vh - 60px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(123,47,190,0.4) transparent;
+  }
+  .toc-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.3);
+    padding: 0 20px 16px;
+  }
+  .toc-item {
+    display: block;
+    padding: 9px 20px;
+    color: rgba(255,255,255,0.55);
+    text-decoration: none;
+    font-size: 13px;
+    line-height: 1.4;
+    border-left: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .toc-item:hover {
+    color: rgba(255,255,255,0.9);
+    background: rgba(255,255,255,0.05);
+  }
+  .toc-item.active {
+    color: #C77DFF;
+    border-left-color: #7B2FBE;
+    background: rgba(123,47,190,0.15);
+    font-weight: 600;
+  }
+  .toc-item .num {
+    display: inline-block;
+    width: 18px;
+    font-size: 10px;
+    color: rgba(255,255,255,0.25);
+    margin-right: 6px;
+    font-family: monospace;
+  }
+  .toc-divider {
+    border: none;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    margin: 12px 20px;
+  }
+  .toc-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.2);
+    padding: 8px 20px 4px;
+  }
+
+  /* ===== MAIN CONTENT ===== */
+  .main {
+    padding: 52px 64px 120px;
+    max-width: 900px;
+  }
+
+  /* ===== HERO ===== */
+  .hero {
+    margin-bottom: 56px;
+    padding-bottom: 48px;
+    border-bottom: 1px solid var(--line);
+  }
+  .lesson-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--purple-primary);
+    margin-bottom: 20px;
+  }
+  .lesson-kicker .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--purple-primary);
+  }
+  .hero-title {
+    font-size: 46px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -1.5px;
+    color: var(--text-dark);
+    margin-bottom: 20px;
+  }
+  .hero-title .accent {
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .hero-subtitle {
+    font-size: 19px;
+    line-height: 1.6;
+    color: var(--text-mid);
+    max-width: 680px;
+    margin-bottom: 32px;
+  }
+  .hero-stats {
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+  .hero-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .hero-stat .val {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--text-dark);
+    letter-spacing: -0.5px;
+  }
+  .hero-stat .lbl {
+    font-size: 12px;
+    color: var(--text-light);
+  }
+
+  /* ===== SECTION ===== */
+  .section {
+    margin-bottom: 60px;
+    scroll-margin-top: 80px;
+  }
+  .section-num {
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--purple-primary);
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .section-title {
+    font-size: 30px;
+    font-weight: 800;
+    letter-spacing: -0.8px;
+    color: var(--text-dark);
+    margin-bottom: 6px;
+    line-height: 1.2;
+  }
+  .section-subtitle {
+    font-size: 15px;
+    color: var(--text-light);
+    margin-bottom: 32px;
+  }
+  h3.sub {
+    font-size: 19px;
+    font-weight: 700;
+    color: var(--text-dark);
+    margin: 32px 0 14px;
+  }
+  p { margin-bottom: 16px; color: var(--text-mid); }
+  p strong { color: var(--text-dark); }
+
+  /* ===== CALLOUTS ===== */
+  .callout {
+    border-radius: var(--radius-md);
+    padding: 20px 24px;
+    margin: 24px 0;
+  }
+  .callout-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .callout p { margin-bottom: 8px; }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout-ikigai {
+    background: var(--purple-soft);
+    border: 1.5px solid var(--purple-border);
+  }
+  .callout-ikigai .callout-label { color: var(--purple-primary); }
+  .callout-key {
+    background: #F0FFF4;
+    border: 1.5px solid #86EFAC;
+  }
+  .callout-key .callout-label { color: #16A34A; }
+  .callout-warn {
+    background: var(--warn-bg);
+    border: 1.5px solid var(--warn-border);
+  }
+  .callout-warn .callout-label { color: var(--warn-text); }
+  .callout-case {
+    background: #F8F4FF;
+    border-left: 4px solid var(--purple-primary);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+  .callout-case .callout-label { color: var(--purple-primary); }
+
+  /* ===== CARDS GRID ===== */
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 16px;
+    margin: 24px 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1.5px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 20px 22px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .card:hover {
+    border-color: var(--purple-border);
+    box-shadow: 0 4px 20px rgba(123,47,190,0.08);
+  }
+  .card-icon { font-size: 24px; margin-bottom: 10px; }
+  .card-title { font-weight: 700; font-size: 15px; color: var(--text-dark); margin-bottom: 6px; }
+  .card-desc { font-size: 13px; color: var(--text-light); line-height: 1.5; margin: 0; }
+  .card-tag {
+    display: inline-block;
+    margin-top: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: var(--purple-soft);
+    color: var(--purple-primary);
+  }
+  .card-tag.free { background: #E8F5E9; color: var(--green-ok); }
+  .card-tag.paid { background: #FFF3E0; color: #E65100; }
+
+  /* ===== TABLE ===== */
+  .table-wrap {
+    overflow-x: auto;
+    margin: 24px 0;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    background: var(--card);
+  }
+  table th {
+    background: #F0EBFF;
+    color: var(--text-mid);
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--line2);
+    vertical-align: top;
+    color: var(--text-mid);
+  }
+  table tr:last-child td { border-bottom: none; }
+  table td strong { color: var(--text-dark); }
+  .yes { color: var(--green-ok); font-weight: 700; }
+  .no  { color: var(--accent-coral); font-weight: 700; }
+  .maybe { color: #F59E0B; font-weight: 700; }
+
+  /* ===== STEPS ===== */
+  .steps { margin: 24px 0; }
+  .step {
+    display: flex;
+    gap: 18px;
+    margin-bottom: 20px;
+    align-items: flex-start;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 36px; height: 36px;
+    background: var(--accent-gradient);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    color: white;
+    font-weight: 800;
+    font-size: 14px;
+  }
+  .step-body { flex: 1; padding-top: 4px; }
+  .step-title { font-weight: 700; color: var(--text-dark); margin-bottom: 4px; font-size: 16px; }
+  .step-desc { font-size: 14px; color: var(--text-mid); margin: 0; line-height: 1.55; }
+
+  /* ===== PROMPT CARDS ===== */
+  .prompts { margin: 24px 0; display: flex; flex-direction: column; gap: 16px; }
+  .prompt-card {
+    background: var(--sidebar-dark);
+    border: 1px solid rgba(199,125,255,0.2);
+    border-radius: var(--radius-md);
+    padding: 18px 20px;
+    position: relative;
+  }
+  .prompt-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #C77DFF;
+    margin-bottom: 10px;
+  }
+  .prompt-text {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: #E8DFFF;
+    white-space: pre-wrap;
+  }
+  .copy-btn {
+    position: absolute;
+    top: 14px; right: 14px;
+    background: rgba(123,47,190,0.3);
+    border: 1px solid rgba(199,125,255,0.3);
+    color: #C77DFF;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover { background: rgba(123,47,190,0.5); }
+
+  /* ===== CHECKLIST ===== */
+  .checklist { margin: 20px 0; }
+  .check-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--card);
+    border: 1.5px solid var(--line);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    user-select: none;
+  }
+  .check-item:hover { border-color: var(--purple-border); }
+  .check-item.done { background: #F0FFF4; border-color: #86EFAC; }
+  .check-box {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    border: 2px solid var(--purple-border);
+    flex-shrink: 0;
+    margin-top: 1px;
+    display: flex; align-items: center; justify-content: center;
+    color: transparent;
+    font-size: 11px;
+    font-weight: 700;
+    transition: all 0.15s;
+  }
+  .check-item.done .check-box {
+    background: var(--green-ok);
+    border-color: var(--green-ok);
+    color: white;
+  }
+  .check-title { font-weight: 600; font-size: 14px; color: var(--text-dark); }
+  .check-desc { font-size: 12px; color: var(--text-light); margin-top: 2px; }
+
+  /* ===== TOOLS BLOCK ===== */
+  .tool-row {
+    display: grid;
+    grid-template-columns: 200px 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    padding: 14px 18px;
+    background: var(--card);
+    border: 1.5px solid var(--line);
+    border-radius: var(--radius-sm);
+    margin-bottom: 8px;
+    font-size: 14px;
+    transition: border-color 0.15s;
+  }
+  .tool-row:hover { border-color: var(--purple-border); }
+  .tool-name { font-weight: 700; color: var(--text-dark); }
+  .tool-desc { color: var(--text-mid); line-height: 1.4; }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 20px;
+    white-space: nowrap;
+  }
+  .badge-free { background: #E8F5E9; color: #15803D; }
+  .badge-trial { background: #FEF3C7; color: #92400E; }
+  .badge-paid { background: #FEE2E2; color: #991B1B; }
+  .badge-key { background: var(--purple-soft); color: var(--purple-primary); }
+
+  /* ===== METRICS GRID ===== */
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .metric-card {
+    background: var(--card);
+    border: 1.5px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 16px 18px;
+    text-align: center;
+  }
+  .metric-val {
+    font-size: 26px;
+    font-weight: 800;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.1;
+    margin-bottom: 6px;
+  }
+  .metric-label { font-size: 12px; color: var(--text-light); line-height: 1.4; }
+
+  /* ===== PIPELINE ===== */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 24px 0;
+    background: var(--sidebar-dark);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    border: 1px solid rgba(199,125,255,0.15);
+  }
+  .pipe-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 16px 22px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .pipe-step:last-child { border-bottom: none; }
+  .pipe-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .pipe-body { flex: 1; }
+  .pipe-title {
+    font-weight: 700;
+    font-size: 14px;
+    color: rgba(255,255,255,0.9);
+    margin-bottom: 3px;
+  }
+  .pipe-desc { font-size: 12px; color: rgba(255,255,255,0.45); line-height: 1.5; margin: 0; }
+  .pipe-time {
+    font-size: 11px;
+    color: #C77DFF;
+    font-weight: 600;
+    white-space: nowrap;
+    margin-top: 3px;
+  }
+
+  /* ===== DIVIDER ===== */
+  .section-divider {
+    border: none;
+    border-top: 1px solid var(--line);
+    margin: 56px 0;
+  }
+
+  /* ===== FOOTER ===== */
+  .page-footer {
+    margin-top: 80px;
+    padding: 32px 64px;
+    background: var(--sidebar-dark);
+    color: rgba(255,255,255,0.4);
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .page-footer .logo-text { color: white; font-weight: 700; }
+
+  /* ===== MOBILE ===== */
+  @media (max-width: 780px) {
+    .layout { grid-template-columns: 1fr; }
+    .toc { display: none; }
+    .main { padding: 32px 20px 80px; }
+    .hero-title { font-size: 32px; letter-spacing: -1px; }
+    .section-title { font-size: 24px; }
+    .tool-row { grid-template-columns: 1fr; }
+    .page-header { padding: 14px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="page-header">
+  <a href="#" class="logo">
+    <div class="logo-icon">✦</div>
+    ИкигAI Академия
+  </a>
+  <span class="stream-badge">Поток №3 · Бонусный материал</span>
+  <span class="meta">27 июня 2026</span>
+</header>
+
+<div class="layout">
+
+  <!-- TOC SIDEBAR -->
+  <nav class="toc">
+    <div class="toc-title">Содержание</div>
+    <a class="toc-item active" href="#hero"><span class="num">00</span> Обзор</a>
+    <a class="toc-item" href="#why"><span class="num">01</span> Почему это работает</a>
+    <a class="toc-item" href="#cases"><span class="num">02</span> Реальные кейсы</a>
+    <a class="toc-item" href="#tools"><span class="num">03</span> Инструменты</a>
+    <a class="toc-item" href="#method"><span class="num">04</span> Методика разбора</a>
+    <a class="toc-item" href="#metrics"><span class="num">05</span> Что анализировать</a>
+    <a class="toc-item" href="#pipeline"><span class="num">06</span> Контент-завод</a>
+    <a class="toc-item" href="#prompts"><span class="num">07</span> Промпты для Claude</a>
+    <a class="toc-item" href="#checklist"><span class="num">08</span> Чек-лист</a>
+    <hr class="toc-divider">
+    <div class="toc-section-label">Ресурсы</div>
+    <a class="toc-item" href="https://vc.ru/marketing/1905408" target="_blank"><span class="num">↗</span> Кейс vc.ru #1</a>
+    <a class="toc-item" href="https://livedune.com/ru" target="_blank"><span class="num">↗</span> LiveDune</a>
+    <a class="toc-item" href="https://apify.com" target="_blank"><span class="num">↗</span> Apify</a>
+  </nav>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- HERO -->
+    <div class="hero" id="hero">
+      <div class="lesson-kicker">
+        <span class="dot"></span>Бонус-урок · Инструментарий
+      </div>
+      <h1 class="hero-title">
+        Тренд-вотчинг:<br>
+        <span class="accent">как делать Reels</span><br>
+        которые залетают
+      </h1>
+      <p class="hero-subtitle">
+        Система разбора залетевшего контента конкурентов + контент-завод,
+        который выдаёт сценарии с доказанными паттернами. Реальные кейсы,
+        проверенные инструменты, готовые промпты для Claude.
+      </p>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <span class="val">18 797</span>
+          <span class="lbl">Reels разобрал один специалист<br>чтобы найти 26 бриллиантов</span>
+        </div>
+        <div class="hero-stat">
+          <span class="val">1–2 нед</span>
+          <span class="lbl">Лаг тренда TikTok→Instagram:<br>используй как запас времени</span>
+        </div>
+        <div class="hero-stat">
+          <span class="val">3–5×</span>
+          <span class="lbl">Вес DM-отправок vs лайков<br>по подтверждению Адама Моссери</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 1 — ПОЧЕМУ РАБОТАЕТ -->
+    <div class="section" id="why">
+      <div class="section-num">01 / почему это работает</div>
+      <h2 class="section-title">Алгоритм уже показал, кто растёт</h2>
+      <div class="section-subtitle">Твоя задача — увидеть паттерн и повторить быстрее</div>
+
+      <p>
+        Instagram Reels ранжируются не по подписчикам — по <strong>поведению зрителя</strong>:
+        досмотрел, отправил другу, сохранил. Это значит, что небольшой аккаунт
+        с правильным паттерном может обогнать миллионника. Алгоритм не знает кто ты —
+        он видит только то, как люди реагируют на первые 3 секунды.
+      </p>
+
+      <div class="callout callout-ikigai">
+        <div class="callout-label">Ключевой принцип</div>
+        <p>Ищи аккаунты с <strong>10 000 подписчиков + 500 000+ просмотров на видео</strong>.
+        Это content-driven virality — алгоритм рекомендует незнакомым. Аккаунт с 5M подписчиков
+        и 1M просмотрами — это провал (20% охвата). Тебе нужны именно outlier-видео.</p>
+      </div>
+
+      <h3 class="sub">Главные сигналы алгоритма 2026</h3>
+      <p>
+        Адам Моссери (глава Instagram) подтвердил иерархию весов в январе 2025:
+      </p>
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-val">3–5×</div>
+          <div class="metric-label">Вес DM-отправок (sends) по сравнению с лайками</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val">50%+</div>
+          <div class="metric-label">Non-follower reach — знак, что алгоритм рекомендует</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val">65–75%</div>
+          <div class="metric-label">3-сек удержание (hook rate) — алгоритм расширяет охват</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-val">1–10k</div>
+          <div class="metric-label">Использований аудио — sweet spot трендового звука</div>
+        </div>
+      </div>
+
+      <div class="callout callout-warn">
+        <div class="callout-label">Важно</div>
+        <p>Хэштеги дают 80% нерелевантного контента при парсинге — это подтверждает реальный кейс.
+        Парсить нужно <strong>конкретные аккаунты по engagement-порогу</strong>, не хэштеги.</p>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 2 — КЕЙСЫ -->
+    <div class="section" id="cases">
+      <div class="section-num">02 / реальные кейсы</div>
+      <h2 class="section-title">Что работает на практике</h2>
+      <div class="section-subtitle">Подтверждённые кейсы с vc.ru и Medium</div>
+
+      <div class="callout callout-case">
+        <div class="callout-label">Кейс 1 — vc.ru/marketing/1905408</div>
+        <p>Специалист работал с нутрициологом (500k подписчиков, упавшие охваты).</p>
+        <p><strong>Что сделал:</strong> собрал 993 аккаунта ниши → 18 797 Reels за 6 часов.
+        Фильтр: 50 000+ просмотров + >1% комментариев. Результат: 26 «бриллиантов» с
+        разобранными паттернами хуков, историй и CTA.</p>
+        <p><strong>Вывод:</strong> «похожие аккаунты» в Instagram дают мусор. Работает только
+        прямой парсинг конкретных аккаунтов по метрикам.</p>
+      </div>
+
+      <div class="callout callout-case">
+        <div class="callout-label">Кейс 2 — Shapoval Agency (vc.ru/marketing/2264115)</div>
+        <p><strong>Что сделали:</strong> разобрали 10 топ-постов конкурентов клиента.
+        Обнаружили: 7 из 10 залетевших — карусели, не Reels.</p>
+        <p><strong>Результат:</strong> переключили клиента с 60% Reels на 50%+ каруселей →
+        зафиксированный рост подписчиков. Алгоритм уже показал формат — они просто повторили.</p>
+      </div>
+
+      <div class="callout callout-case">
+        <div class="callout-label">Кейс 3 — еженедельная система (Medium, апрель 2026)</div>
+        <p>Воркфлоу на 90 минут в неделю:</p>
+        <ol style="margin: 8px 0 8px 20px; color: var(--text-mid); font-size: 14px; line-height: 1.8;">
+          <li>10–15 залетевших Reels из нишевых хэштегов + аккаунтов конкурентов</li>
+          <li><strong>Двойной просмотр:</strong> сначала как зритель (фиксируй эмоцию), второй — аналитически</li>
+          <li>Таблица: тип хука, структура, триггеры, время продакшена</li>
+          <li>Поиск паттернов → создание контента по доказанным формулам</li>
+        </ol>
+        <p>Самоотчётный результат: +340% к средней эффективности Reels за 8 недель.</p>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 3 — ИНСТРУМЕНТЫ -->
+    <div class="section" id="tools">
+      <div class="section-num">03 / инструменты</div>
+      <h2 class="section-title">Минимальный стек</h2>
+      <div class="section-subtitle">Выбраны по критерию: наименьшие расходы + максимальный эффект для РФ-рынка</div>
+
+      <div class="callout callout-key">
+        <div class="callout-label">Must-have: один сервис на 80% задачи</div>
+        <p>Если выбирать только один — <strong>LiveDune</strong>. Российский сервис, 7 дней
+        бесплатно, от 1 900 ₽/мес. Top Reels по нишам + конкурентный анализ + оптимальное
+        время постинга. Не нужно ничего настраивать — работает сразу.</p>
+        <p>Второй must-have для автоматизации — <strong>Apify</strong> ($5 бесплатный кредит =
+        ~2 500 Reels). Парсит любые аккаунты, отдаёт метрики, музыку, caption.</p>
+      </div>
+
+      <h3 class="sub">Полный стек по категориям</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Инструмент</th>
+              <th>Что даёт</th>
+              <th>Цена</th>
+              <th>Бесплатно</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>LiveDune</strong><br><small>livedune.com/ru</small></td>
+              <td>Top Reels по нишам, конкуренты, тайминг постинга, длина видео, 5M+ аккаунтов</td>
+              <td>от 1 900 ₽/мес</td>
+              <td><span class="badge badge-trial">7 дней</span></td>
+            </tr>
+            <tr>
+              <td><strong>Apify</strong><br><small>apify.com</small></td>
+              <td>Парсинг любых аккаунтов: views, likes, music, caption, скачивание видео</td>
+              <td>от $0 ($1.90/1k)</td>
+              <td><span class="badge badge-free">$5 кредит</span></td>
+            </tr>
+            <tr>
+              <td><strong>Popsters</strong><br><small>popsters.ru</small></td>
+              <td>Сравнение 10 аккаунтов одновременно, ER, тип контента, XLSX-экспорт</td>
+              <td>от 599 ₽/мес</td>
+              <td><span class="badge badge-trial">7 дней</span></td>
+            </tr>
+            <tr>
+              <td><strong>TikTok Creative Center</strong><br><small>ads.tiktok.com/business/creativecenter</small></td>
+              <td>Тренды за 7 дней до их появления в Instagram. Trending sounds, хэштеги</td>
+              <td><span class="badge badge-free">Бесплатно</span></td>
+              <td><span class="badge badge-free">Полностью</span></td>
+            </tr>
+            <tr>
+              <td><strong>Instagram Competitive Insights</strong><br><small>встроено в Pro-панель</small></td>
+              <td>До 10 конкурентов: рост, частота Reels, буст-посты за 30–90 дней</td>
+              <td><span class="badge badge-free">Бесплатно</span></td>
+              <td><span class="badge badge-free">Полностью</span></td>
+            </tr>
+            <tr>
+              <td><strong>HikerAPI</strong><br><small>hikerapi.com</small></td>
+              <td>147 API-эндпоинтов: хэштеги, музыка, Reels-метрики, sync-запросы</td>
+              <td>$0.0006/запрос</td>
+              <td><span class="badge badge-free">100 запросов</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout callout-warn">
+        <div class="callout-label">Ограничения для РФ</div>
+        <p>Официальных Trending API нет ни у Meta, ни у TikTok для коммерческого использования.
+        Все инструменты работают через scraping. TikTok Creative Center доступен без VPN,
+        данные глобальные — тренды в RU-нише нужно фильтровать вручную по языку.</p>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 4 — МЕТОДИКА -->
+    <div class="section" id="method">
+      <div class="section-num">04 / методика</div>
+      <h2 class="section-title">Разбор конкурентов за 6 шагов</h2>
+      <div class="section-subtitle">Проверено агентствами и независимыми специалистами</div>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">Сформулируй один вопрос</div>
+            <div class="step-desc">«Как они растут?» или «Какой тип контента даёт им охваты?»
+            Один вопрос — одна итерация разбора. Несколько вопросов = расфокус.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">Выбери 4–6 аккаунтов</div>
+            <div class="step-desc">2 на твоём уровне (схожая аудитория), 1–2 лидера ниши,
+            1–2 быстрорастущих (те, кто рос последние 3 месяца). Не бери топовых с 5M+
+            подписчиков — у них работает audience virality, а не content virality.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">Найди аномалии</div>
+            <div class="step-desc">В LiveDune/Popsters — сравни базовые метрики. Ищи видео
+            у которых просмотров в <strong>3x+ выше среднего по аккаунту</strong>.
+            Это outlier, не просто популярное. Именно outlier содержит паттерн, а не удачу.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">4</div>
+          <div class="step-body">
+            <div class="step-title">Сформулируй гипотезу</div>
+            <div class="step-desc">«Залетает потому что...» — конкретный механизм.
+            Тип хука? Тема? Длина? Звук? Ритм монтажа? Не «просто хороший контент».</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">5</div>
+          <div class="step-body">
+            <div class="step-title">Разбери топ-10 детально</div>
+            <div class="step-desc">8 параметров из следующего раздела — по каждому видео
+            в таблицу. Ищи повторяющийся паттерн в 3+ видео — это сигнал.</div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">6</div>
+          <div class="step-body">
+            <div class="step-title">Протестируй в своём контенте</div>
+            <div class="step-desc">Применяй найденный паттерн к своей нише и голосу.
+            Не копируй дословно — бери структуру, заменяй ценностное предложение.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 5 — ЧТО АНАЛИЗИРОВАТЬ -->
+    <div class="section" id="metrics">
+      <div class="section-num">05 / что анализировать</div>
+      <h2 class="section-title">8 параметров каждого Reel</h2>
+      <div class="section-subtitle">Заполняй в таблицу по каждому разобранному видео</div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Параметр</th>
+              <th>Что конкретно смотреть</th>
+              <th>Вес</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td><strong>Хук (0–3 сек)</strong></td>
+              <td>Тип: провокация / ошибка / цифра / вопрос / результат.
+              Точные первые слова. Количество слов до паузы.</td>
+              <td><span class="badge badge-key">Критично</span></td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td><strong>Конфликт (3–6 сек)</strong></td>
+              <td>Даётся ли ответ сразу или нагнетается интрига? Интрига
+              без ответа удерживает зрителя.</td>
+              <td><span class="badge badge-key">Критично</span></td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td><strong>Длина</strong></td>
+              <td>7–30 сек для охватов; 30–60 сек для вовлечения у брендов.
+              Где твои конкуренты находят баланс?</td>
+              <td><span class="badge badge-trial">Важно</span></td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td><strong>Музыка</strong></td>
+              <td>Количество использований на платформе. Sweet spot:
+              <strong>1 000–10 000</strong>. При 50k+ звук уже на закате.</td>
+              <td><span class="badge badge-trial">Важно</span></td>
+            </tr>
+            <tr>
+              <td>5</td>
+              <td><strong>Ритм монтажа</strong></td>
+              <td>Смена кадра каждые 1.8–2.5 сек = норма топов 2026.
+              Быстрее — для молодой аудитории, медленнее — для экспертного контента.</td>
+              <td><span class="badge badge-trial">Важно</span></td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td><strong>CTA</strong></td>
+              <td>Конкретный («перешли другу с 100 просмотрами») vs общий («подпишись»).
+              Конкретный CTA генерирует sends — главный сигнал алгоритма.</td>
+              <td><span class="badge badge-key">Критично</span></td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td><strong>Структура тела</strong></td>
+              <td>PAS (Проблема→Агитация→Решение) / Feature-Benefit / Before-After.
+              Какая повторяется у залетевших?</td>
+              <td><span class="badge badge-trial">Важно</span></td>
+            </tr>
+            <tr>
+              <td>8</td>
+              <td><strong>Источник просмотров</strong></td>
+              <td>Reels tab + Explore = алгоритмическое усиление.
+              Feed = органика подписчиков. Первое значит, что паттерн работает на незнакомых.</td>
+              <td><span class="badge badge-trial">Важно</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 class="sub">5 типов хуков — от лучшего к худшему</h3>
+      <div class="cards">
+        <div class="card">
+          <div class="card-icon">💥</div>
+          <div class="card-title">Провокационный (Contrarian)</div>
+          <div class="card-desc">«Все делают X, но это убивает охваты» — нарушает ожидание, заставляет досмотреть.</div>
+          <span class="card-tag">#1 по конверсии</span>
+        </div>
+        <div class="card">
+          <div class="card-icon">🚨</div>
+          <div class="card-title">Ошибка (Mistake)</div>
+          <div class="card-desc">«Я потерял 30 000 подписчиков из-за одной ошибки» — personal stakes, высокий hook rate.</div>
+          <span class="card-tag">#2 по конверсии</span>
+        </div>
+        <div class="card">
+          <div class="card-icon">🔢</div>
+          <div class="card-title">Цифровой (Numbered)</div>
+          <div class="card-desc">«5 причин почему...» — числа 3–7 дают доверие. Специфика убеждает лучше обобщений.</div>
+          <span class="card-tag">#3 по конверсии</span>
+        </div>
+        <div class="card">
+          <div class="card-icon">⏱️</div>
+          <div class="card-title">Результат за время</div>
+          <div class="card-desc">«Как я вырастил 10k за 30 дней» — конкретный результат + временной фрейм.</div>
+          <span class="card-tag">#4 по конверсии</span>
+        </div>
+        <div class="card">
+          <div class="card-icon">❓</div>
+          <div class="card-title">Вопрос (Question)</div>
+          <div class="card-desc">«Вы делаете X неправильно?» — риторический вопрос втягивает, но работает слабее провокации.</div>
+          <span class="card-tag">#5 по конверсии</span>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 6 — КОНТЕНТ-ЗАВОД -->
+    <div class="section" id="pipeline">
+      <div class="section-num">06 / контент-завод</div>
+      <h2 class="section-title">Еженедельный pipeline</h2>
+      <div class="section-subtitle">~90 минут в неделю → 2–3 сценария с доказанными паттернами</div>
+
+      <div class="pipeline">
+        <div class="pipe-step">
+          <div class="pipe-icon">📊</div>
+          <div class="pipe-body">
+            <div class="pipe-title">LiveDune → Top Reels ниши за 7 дней</div>
+            <div class="pipe-desc">Смотришь что залетело у конкурентов за неделю. Фиксируешь 3–5 outlier-видео в таблицу.</div>
+            <div class="pipe-time">3 мин · руками</div>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-icon">🎵</div>
+          <div class="pipe-body">
+            <div class="pipe-title">TikTok Creative Center → тренды следующей недели</div>
+            <div class="pipe-desc">Trending sounds + хэштеги. Что сейчас набирает в TikTok — появится в Instagram через 1–2 недели.</div>
+            <div class="pipe-time">5 мин · руками</div>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-icon">🤖</div>
+          <div class="pipe-body">
+            <div class="pipe-title">Apify → парсинг outliers конкурентов</div>
+            <div class="pipe-desc">Передаёшь URL видео → получаешь метрики (views, likes, saves, music_id, caption) в JSON. Автоматически.</div>
+            <div class="pipe-time">~10 мин · полуавтоматически</div>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-icon">🎬</div>
+          <div class="pipe-body">
+            <div class="pipe-title">Claude /sm-reels-scripting → разбор + сценарий</div>
+            <div class="pipe-desc">Скилл берёт URL → Apify скачивает видео → Gemini 2.5 Flash анализирует покадрово (транскрипт, хук, структура) → пишет твой сценарий в твоём голосе.</div>
+            <div class="pipe-time">~15 мин на видео · Claude</div>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-icon">✍️</div>
+          <div class="pipe-body">
+            <div class="pipe-title">Claude /ikigai-instagram → финальный сценарий</div>
+            <div class="pipe-desc">Скилл адаптирует найденный паттерн под твою аудиторию предпринимателей и голос Икигай. Готовый текст + рекомендации по съёмке.</div>
+            <div class="pipe-time">~10 мин · Claude</div>
+          </div>
+        </div>
+        <div class="pipe-step">
+          <div class="pipe-icon">📅</div>
+          <div class="pipe-body">
+            <div class="pipe-title">Контент-план → 2–3 Reels на неделю</div>
+            <div class="pipe-desc">Каждый сценарий — доказанный паттерн из реальных данных, а не интуиция. Загружаешь по оптимальному тайминг из LiveDune.</div>
+            <div class="pipe-time">Результат</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="callout callout-ikigai">
+        <div class="callout-label">Перспектива — полная автоматизация</div>
+        <p>Существует готовый workflow n8n + Apify + Gemini 2.5 Pro: URL вирусного Reel →
+        Apify скачивает → Gemini анализирует покадрово → выдаёт «Generative Manifest»
+        (тип плёнки, цвет, тайминг каждого кадра, движения камеры) → промпт для воссоздания.
+        Результат пушится в Notion-контент-календарь автоматически.
+        Может быть поднято на сервере Икигай.</p>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 7 — ПРОМПТЫ -->
+    <div class="section" id="prompts">
+      <div class="section-num">07 / промпты для Claude</div>
+      <h2 class="section-title">Готовые промпты</h2>
+      <div class="section-subtitle">Скопируй и вставь — Claude сделает остальное</div>
+
+      <div class="prompts">
+        <div class="prompt-card">
+          <div class="prompt-label">Промпт 1 — Запуск разбора конкурента</div>
+          <div class="prompt-text">Запусти /sm-reels-scripting.
+
+Вот URL залетевшего Reels конкурента: [ВСТАВЬ URL]
+
+Моя ниша: предприниматели и эксперты 30–50 лет, тема [ТВОЯ ТЕМА].
+Разбери: хук, структуру, тип CTA, ритм монтажа.
+Потом напиши мой сценарий по тому же паттерну.</div>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent); this.textContent='✓ Скопировано'">📋 Копировать</button>
+        </div>
+
+        <div class="prompt-card">
+          <div class="prompt-label">Промпт 2 — Паттерн-матч по нескольким видео</div>
+          <div class="prompt-text">Вот 5 Reels конкурентов которые набрали 500k+ просмотров:
+[URL 1], [URL 2], [URL 3], [URL 4], [URL 5]
+
+Проанализируй каждое по 8 параметрам:
+хук, конфликт (3-6 сек), длина, ритм монтажа,
+структура тела, CTA, тип аудио, источник просмотров.
+
+Потом найди повторяющийся паттерн в 3+ видео.
+Какая формула залетает в этой нише?</div>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent); this.textContent='✓ Скопировано'">📋 Копировать</button>
+        </div>
+
+        <div class="prompt-card">
+          <div class="prompt-label">Промпт 3 — Генерация хуков под найденный паттерн</div>
+          <div class="prompt-text">Паттерн который залетает у конкурентов в моей нише: [ВСТАВЬ ПАТТЕРН].
+
+Моя тема: [ТЕМА ПОСТА].
+Моя аудитория: предприниматели 30–50 лет, Москва.
+
+Напиши 7 вариантов хука (первые 3 секунды) для этой темы
+используя этот паттерн. Тип хука — [провокационный / ошибка / цифровой].
+
+Формат: каждый хук — не больше 2 предложений, до 15 слов.</div>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent); this.textContent='✓ Скопировано'">📋 Копировать</button>
+        </div>
+
+        <div class="prompt-card">
+          <div class="prompt-label">Промпт 4 — Полный сценарий Reels 30 секунд</div>
+          <div class="prompt-text">Напиши сценарий Reels на 30 секунд (≈80–90 слов).
+
+Тема: [ТЕМА].
+Хук (из промпта выше): [ХУК].
+Структура тела: PAS (Проблема → Агитация → Решение).
+CTA: конкретный, про отправку в ЛС другу.
+Аудитория: предприниматели, говорим как друг другу, без корпоративщины.
+
+Формат:
+[0–3 сек] Хук: ...
+[3–6 сек] Конфликт: ...
+[6–22 сек] Тело (PAS): ...
+[22–30 сек] CTA: ...</div>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent); this.textContent='✓ Скопировано'">📋 Копировать</button>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- SECTION 8 — ЧЕКЛИСТ -->
+    <div class="section" id="checklist">
+      <div class="section-num">08 / чек-лист</div>
+      <h2 class="section-title">Первые шаги</h2>
+      <div class="section-subtitle">Отмечай по мере выполнения — кликни на пункт</div>
+
+      <div class="checklist">
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Зарегистрироваться в LiveDune (7 дней бесплатно)</div>
+            <div class="check-desc">livedune.com/ru → Top Reels → выбери свою нишу → изучи что залетело за 7 дней</div>
+          </div>
+        </div>
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Открыть TikTok Creative Center и посмотреть trending sounds</div>
+            <div class="check-desc">ads.tiktok.com/business/creativecenter → Trends → выбери Россию / свою нишу</div>
+          </div>
+        </div>
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Включить Instagram Competitive Insights</div>
+            <div class="check-desc">Профиль → Инструменты → Профессиональная панель → Конкурентный анализ → добавить 5–10 аккаунтов</div>
+          </div>
+        </div>
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Составить список 5–10 конкурентов для отслеживания</div>
+            <div class="check-desc">2 на своём уровне, 2 лидера ниши, 1–2 быстрорастущих. Критерий: content-driven (10k подп + 500k+ просмотров)</div>
+          </div>
+        </div>
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Найти первый outlier-Reel конкурента</div>
+            <div class="check-desc">Видео у которого просмотров в 3x+ выше среднего по аккаунту. Это твой первый «бриллиант» для разбора.</div>
+          </div>
+        </div>
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Запустить /sm-reels-scripting с URL outlier-Reels</div>
+            <div class="check-desc">Вставь URL в Claude и запусти скилл. Нужны: APIFY_API_TOKEN + GOOGLE_AI_API_KEY</div>
+          </div>
+        </div>
+        <div class="check-item" onclick="this.classList.toggle('done'); this.querySelector('.check-box').textContent = this.classList.contains('done') ? '✓' : ''">
+          <div class="check-box"></div>
+          <div>
+            <div class="check-title">Снять первый Reel по доказанному паттерну</div>
+            <div class="check-desc">Используй промпты из раздела 7. Сравни результат с предыдущими видео.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- FOOTER -->
+<footer class="page-footer">
+  <div>
+    <span class="logo-text">ИкигAI Академия</span> · Поток №3 · Бонусный материал
+  </div>
+  <div>Тренд-вотчинг для Instagram Reels · 27 июня 2026</div>
+  <div>ikigai-community.com</div>
+</footer>
+
+<script>
+// TOC active state on scroll
+const sections = document.querySelectorAll('.section, .hero');
+const tocItems = document.querySelectorAll('.toc-item[href^="#"]');
+
+function updateToc() {
+  let current = '';
+  sections.forEach(s => {
+    if (window.scrollY + 100 >= s.offsetTop) current = s.id;
+  });
+  tocItems.forEach(item => {
+    item.classList.remove('active');
+    if (item.getAttribute('href') === '#' + current) item.classList.add('active');
+  });
+}
+
+window.addEventListener('scroll', updateToc, { passive: true });
+updateToc();
+</script>
+
+</body>
+</html>
