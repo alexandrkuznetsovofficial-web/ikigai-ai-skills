@@ -33,39 +33,29 @@
 
 ---
 
-### Шаг 2. Получить API-ключ Anthropic (Claude)
+### Шаг 2. Получить токен подписки Claude (НЕ нужны ни карта, ни новый кошелёк)
 
-Если у тебя уже есть API-ключ — пропусти этот шаг.
+У тебя уже есть подписка Claude (Pro/Max) — на ней работает весь курс. Бот будет тратить токены **из этой же подписки**, без отдельного API-ключа, без console.anthropic.com, без пополнения баланса.
 
-1. Открой **console.anthropic.com** (нужен VPN если ты в РФ)
-2. Зарегистрируйся или войди (можно через Google)
-3. Слева в меню → **"API Keys"**
-4. Нажми **"Create Key"** → дай имя, например `telegram-bot`
-5. Скопируй ключ — он начинается с `sk-ant-...`
+Как это происходит (2 минуты, команду выполняет Claude — не ты):
 
-> ⚠️ Ключ показывается только один раз при создании. Сохрани сразу.
+1. Скажи Claude в VS Code: **«Выпусти мне токен подписки для бота»** — он сам выполнит команду `claude setup-token`
+2. Откроется браузер → войди под своей подпиской Claude → нажми **Authorize**
+3. Появится строка вида `sk-ant-oat01-...` — скопируй её и пришли Claude, он сам положит её в `.env`
 
-#### Пополнить баланс токенов
+Если хочешь вручную: открой терминал (Mac: Cmd+Space → набери «Терминал»; Windows: Пуск → набери «PowerShell») и выполни `claude setup-token` — дальше те же шаги 2–3.
 
-1. В console.anthropic.com → слева **"Billing"**
-2. **"Add credit"** → введи карту → пополни на нужную сумму
-3. Минимум — $5. На первое время хватит надолго (простой бот тратит ~$0.01-0.05 в день)
-4. Рекомендую включить **"Auto-recharge"** — автопополнение когда баланс падает ниже $2
-5. В разделе **"Usage"** всегда видно сколько потратил и на что
+> ⚠️ Токен = доступ к твоей подписке. Как и токен бота — никому не давай, не публикуй в GitHub.
 
-> **Сколько стоит?** Claude Haiku (быстрый и дешёвый) — $0.25 за миллион токенов. 1 сообщение ≈ 500 токенов = $0.000125. При 100 сообщениях в день = ~$0.01/день.
+**Два честных момента про подписку:**
+- Бот ест общий лимит твоей подписки вместе с твоей работой в Claude Code. Для личного бота на Haiku это незаметно.
+- Подписка — для личного использования. Гонять через неё продукт на чужих людей нельзя (для этого — платный API).
 
-#### ⚠️ Если ты в России: карты РФ не работают
+<details>
+<summary>Запасной путь: если подписки нет (не рекомендуем — это платно за каждый вызов)</summary>
 
-Российские карты на console.anthropic.com не принимаются. Рабочие варианты:
-
-1. **Карта «Плати по миру» (@platipomiru_bot)** — наш рекомендованный путь из дня 0 академии. Если ты уже оформлял её для подписки Claude — используй те же реквизиты, ничего нового делать не нужно. Если нет: Telegram-бот @platipomiru_bot → тариф Subscription card (2 990 ₽ разово) → карта за 2 минуты → пополняешь рублями через СБП, тратишь в долларах
-2. **Зарубежная карта** (Казахстан, Армения, Грузия, ОАЭ) — если есть, просто привязываешь
-3. **Попросить друга/коллегу за рубежом** — один платёж $5–10 хватит на месяцы работы бота на Haiku
-
-Не забудь: сам сайт console.anthropic.com открывается только с включённым VPN.
-
-Полная пошаговая инструкция (карта, VPN, расчёт затрат) — в академии, день 0, часть 4: https://ikigai-community.com/academy/00-preflight/
+Можно работать через платный API-ключ: console.anthropic.com (нужен VPN в РФ) → API Keys → Create Key → Billing → пополнить от $5 (карты РФ не работают — «Плати по миру» @platipomiru_bot или зарубежная карта). Ключ кладётся в `.env` как `ANTHROPIC_API_KEY`. Но если подписка есть — этот путь не нужен, он только добавляет второй кошелёк и лишнюю головную боль.
+</details>
 
 ---
 
@@ -75,10 +65,12 @@
 
 ```
 BOT_TOKEN=вставь_токен_от_BotFather
-ANTHROPIC_API_KEY=вставь_ключ_от_Anthropic
+CLAUDE_CODE_OAUTH_TOKEN=вставь_токен_подписки_из_шага_2
 BOT_NAME=Имя как ты называешь своего бота (например Вася)
 OWNER_TELEGRAM_ID=твой_telegram_id
 ```
+
+> Если идёшь запасным путём через платный API — вместо `CLAUDE_CODE_OAUTH_TOKEN` заполни `ANTHROPIC_API_KEY`. Бот сам поймёт, что доступно. Оба сразу заполнять не нужно.
 
 **Как узнать свой Telegram ID:**
 - Напиши боту **@userinfobot** в Telegram
@@ -132,7 +124,8 @@ import anthropic
 load_dotenv()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
+OAUTH_TOKEN = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()   # токен подписки (основной путь)
+API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()             # платный API (запасной путь)
 BOT_NAME = os.environ.get("BOT_NAME", "Ассистент")
 OWNER_ID_STR = os.environ.get("OWNER_TELEGRAM_ID", "")
 
@@ -140,8 +133,10 @@ OWNER_ID_STR = os.environ.get("OWNER_TELEGRAM_ID", "")
 if BOT_TOKEN == "вставь_токен_от_BotFather":
     print("❌ Заполни BOT_TOKEN в файле .env")
     exit(1)
-if ANTHROPIC_API_KEY.startswith("вставь"):
-    print("❌ Заполни ANTHROPIC_API_KEY в файле .env")
+if OAUTH_TOKEN.startswith("вставь"):
+    OAUTH_TOKEN = ""
+if not OAUTH_TOKEN and not API_KEY:
+    print("❌ Заполни CLAUDE_CODE_OAUTH_TOKEN в файле .env (см. Шаг 2 гайда)")
     exit(1)
 
 # Настройка
@@ -161,7 +156,40 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 bot = telebot.TeleBot(BOT_TOKEN)
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# Клиент Claude: основной путь — подписка (OAuth-токен), запасной — платный API-ключ.
+# ⚠️ Грабли: если в окружении есть И ANTHROPIC_API_KEY, И OAuth-токен — SDK шлёт оба,
+# и запрос отклоняется («credit balance too low»). Поэтому на время создания
+# подписочного клиента API-ключ временно убираем из окружения.
+claude_sub = None
+if OAUTH_TOKEN:
+    _saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+    claude_sub = anthropic.Anthropic(
+        auth_token=OAUTH_TOKEN,
+        default_headers={"anthropic-beta": "oauth-2025-04-20"},
+    )
+    if _saved:
+        os.environ["ANTHROPIC_API_KEY"] = _saved
+
+claude_api = anthropic.Anthropic(api_key=API_KEY) if API_KEY else None
+
+
+def llm_call(**kwargs):
+    """Вызов Claude: сначала подписка, при ошибке — платный API (если настроен)."""
+    if claude_sub is not None:
+        try:
+            resp = claude_sub.messages.create(**kwargs)
+            log.info("[AUTH] subscription")
+            return resp
+        except anthropic.APIError as e:
+            log.warning(f"[AUTH] подписка не ответила ({e}), пробую API-ключ")
+            if claude_api is None:
+                raise
+    if claude_api is None:
+        raise RuntimeError("Нет ни рабочего токена подписки, ни API-ключа")
+    resp = claude_api.messages.create(**kwargs)
+    log.info("[AUTH] api-key (платный)")
+    return resp
 
 # История диалога (в памяти — сбрасывается при рестарте)
 dialog_history: list[dict] = []
@@ -196,8 +224,8 @@ def ask_claude(user_message: str) -> str:
         dialog_history = dialog_history[-MAX_HISTORY * 2:]
 
     try:
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",   # быстрый и дешёвый
+        response = llm_call(
+            model="claude-haiku-4-5-20251001",   # быстрый; через подписку работает стабильнее всего
             max_tokens=1024,
             system=system_prompt,
             messages=dialog_history,
@@ -205,9 +233,11 @@ def ask_claude(user_message: str) -> str:
         assistant_reply = response.content[0].text
         dialog_history.append({"role": "assistant", "content": assistant_reply})
         return assistant_reply
-    except anthropic.APIError as e:
-        log.error(f"Claude API error: {e}")
-        return f"⚠️ Ошибка Claude API: {e}"
+    except Exception as e:
+        log.error(f"Claude error: {e}")
+        return (f"⚠️ Ошибка Claude: {e}\n\n"
+                "Если это 401 — токен подписки протух: попроси Claude в VS Code "
+                "выполнить `claude setup-token` заново и обновить .env")
 
 
 def is_owner(user_id: int) -> bool:
@@ -246,9 +276,11 @@ def cmd_status(message):
     if not is_owner(message.from_user.id):
         return
     profile_status = "✅ загружен" if MEMORY_FILE.exists() else "⚠️ не найден (создай memory/profile.md)"
+    auth_status = "подписка Claude" if claude_sub else "платный API-ключ"
     bot.reply_to(message,
         f"✅ Бот работает\n"
         f"Модель: claude-haiku-4-5\n"
+        f"Доступ: {auth_status}\n"
         f"История: {len(dialog_history) // 2} сообщений\n"
         f"Профиль: {profile_status}"
     )
@@ -307,7 +339,8 @@ if __name__ == "__main__":
 
 ```
 BOT_TOKEN=вставь_токен_от_BotFather
-ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-...
+# ANTHROPIC_API_KEY=  ← только для запасного платного пути, обычно НЕ нужен
 BOT_NAME=Вася
 OWNER_TELEGRAM_ID=123456789
 ```
@@ -413,11 +446,13 @@ py bot.py
 
 В `bot.py` строка модели — меняй под задачу:
 
-| Модель | Когда использовать | Цена |
-|--------|-------------------|------|
-| `claude-haiku-4-5-20251001` | Быстро, дёшево, повседневные задачи | ~$0.01/день |
-| `claude-sonnet-4-6` | Сложные задачи, анализ | ~$0.05/день |
-| `claude-fable-5` | Максимум мощи (бесплатно до 22.06!) | после 22.06 — дорого |
+| Модель | Когда использовать | На подписке |
+|--------|-------------------|-------------|
+| `claude-haiku-4-5-20251001` | Быстро, повседневные задачи — **дефолт для бота** | ✅ работает стабильно |
+| `claude-sonnet-4-6` | Сложные задачи, анализ | ⚠️ может отдавать 429 (лимит) — бот уйдёт на fallback |
+| `claude-fable-5` | Максимум мощи | ⚠️ то же самое; для бота избыточно |
+
+> Через подписку надёжнее всего работает Haiku — для личного ассистента его более чем достаточно. Дорогие модели оставь для работы в Claude Code.
 
 ---
 
@@ -446,7 +481,9 @@ py bot.py
 | `KeyError: 'BOT_TOKEN'` | .env не создан или не заполнен | Проверь файл .env |
 | `Unauthorized` | Токен бота неверный | Создай нового бота в BotFather |
 | `Connection timeout` | Нет VPN / интернета | Включи VPN |
-| `insufficient_quota` | Закончились токены Anthropic | Пополни баланс на console.anthropic.com → Billing |
+| `401 authentication_error` | Токен подписки протух | Попроси Claude выполнить `claude setup-token` заново и обновить .env |
+| `credit balance too low` (при рабочей подписке) | В окружении одновременно и API-ключ, и токен подписки — SDK шлёт оба | Убери `ANTHROPIC_API_KEY` из .env, оставь только `CLAUDE_CODE_OAUTH_TOKEN` |
+| `429 rate_limit` | Упёрся в лимит подписки (или модель дороже Haiku) | Подожди; проверь что в bot.py стоит Haiku |
 | `ModuleNotFoundError: telebot` | Не установлены зависимости | `pip install -r requirements.txt` |
 | На Windows `py` не работает | Python не в PATH | При установке Python отметь "Add to PATH" |
 
@@ -454,9 +491,9 @@ py bot.py
 
 ## Безопасность — важно
 
-- `.env` — никогда не выкладывай в GitHub. Ключ = деньги с твоего счёта.
-- Строка `OWNER_TELEGRAM_ID` ограничивает бота только тобой — без неё любой может писать боту
-- Если случайно запушил ключ в GitHub — немедленно удали его в console.anthropic.com и создай новый
+- `.env` — никогда не выкладывай в GitHub. Токен подписки = доступ к твоему аккаунту Claude, токен бота = управление ботом.
+- Строка `OWNER_TELEGRAM_ID` ограничивает бота только тобой — без неё любой может писать боту и тратить твой лимит
+- Если случайно запушил токен в GitHub — немедленно перевыпусти: токен подписки → `claude setup-token` заново (старый отзови в claude.ai → Settings), токен бота → /revoke в BotFather
 
 ---
 

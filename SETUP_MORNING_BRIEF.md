@@ -231,6 +231,6 @@ Cron: 0 [HOUR] * * * (08:00 по твоему времени)
 | Симптом | Решение |
 |---|---|
 | `TG: FAIL` | Проверь BOT_TOKEN и OWNER_ID в ~/morning_brief.py |
-| `Claude HTTP 401` | Нет OAuth-токена, попробуй добавить ANTHROPIC_API_KEY в ~/.zshrc |
+| `Claude HTTP 401` | OAuth-токен не найден или протух — выполни `claude setup-token` (вход под подпиской). Платный `ANTHROPIC_API_KEY` — только крайний запасной вариант |
 | `Второй мозг пуст` | Проверь что MEMORY_PATH указывает на правильную папку |
 | cron не запускается | Добавь полный путь к python3: `which python3` |
