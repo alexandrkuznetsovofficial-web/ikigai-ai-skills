@@ -192,6 +192,12 @@ if [ -n "$U" ]; then
   systemctl cat "$U" 2>/dev/null | grep -q "Restart=always" && echo "UNITRESTART=yes" || echo "UNITRESTART=no"
 else echo "UNIT="; fi
 crontab -l 2>/dev/null | grep -qE "backup|snapshot|rsync" && echo "BACKUP=yes" || echo "BACKUP=no"
+echo "SKILLSN=$(find /home/brain/.claude/skills -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
+grep -rqE "^(ALLOWED_USERS|OWNER_USER_ID|TELEGRAM_OWNER)=" /home/brain/.config/ /home/brain/*/.env 2>/dev/null && echo "WHITELIST=yes" || echo "WHITELIST=no"
+ALLCRON=$( { crontab -l 2>/dev/null; sudo -u brain crontab -l 2>/dev/null; } )
+echo "$ALLCRON" | grep -qE "git.*(commit|add)|auto.?commit" && echo "AUTOCOMMIT=yes" || echo "AUTOCOMMIT=no"
+{ echo "$ALLCRON"; systemctl list-timers --no-pager 2>/dev/null; } | grep -qiE "brief|morning" && echo "BRIEF=yes" || echo "BRIEF=no"
+[ -d /home/brain/.claude/skills/cto ] && echo "TEAMKIT=yes" || echo "TEAMKIT=no"
 (command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active") && echo "UFW=yes" || echo "UFW=no"
 '@
 
@@ -241,6 +247,23 @@ if ($SrvOk) {
 
   if ((G 'BACKUP') -eq 'yes') { OK "Бэкапы настроены" } else { WARN "Бэкапов не видно"; AgentDo "настрой бэкап: снапшоты на сервере + ночное зеркало на мой компьютер (модуль 04)" }
   if ((G 'UFW') -eq 'yes') { OK "Файрвол включён" } else { WARN "Файрвол выключен — займёмся после запуска (модуль 05)" }
+
+  # --- сверка с definition of done ---
+  $sSk = ToInt (G 'SKILLSN')
+  if ($sSk -ge 5) { OK "Скиллы на сервере: $sSk — бот видит команду" }
+  else { BAD "На сервере нет скиллов ($sSk) — бот видит память, но не умеет ей пользоваться"; AgentDo "перенеси ~/.claude/skills на сервер, в домашнюю папку пользователя мозга" }
+
+  if ((G 'WHITELIST') -eq 'yes') { OK "Белый список включён — бот отвечает только владельцу" }
+  else { BAD "У бота НЕТ белого списка — любой посторонний тратит твою подписку"; AgentDo "добавь проверку OWNER_USER_ID ДО вызова мозга — на текст, голосовые и фото" }
+
+  if ((G 'AUTOCOMMIT') -eq 'yes') { OK "Автокоммиты мозга настроены" }
+  else { WARN "Автокоммитов не видно — правки мозга нечем откатывать"; AgentDo "настрой автокоммиты второго мозга каждые 30 минут (auto-commit-backup)" }
+
+  if ((G 'BRIEF') -eq 'yes') { OK "Утренний брифинг стоит в расписании" }
+  else { WARN "Утреннего брифинга нет — это заодно проверка, что связка cron + бот + память жива"; AgentDo "поставь утренний брифинг по расписанию (SETUP_MORNING_BRIEF)" }
+
+  if ((G 'TEAMKIT') -eq 'yes') { OK "IT-команда на сервере есть (точка входа — cto)" }
+  else { WARN "team-kit не установлен"; AgentDo "поставь team-kit на сервер, точка входа — cto" }
 }
 
 # ------------------------------------------------------------ 6. Живые проверки

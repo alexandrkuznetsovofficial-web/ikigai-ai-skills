@@ -32,17 +32,17 @@
 ЭТАП 1. АУДИТ — начни отсюда, всегда
 ════════════════════════════════════════════════════════════════════
 
-Скачай и запусти САМ (не проси меня открывать терминал — у тебя он есть):
+Определи мою систему сам, скачай нужный файл и запусти его САМ.
+Не проси меня открывать терминал — у тебя он есть.
 
-  Мой компьютер Mac или Linux:
-  curl -fsSL https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/novoselie-server-kit/audit/audit.sh -o audit.sh && bash audit.sh
+  Если у меня Mac или Linux — забери этот файл и выполни его через bash:
+https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/novoselie-server-kit/audit/audit.sh
 
-  Мой компьютер Windows:
-  https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/novoselie-server-kit/audit/audit.ps1
-  скачай и запусти: powershell -ExecutionPolicy Bypass -File .\audit.ps1
+  Если у меня Windows — забери этот и выполни через PowerShell
+  с ключом -ExecutionPolicy Bypass:
+https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/novoselie-server-kit/audit/audit.ps1
 
-Сначала определи мою систему сам и возьми нужный файл. Скрипт ничего не ломает
-и не устанавливает — только смотрит. Секреты он не печатает.
+Скрипт ничего не ломает и не устанавливает — только смотрит. Секреты он не печатает.
 
 Он пройдёт шесть блоков: компьютер · Claude Code и тип авторизации · папка мозга ·
 заготовки к серверу · сервер по 15 параметрам · две живые проверки. Рядом появятся

@@ -273,6 +273,12 @@ if [ "$SRV_OK" = "1" ]; then
       systemctl cat "$U" 2>/dev/null | grep -q "Restart=always" && echo "UNITRESTART=yes" || echo "UNITRESTART=no"
     else echo "UNIT="; fi
     crontab -l 2>/dev/null | grep -cqE "backup|snapshot|rsync" && echo "BACKUP=yes" || echo "BACKUP=no"
+    echo "SKILLSN=$(find /home/brain/.claude/skills -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
+    grep -rqE "^(ALLOWED_USERS|OWNER_USER_ID|TELEGRAM_OWNER)=" /home/brain/.config/ /home/brain/*/.env 2>/dev/null && echo "WHITELIST=yes" || echo "WHITELIST=no"
+    ALLCRON=$( { crontab -l 2>/dev/null; sudo -u brain crontab -l 2>/dev/null; } )
+    echo "$ALLCRON" | grep -qE "git.*(commit|add)|auto.?commit" && echo "AUTOCOMMIT=yes" || echo "AUTOCOMMIT=no"
+    { echo "$ALLCRON"; systemctl list-timers --no-pager 2>/dev/null; } | grep -qiE "brief|morning" && echo "BRIEF=yes" || echo "BRIEF=no"
+    [ -d /home/brain/.claude/skills/cto ] && echo "TEAMKIT=yes" || echo "TEAMKIT=no"
     command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active" && echo "UFW=yes" || echo "UFW=no"
   ' 2>/dev/null)"
 
@@ -323,6 +329,23 @@ if [ "$SRV_OK" = "1" ]; then
 
   [ "$(g BACKUP)" = "yes" ] && ok "Бэкапы настроены" || { warn "Бэкапов не видно"; agentdo "настрой бэкап: снапшоты на сервере + ночное зеркало на мой компьютер (модуль 04)"; }
   [ "$(g UFW)"    = "yes" ] && ok "Файрвол включён" || warn "Файрвол выключен — займёмся после запуска (модуль 05)"
+
+  # --- сверка с definition of done ---
+  S_SKN="$(g SKILLSN)"
+  if [ "${S_SKN:-0}" -ge 5 ] 2>/dev/null; then ok "Скиллы на сервере: $S_SKN — бот видит команду"
+  else bad "На сервере нет скиллов ($S_SKN) — бот видит память, но не умеет ей пользоваться"; agentdo "перенеси ~/.claude/skills на сервер, в домашнюю папку пользователя мозга"; fi
+
+  if [ "$(g WHITELIST)" = "yes" ]; then ok "Белый список включён — бот отвечает только владельцу"
+  else bad "У бота НЕТ белого списка — любой посторонний тратит твою подписку"; agentdo "добавь проверку OWNER_USER_ID ДО вызова мозга — на текст, голосовые и фото"; fi
+
+  [ "$(g AUTOCOMMIT)" = "yes" ] && ok "Автокоммиты мозга настроены" \
+      || { warn "Автокоммитов не видно — правки мозга нечем откатывать"; agentdo "настрой автокоммиты второго мозга каждые 30 минут (auto-commit-backup)"; }
+
+  [ "$(g BRIEF)" = "yes" ] && ok "Утренний брифинг стоит в расписании" \
+      || { warn "Утреннего брифинга нет — это заодно проверка, что связка cron + бот + память жива"; agentdo "поставь утренний брифинг по расписанию (SETUP_MORNING_BRIEF)"; }
+
+  [ "$(g TEAMKIT)" = "yes" ] && ok "IT-команда на сервере есть (точка входа — cto)" \
+      || { warn "team-kit не установлен"; agentdo "поставь team-kit на сервер, точка входа — cto"; }
 fi
 
 # =============================================================================
