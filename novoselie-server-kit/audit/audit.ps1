@@ -104,6 +104,13 @@ if (Test-Path $skills) {
   foreach ($m in @("orchestrator","ikigai-provodnik")) {
     if (Test-Path (Join-Path $skills $m)) { OK "  скилл $m на месте" } else { WARN "  нет скилла $m" }
   }
+  $teamMiss = @()
+  foreach ($t in @("cto","secops","devops","code-reviewer","anthropic-academy","second-brain-audit")) {
+    if (-not (Test-Path (Join-Path $skills $t))) { $teamMiss += $t }
+  }
+  if ($teamMiss.Count -eq 0) { OK "  IT-команда на месте: cto, secops, devops, code-reviewer, academy, brain-audit" }
+  else { BAD ("  Нет технической команды: " + ($teamMiss -join ", ") + " — сервер будет собирать некому проверять")
+         AgentDo "поставь технические скиллы из папки skills рядом с заданием в ~/.claude/skills/ (ЭТАП 0)" }
 } else { BAD "Скиллы не установлены"; AgentDo "поставь пакет скиллов Модуля 1" }
 
 # ------------------------------------------------------- 4. Заготовки к серверу

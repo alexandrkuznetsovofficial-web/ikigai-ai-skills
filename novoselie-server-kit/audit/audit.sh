@@ -164,6 +164,14 @@ if [ -d "$SKILLS_DIR" ]; then
   for must in orchestrator ikigai-provodnik; do
     [ -d "$SKILLS_DIR/$must" ] && ok "  скилл $must на месте" || warn "  нет скилла $must"
   done
+  # техническая команда — ставится на ЭТАПЕ 0, до всякой стройки
+  TEAM_MISS=""
+  for t in cto secops devops code-reviewer anthropic-academy second-brain-audit; do
+    [ -d "$SKILLS_DIR/$t" ] || TEAM_MISS="${TEAM_MISS:+$TEAM_MISS, }$t"
+  done
+  if [ -z "$TEAM_MISS" ]; then ok "  IT-команда на месте: cto, secops, devops, code-reviewer, academy, brain-audit"
+  else bad "  Нет технической команды: $TEAM_MISS — сервер будет собирать некому проверять"
+       agentdo "поставь технические скиллы из папки skills рядом с заданием в ~/.claude/skills/ (ЭТАП 0)"; fi
 else
   bad "Скиллы не установлены (~/.claude/skills не существует)"; agentdo "поставь пакет скиллов Модуля 1"
 fi
