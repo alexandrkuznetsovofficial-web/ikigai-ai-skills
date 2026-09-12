@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env
+*.session
+state.json
+2fa.txt
+gcal_token.json
+gcal_credentials.json
