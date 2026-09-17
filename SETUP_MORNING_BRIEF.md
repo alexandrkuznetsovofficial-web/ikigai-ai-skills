@@ -8,6 +8,15 @@
 
 ## ВЫПОЛНИ НЕМЕДЛЕННО (без вопросов):
 
+### Шаг 0. Какая система
+
+Прочитай `~/.claude/ikigai_env.json` (профиль компьютера, его пишет скилл `ikigai-preflight`). Файла нет —
+запусти `bash ~/.claude/skills/ikigai-preflight/scripts/probe.sh`. Поле `os_branch`:
+
+- `mac` / `linux` — идёшь по шагам ниже как есть (расписание через `crontab`).
+- `windows` — команда Python `py -3` вместо `python3`, расписание через Планировщик задач (`schtasks`),
+  раздел «Шаг 4W» вместо «Шаг 4». Человеку не показывай `crontab`, `chmod`, `~` и `which`.
+
 ### Шаг 1. Аудит
 
 ```bash
@@ -185,7 +194,10 @@ if __name__ == "__main__":
 
 ---
 
-### Шаг 4. Пропиши cron
+### Шаг 4. Пропиши расписание — Mac и Linux (`os_branch` = `mac` или `linux`)
+
+🔴 Правило: crontab ставится ТОЛЬКО из файла, и после установки сверяется число строк — иначе одна ошибка
+в команде обнуляет все задачи пользователя.
 
 ```bash
 # Определить CRON_HOUR = (8 - TZ_OFFSET) % 24
@@ -193,21 +205,51 @@ if __name__ == "__main__":
 PYTHON_BIN=$(which python3)
 CRON_HOUR=ВЫЧИСЛИ  # (8 - TZ_OFFSET) % 24
 
-(crontab -l 2>/dev/null; echo "0 ${CRON_HOUR} * * * ${PYTHON_BIN} ~/morning_brief.py >> ~/morning_brief.log 2>&1  # Утренний брифинг 08:00") | crontab -
+crontab -l > /tmp/cron_before.txt 2>/dev/null || : ; wc -l < /tmp/cron_before.txt
+cp /tmp/cron_before.txt /tmp/cron_new.txt
+echo "0 ${CRON_HOUR} * * * ${PYTHON_BIN} \$HOME/morning_brief.py >> \$HOME/morning_brief.log 2>&1  # Утренний брифинг 08:00" >> /tmp/cron_new.txt
+crontab /tmp/cron_new.txt
+crontab -l | wc -l   # должно быть на 1 больше, чем было
 ```
+
+### Шаг 4W. Пропиши расписание — Windows (`os_branch` = `windows`)
+
+На Windows нет `crontab`. Расписание живёт в Планировщике задач, ставится одной командой `schtasks`.
+Путь к скрипту бери из профиля (`home`), полностью, без `~`:
+
+```bash
+schtasks /create /f /sc daily /st 08:00 /tn "IkigaiMorningBrief" \
+  /tr "py -3 \"C:\Users\<ИМЯ>\morning_brief.py\""
+```
+
+Проверка (её результат покажи человеку):
+
+```bash
+schtasks /query /tn "IkigaiMorningBrief"
+```
+
+Задача в списке — расписание встало. Времени брать не «08:00 UTC», а 08:00 по часам самого компьютера:
+Планировщик работает в локальном времени, пересчёт часовых поясов здесь не нужен.
 
 ---
 
 ### Шаг 5. Тест и отчёт
 
 ```bash
-python3 ~/morning_brief.py
+python3 ~/morning_brief.py      # Windows: py -3 ~/morning_brief.py
 ```
 
 Убедись что вывод заканчивается `TG: OK` и в Telegram пришло сообщение.
 
 ```bash
-crontab -l | grep morning_brief
+crontab -l | grep morning_brief                 # Mac и Linux
+tail -5 ~/morning_brief.log 2>/dev/null
+```
+
+Windows — то же самое двумя командами:
+
+```bash
+schtasks /query /tn "IkigaiMorningBrief"
 tail -5 ~/morning_brief.log 2>/dev/null
 ```
 

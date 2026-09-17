@@ -810,18 +810,19 @@ awesome-claude-skills (karanb192/awesome-claude-skills), AI-Поток Икиг�
 
 **Требования:** Python 3.9+, ~500MB диска, Mac/Linux или Windows
 
-> **Если Python не установлен:**  
-> Mac: `brew install python3` (нужен Homebrew) или скачай с python.org  
-> Windows: скачай с python.org → при установке поставь галочку «Add Python to PATH»
+> **Если Python не установлен** (профиль компьютера, поле `python_cmd`, пустой):
+> Mac: скачай с python.org — на свежих macOS Python уже есть, отдельно ставить обычно не нужно.
+> Windows: Microsoft Store → «Python 3» (ставится без прав администратора и сразу попадает в PATH).
+> Команда Python дальше: Mac и Linux — `python3`, Windows — `py -3`.
 
 ```bash
-# Mac / Linux — в терминале:
+# Mac / Linux:
 python3 -m venv ~/brain-rag
 ~/brain-rag/bin/pip install chromadb
 
-# Windows — в PowerShell:
-python -m venv $env:USERPROFILE\brain-rag
-$env:USERPROFILE\brain-rag\Scripts\pip install chromadb
+# Windows (Claude Code выполняет через Git Bash):
+py -3 -m venv ~/brain-rag
+~/brain-rag/Scripts/pip install chromadb
 ```
 
 Содержимое `second-brain/rag_indexer.py`:
@@ -899,13 +900,27 @@ if __name__ == "__main__":
 ~/brain-rag/bin/python3 rag_indexer.py   # первая индексация (~80MB модель, один раз)
 ~/brain-rag/bin/python3 rag_query.py "что я решал про ценообразование"  # тест
 
-# Windows (PowerShell):
-& "$env:USERPROFILE\brain-rag\Scripts\python" rag_indexer.py
-& "$env:USERPROFILE\brain-rag\Scripts\python" rag_query.py "что я решал про ценообразование"
+# Windows (Claude Code выполняет через Git Bash — путь с Scripts, не bin):
+~/brain-rag/Scripts/python rag_indexer.py
+~/brain-rag/Scripts/python rag_query.py "что я решал про ценообразование"
+```
 
-# Автоматическая индексация:
-# Mac/Linux (cron): 0 3 * * * cd /path/to/second-brain && ~/brain-rag/bin/python3 rag_indexer.py
-# Windows (Task Scheduler): создай задачу запускающую python rag_indexer.py ежедневно в 03:00
+Признак, что уровень 4 собран: первая команда напечатала `{"indexed": N, ...}` с N больше нуля, вторая —
+список файлов с процентами похожести. Пустой список при непустой `memory/` означает, что индексация не дошла.
+
+Автоматическая индексация раз в сутки:
+
+```bash
+# Mac / Linux — crontab ставится только из файла, со сверкой числа строк:
+crontab -l > /tmp/cron_before.txt 2>/dev/null || : ; wc -l < /tmp/cron_before.txt
+cp /tmp/cron_before.txt /tmp/cron_new.txt
+echo "0 3 * * * cd \$HOME/second-brain && \$HOME/brain-rag/bin/python3 rag_indexer.py" >> /tmp/cron_new.txt
+crontab /tmp/cron_new.txt ; crontab -l | wc -l
+
+# Windows — Планировщик задач, путь полностью, без ~ (значение home из профиля):
+schtasks /create /f /sc daily /st 03:00 /tn "IkigaiRagIndex" \
+  /tr "\"C:\Users\<ИМЯ>\brain-rag\Scripts\python.exe\" \"C:\Users\<ИМЯ>\second-brain\rag_indexer.py\""
+schtasks /query /tn "IkigaiRagIndex"
 ```
 
 ### Как использовать с Claude Code
@@ -917,7 +932,7 @@ if __name__ == "__main__":
 
 Перед поиском информации в memory/ — сначала запускай:
 Mac/Linux: ~/brain-rag/bin/python3 rag_query.py "<вопрос>"
-Windows:   & "$env:USERPROFILE\brain-rag\Scripts\python" rag_query.py "<вопрос>"
+Windows:   ~/brain-rag/Scripts/python rag_query.py "<вопрос>"
 
 Это вернёт топ-5 файлов по теме. Читай только их, а не всю memory/.
 ```

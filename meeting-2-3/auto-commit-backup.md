@@ -29,7 +29,10 @@ author: ikigai-community.com / alexandr_ic
 
 ### Шаг 0. Определи окружение
 
-1. Определи ОС: macOS или Windows.
+1. **Прочитай профиль компьютера** — `~/.claude/ikigai_env.json` (его пишет скилл `ikigai-preflight`).
+   Файла нет или он старше 30 дней — сначала запусти `bash ~/.claude/skills/ikigai-preflight/scripts/probe.sh`.
+   Поле `os_branch` (`mac` / `windows` / `linux`) определяет, какую колонку команд брать дальше.
+   🔴 На Windows человеку не показывай команды с `chmod`, `bash`, `~`, `brew`, `launchctl` — он решит, что сломался он.
 2. Проверь установлен ли git (`git --version`).
    - macOS: если нет — `xcode-select --install` (предупреди пользователя, что выскочит окно установки, надо нажать «Установить»).
    - Windows: если нет — установи через `winget install --id Git.Git -e --source winget`, затем перезапусти терминальную сессию.
@@ -188,6 +191,10 @@ schtasks /create /f /sc minute /mo 30 /tn "AutoCommitBackup" /tr "powershell -Wi
 2. Проверь `git log --oneline -3` в каждой папке — должен появиться коммит `auto-backup ...` (или «initial backup», если изменений с тех пор не было).
 3. macOS: `launchctl list | grep auto-commit` — задача в списке.
    Windows: `schtasks /query /tn "AutoCommitBackup"` — задача существует.
+   Признак для человека: выполни шаг и покажи ему строку из вывода, где видно имя задачи. Пока строки нет —
+   расписание не встало, и говорить «настроено» нельзя.
+   🔴 Windows, частая причина: `schtasks` из Git Bash иногда не видит переменную `%USERPROFILE%` в кавычках.
+   Подставь в команду полный путь к скрипту (значение `home` из профиля + `\scripts\auto_commit_backup.ps1`).
 4. macOS: предупреди пользователя — при первом фоновом запуске система может один раз спросить «bash хочет получить доступ к папке Документы» → нажать **«Разрешить»**, иначе бэкапы папок в Документах не пойдут.
 
 ### Шаг 6 (опционально, но советуем). Облачная копия — GitHub

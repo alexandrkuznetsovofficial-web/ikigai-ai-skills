@@ -243,7 +243,7 @@ D) **Другое** — напиши что именно
 
 ```bash
 # В терминале, из папки second-brain:
-python3 -m venv brain-rag
+python3 -m venv brain-rag      # Windows: py -3 -m venv brain-rag
 brain-rag/bin/pip install chromadb
 ```
 
@@ -253,10 +253,10 @@ brain-rag/bin/pip install chromadb
 
 ```bash
 # Индексировать память (первый раз — 2 минуты, скачает модель)
-./brain-rag/bin/python3 rag_indexer.py
+./brain-rag/bin/python3 rag_indexer.py      # Windows: ./brain-rag/Scripts/python rag_indexer.py
 
 # Поиск по смыслу (не по ключевым словам!)
-./brain-rag/bin/python3 rag_query.py "что я решал по найму команды"
+./brain-rag/bin/python3 rag_query.py "что я решал по найму команды"   # Windows: ./brain-rag/Scripts/python rag_query.py "…"
 ```
 
 ### Добавь в CLAUDE.md
@@ -264,7 +264,7 @@ brain-rag/bin/pip install chromadb
 ```markdown
 ## Поиск в памяти
 Перед тем как читать файлы из memory/ — запускай:
-`~/brain-rag/bin/python3 rag_query.py "<вопрос>"`
+`~/brain-rag/bin/python3 rag_query.py "<вопрос>"` (Windows: `~/brain-rag/Scripts/python rag_query.py "<вопрос>"`)
 Получишь топ-5 файлов по теме — читай только их.
 ```
 
