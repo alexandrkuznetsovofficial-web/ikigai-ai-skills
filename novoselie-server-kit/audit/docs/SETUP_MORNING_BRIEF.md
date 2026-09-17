@@ -193,7 +193,13 @@ if __name__ == "__main__":
 PYTHON_BIN=$(which python3)
 CRON_HOUR=ВЫЧИСЛИ  # (8 - TZ_OFFSET) % 24
 
-(crontab -l 2>/dev/null; echo "0 ${CRON_HOUR} * * * ${PYTHON_BIN} ~/morning_brief.py >> ~/morning_brief.log 2>&1  # Утренний брифинг 08:00") | crontab -
+crontab -l > /tmp/cron_before_$$.txt 2>/dev/null || : ; BEFORE=$(wc -l < /tmp/cron_before_$$.txt)
+grep -q "morning_brief" /tmp/cron_before_$$.txt && echo "УЖЕ СТОИТ" || {
+  cp /tmp/cron_before_$$.txt /tmp/cron_new_$$.txt
+  echo "0 ${CRON_HOUR} * * * ${PYTHON_BIN} \$HOME/morning_brief.py >> \$HOME/morning_brief.log 2>&1  # Утренний брифинг 08:00" >> /tmp/cron_new_$$.txt
+  [ "$(wc -l < /tmp/cron_new_$$.txt)" -gt "$BEFORE" ] && crontab /tmp/cron_new_$$.txt || echo "СТОП: не ставим"
+}
+crontab -l | wc -l
 ```
 
 ---

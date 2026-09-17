@@ -168,17 +168,30 @@ launchctl unload ~/Library/LaunchAgents/com.user.auto-commit-backup.plist 2>/dev
 launchctl load ~/Library/LaunchAgents/com.user.auto-commit-backup.plist
 ```
 
-**Windows** — задача в Планировщике:
-```
-schtasks /create /f /sc minute /mo 30 /tn "AutoCommitBackup" /tr "powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\scripts\auto_commit_backup.ps1"
+**Windows** — задача в Планировщике. Два правила, иначе шаг не встанет:
+путь бери из поля `home_win` профиля (`C:\Users\Иван`), а не из `home` (`/c/Users/Иван`);
+и не вызывай `schtasks` напрямую из bash — Git Bash переписывает аргументы с одиночным слешем в пути.
+
+```bash
+HOME_WIN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/ikigai_env.json')))['home_win'])")
+powershell -NoProfile -Command "schtasks /create /f /sc minute /mo 30 /tn 'AutoCommitBackup' /tr 'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File \"$HOME_WIN\\scripts\\auto_commit_backup.ps1\"' /rl LIMITED"
 ```
 
 **Linux / VPS-сервер** — если пользователь работает на виртуальном сервере (или хочет защитить и его):
 1. Тот же bash-скрипт что для macOS, положи в `/opt/scripts/auto_commit_backup.sh` (лог — в `/var/log/auto_commit_backup.log`), `chmod +x`.
 2. Расписание через cron:
    ```
-   (crontab -l 2>/dev/null; echo "*/30 * * * * /opt/scripts/auto_commit_backup.sh") | crontab -
+   crontab -l > /tmp/cron_before_$$.txt 2>/dev/null || : ; BEFORE=$(wc -l < /tmp/cron_before_$$.txt)
+   grep -q "auto_commit_backup" /tmp/cron_before_$$.txt && echo "УЖЕ СТОИТ — второй раз не добавляем" || {
+     cp /tmp/cron_before_$$.txt /tmp/cron_new_$$.txt
+     echo "*/30 * * * * /opt/scripts/auto_commit_backup.sh >> /var/log/auto_commit_backup.log 2>&1" >> /tmp/cron_new_$$.txt
+     AFTER=$(wc -l < /tmp/cron_new_$$.txt)
+     [ "$AFTER" -gt "$BEFORE" ] && crontab /tmp/cron_new_$$.txt || echo "СТОП: новый файл не больше старого, не ставим"
+   }
+   crontab -l | wc -l   # должно быть на 1 больше, чем BEFORE
    ```
+   🔴 Никогда не ставь расписание конструкцией `(crontab -l; echo …) | crontab -`: если `crontab -l`
+   отдаст пусто по любой причине, в таблице останется одна строка, а все прежние задачи человека исчезнут.
 3. Проверь `git config user.name` на сервере — если пусто, настрой.
 
 > **Важно про VPS:** сервер — это НЕ бэкап, это просто другой компьютер. Хостер может удалить VM, диск может умереть, оплата может закончиться. Правило одно для всех машин: коммит каждые 30 минут + push в приватный GitHub (Шаг 6). Для VPS облачная копия даже важнее, чем для ноутбука.
@@ -190,11 +203,11 @@ schtasks /create /f /sc minute /mo 30 /tn "AutoCommitBackup" /tr "powershell -Wi
 1. Запусти скрипт вручную один раз (bash / powershell — на Windows с флагом `-ExecutionPolicy Bypass`).
 2. Проверь `git log --oneline -3` в каждой папке — должен появиться коммит `auto-backup ...` (или «initial backup», если изменений с тех пор не было).
 3. macOS: `launchctl list | grep auto-commit` — задача в списке.
-   Windows: `schtasks /query /tn "AutoCommitBackup"` — задача существует.
-   Признак для человека: выполни шаг и покажи ему строку из вывода, где видно имя задачи. Пока строки нет —
-   расписание не встало, и говорить «настроено» нельзя.
-   🔴 Windows, частая причина: `schtasks` из Git Bash иногда не видит переменную `%USERPROFILE%` в кавычках.
-   Подставь в команду полный путь к скрипту (значение `home` из профиля + `\scripts\auto_commit_backup.ps1`).
+   Windows: `powershell -NoProfile -Command "schtasks /query /tn 'AutoCommitBackup'"` — задача существует.
+   Признак для человека: покажи ему строку вывода с именем задачи. Пока строки нет — расписание не встало,
+   и говорить «настроено» нельзя.
+   🔴 И даже строка в списке — ещё не гарантия: если компьютер в момент запуска спит, задача пропустится.
+   Настоящий признак — новый коммит `auto-backup …` в `git log` через час работы.
 4. macOS: предупреди пользователя — при первом фоновом запуске система может один раз спросить «bash хочет получить доступ к папке Документы» → нажать **«Разрешить»**, иначе бэкапы папок в Документах не пойдут.
 
 ### Шаг 6 (опционально, но советуем). Облачная копия — GitHub

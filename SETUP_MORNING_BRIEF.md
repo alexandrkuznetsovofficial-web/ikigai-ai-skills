@@ -205,11 +205,13 @@ if __name__ == "__main__":
 PYTHON_BIN=$(which python3)
 CRON_HOUR=ВЫЧИСЛИ  # (8 - TZ_OFFSET) % 24
 
-crontab -l > /tmp/cron_before.txt 2>/dev/null || : ; wc -l < /tmp/cron_before.txt
-cp /tmp/cron_before.txt /tmp/cron_new.txt
-echo "0 ${CRON_HOUR} * * * ${PYTHON_BIN} \$HOME/morning_brief.py >> \$HOME/morning_brief.log 2>&1  # Утренний брифинг 08:00" >> /tmp/cron_new.txt
-crontab /tmp/cron_new.txt
-crontab -l | wc -l   # должно быть на 1 больше, чем было
+crontab -l > /tmp/cron_before_$$.txt 2>/dev/null || : ; BEFORE=$(wc -l < /tmp/cron_before_$$.txt)
+grep -q "morning_brief" /tmp/cron_before_$$.txt && echo "УЖЕ СТОИТ — второй раз не добавляем, иначе брифинг придёт дважды" || {
+  cp /tmp/cron_before_$$.txt /tmp/cron_new_$$.txt
+  echo "0 ${CRON_HOUR} * * * ${PYTHON_BIN} \$HOME/morning_brief.py >> \$HOME/morning_brief.log 2>&1  # Утренний брифинг 08:00" >> /tmp/cron_new_$$.txt
+  [ "$(wc -l < /tmp/cron_new_$$.txt)" -gt "$BEFORE" ] && crontab /tmp/cron_new_$$.txt || echo "СТОП: новый файл не больше старого, не ставим"
+}
+crontab -l | wc -l   # должно быть на 1 больше, чем BEFORE
 ```
 
 ### Шаг 4W. Пропиши расписание — Windows (`os_branch` = `windows`)
@@ -217,19 +219,29 @@ crontab -l | wc -l   # должно быть на 1 больше, чем был�
 На Windows нет `crontab`. Расписание живёт в Планировщике задач, ставится одной командой `schtasks`.
 Путь к скрипту бери из профиля (`home`), полностью, без `~`:
 
+🔴 Две вещи, на которых этот шаг ломается, если сделать наивно:
+- **Путь бери из поля `home_win` профиля** (`C:\Users\Иван`), а не из `home` (`/c/Users/Иван`).
+  Второй формат понимает только Git Bash, Планировщик и `py.exe` на нём спотыкаются.
+- **`schtasks` не вызывай напрямую из bash:** Git Bash переписывает аргументы, начинающиеся с одиночного
+  слеша, в пути, и `/create` превратится в `C:/Program Files/Git/create`. Вызывай через PowerShell.
+
 ```bash
-schtasks /create /f /sc daily /st 08:00 /tn "IkigaiMorningBrief" \
-  /tr "py -3 \"C:\Users\<ИМЯ>\morning_brief.py\""
+HOME_WIN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/ikigai_env.json')))['home_win'])")
+powershell -NoProfile -Command "schtasks /create /f /sc daily /st 08:00 /tn 'IkigaiMorningBrief' /tr 'py -3 \"$HOME_WIN\\morning_brief.py\"' /rl LIMITED"
 ```
 
 Проверка (её результат покажи человеку):
 
 ```bash
-schtasks /query /tn "IkigaiMorningBrief"
+powershell -NoProfile -Command "schtasks /query /tn 'IkigaiMorningBrief' /fo LIST | Select-String 'TaskName|Next Run|Status'"
 ```
 
-Задача в списке — расписание встало. Времени брать не «08:00 UTC», а 08:00 по часам самого компьютера:
-Планировщик работает в локальном времени, пересчёт часовых поясов здесь не нужен.
+Время — 08:00 по часам самого компьютера, Планировщик работает в локальном времени.
+
+🔴 **Задача в списке — это ещё не признак готовности.** Если ноутбук в 08:00 спит или выключен, задача
+просто не сработает и не догонит. Признак один: **сообщение реально пришло в Telegram**. Поэтому после
+установки запусти скрипт руками (шаг 5) и, если человеку нужно надёжно, добавь в задачу «запускать при
+первой возможности после пропуска» — в Планировщике это галочка в свойствах задачи, вкладка «Условия».
 
 ---
 
@@ -249,9 +261,11 @@ tail -5 ~/morning_brief.log 2>/dev/null
 Windows — то же самое двумя командами:
 
 ```bash
-schtasks /query /tn "IkigaiMorningBrief"
+powershell -NoProfile -Command "schtasks /query /tn 'IkigaiMorningBrief'"
 tail -5 ~/morning_brief.log 2>/dev/null
 ```
+Признак готовности — не строка в списке задач, а **пришедшее сообщение в Telegram**: спящий в 08:00 ноутбук
+задачу пропустит и не догонит.
 
 После успешного теста напиши пользователю итоговый отчёт в формате:
 

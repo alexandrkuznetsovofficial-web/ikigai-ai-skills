@@ -22,7 +22,7 @@ OS_VERSION=""
 if [ "$OS_BRANCH" = "mac" ]; then
   OS_VERSION="$(sw_vers -productVersion 2>/dev/null)"
 elif [ "$OS_BRANCH" = "windows" ]; then
-  OS_VERSION="$(cmd.exe /c ver 2>/dev/null | tr -d '\r' | grep -o '[0-9][0-9.]*' | head -1)"
+  OS_VERSION="$(cmd.exe /c ver < /dev/null 2>/dev/null | tr -d '\r' | grep -o '[0-9][0-9.]*' | head -1)"
 else
   OS_VERSION="$(uname -r 2>/dev/null)"
 fi
@@ -34,11 +34,15 @@ LOCALAPP=""; APPDATA_U=""; PROGFILES=""
 if [ "$OS_BRANCH" = "windows" ]; then
   LOCALAPP="$(to_unix "${LOCALAPPDATA:-}")"
   APPDATA_U="$(to_unix "${APPDATA:-}")"
-  PROGFILES="$(to_unix "${PROGRAMFILES:-C:\\Program Files}")"
+  PROGFILES="$(to_unix "${ProgramFiles:-${PROGRAMFILES:-C:\\Program Files}}")"
+  # Имя переменной с круглыми скобками через ${...} подставить нельзя — читаем через printenv.
+  PF86_RAW="$(printenv 'ProgramFiles(x86)' 2>/dev/null || printenv 'PROGRAMFILES(X86)' 2>/dev/null || printf 'C:\\Program Files (x86)')"
+  PROGFILES_X86="$(to_unix "$PF86_RAW")"
   # Запасной путь: в Git Bash HOME = /c/Users/<имя>, а переменные Windows иногда не пробрасываются.
   [ -d "$LOCALAPP" ] || LOCALAPP="$HOME_DIR/AppData/Local"
   [ -d "$APPDATA_U" ] || APPDATA_U="$HOME_DIR/AppData/Roaming"
   [ -d "$PROGFILES" ] || PROGFILES="/c/Program Files"
+  [ -d "$PROGFILES_X86" ] || PROGFILES_X86="/c/Program Files (x86)"
 fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -48,10 +52,12 @@ ver_of() { "$@" 2>/dev/null | head -1 | tr -d '\r'; }
 CLAUDE_CLI=""
 if have claude; then CLAUDE_CLI="$(ver_of claude --version)"; fi
 CLAUDE_SIGNED="unknown"
-if [ "$OS_BRANCH" = "mac" ]; then
-  if security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1; then CLAUDE_SIGNED="yes"; else CLAUDE_SIGNED="no"; fi
-else
-  if [ -s "$HOME_DIR/.claude/.credentials.json" ]; then CLAUDE_SIGNED="yes"; else CLAUDE_SIGNED="no"; fi
+# Проверяем только ФАКТ наличия записи, содержимое не читаем.
+CLAUDE_SIGNED="no"
+if [ "$OS_BRANCH" = "mac" ] && security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1; then
+  CLAUDE_SIGNED="yes"
+elif [ -s "$HOME_DIR/.claude/.credentials.json" ]; then
+  CLAUDE_SIGNED="yes"   # корпоративный профиль или недоступная связка ключей — тоже валидный вход
 fi
 
 # ---------- VS Code ----------
@@ -61,6 +67,7 @@ if [ -z "$VSCODE" ]; then
   if [ "$OS_BRANCH" = "mac" ] && [ -d "/Applications/Visual Studio Code.app" ]; then VSCODE="app"; fi
   if [ "$OS_BRANCH" = "windows" ]; then
     for p in "$LOCALAPP/Programs/Microsoft VS Code/Code.exe" "$PROGFILES/Microsoft VS Code/Code.exe" \
+             "$PROGFILES_X86/Microsoft VS Code/Code.exe" \
              "$HOME_DIR/AppData/Local/Programs/Microsoft VS Code/Code.exe"; do
       [ -f "$p" ] && VSCODE="app" && break
     done
@@ -101,15 +108,26 @@ elif [ "$OS_BRANCH" = "windows" ]; then
 fi
 if [ -n "$HANDY_SETTINGS" ]; then
   HANDY="yes"
-  # ищем выбранную модель в json-настройках (значение печатаем как есть, без ключей)
-  M="$(grep -rhoE '"(selected_model|model|current_model)"[[:space:]]*:[[:space:]]*"[^"]*"' "$HANDY_SETTINGS" 2>/dev/null | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+  # Только небольшие json-настройки: в этой же папке лежат модели на гигабайты и записи голоса —
+  # рекурсивный grep по ней занимает десятки секунд и может втянуть в профиль сырые байты.
+  # Один проход find + grep: путь к настройкам содержит пробелы («Application Support»),
+  # поэтому никакого перебора через $(...) — иначе путь разорвётся по словам.
+  M="$(find "$HANDY_SETTINGS" -maxdepth 2 -type f -name '*.json' -size -512k \
+        -exec grep -hoE '"(selected_model|current_model|model)"[[:space:]]*:[[:space:]]*"[^"]*"' {} + 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+  # В профиль попадает только печатный ASCII-безопасный остаток, не длиннее 60 знаков:
+  # управляющий символ в значении сделал бы JSON невалидным, и правило А0 сломалось бы у всех китов.
+  M="$(printf '%s' "$M" | tr -d '\000-\037' | tr -cd '[:print:]' | cut -c1-60)"
   [ -n "$M" ] && HANDY_MODEL="$M"
 fi
 
 # ---------- рабочая папка (второй мозг) ----------
 WS="$(pwd)"
 WS_HAS_CLAUDE_MD="no"; [ -f "$WS/CLAUDE.md" ] && WS_HAS_CLAUDE_MD="yes"
-WS_LATIN="yes"; printf '%s' "$WS" | LC_ALL=C grep -q '[^ -~]' && WS_LATIN="no"
+# Различаем два случая. Имя рабочей папки человек переименовать может, а имя своей учётной записи
+# (кириллица в C:\Users\Иван) — нет, и предлагать ему это опасно: так ломают профиль Windows.
+WS_LATIN="yes"; printf '%s' "$(basename "$WS")" | LC_ALL=C grep -q '[^ -~]' && WS_LATIN="no"
+HOME_LATIN="yes"; printf '%s' "$HOME_DIR" | LC_ALL=C grep -q '[^ -~]' && HOME_LATIN="no"
 SKILLS_DIR="$HOME_DIR/.claude/skills"
 SKILLS_COUNT=0; [ -d "$SKILLS_DIR" ] && SKILLS_COUNT="$(find "$SKILLS_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
 
@@ -119,15 +137,24 @@ WHISPER="no"; have whisper-cli && WHISPER="yes"
 BREW="no"; have brew && BREW="yes"
 
 # ---------- запись профиля ----------
-CHECKED_AT="$(date '+%Y-%m-%dT%H:%M:%S')"
+CHECKED_AT="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+# Windows-команды (Планировщик, py.exe, PowerShell) не понимают путь вида /c/Users/Иван,
+# поэтому кладём в профиль оба формата: home для Git Bash, home_win для нативных программ.
+HOME_WIN="$HOME_DIR"; WS_WIN="$WS"
+if [ "$OS_BRANCH" = "windows" ] && command -v cygpath >/dev/null 2>&1; then
+  HOME_WIN="$(cygpath -w "$HOME_DIR" 2>/dev/null || printf '%s' "$HOME_DIR")"
+  WS_WIN="$(cygpath -w "$WS" 2>/dev/null || printf '%s' "$WS")"
+fi
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-JSON=$(printf '{"probe_version":"%s","checked_at":"%s","os":"%s","os_branch":"%s","os_version":"%s","arch":"%s","home":"%s","claude_cli":"%s","claude_signed_in":"%s","vscode":"%s","vscode_ext_claude":"%s","git":"%s","node":"%s","python_cmd":"%s","python":"%s","handy":"%s","handy_model":"%s","workspace":"%s","workspace_has_claude_md":"%s","workspace_latin":"%s","skills_dir":"%s","skills_count":%s,"ffmpeg":"%s","whisper_cli":"%s","brew":"%s"}' \
-  "$PROBE_VERSION" "$CHECKED_AT" "$(esc "$UNAME")" "$OS_BRANCH" "$(esc "$OS_VERSION")" "$(esc "$ARCH")" "$(esc "$HOME_DIR")" \
+JSON=$(printf '{"probe_version":"%s","checked_at":"%s","os":"%s","os_branch":"%s","os_version":"%s","arch":"%s","home":"%s","home_win":"%s","workspace_win":"%s","claude_cli":"%s","claude_signed_in":"%s","vscode":"%s","vscode_ext_claude":"%s","git":"%s","node":"%s","python_cmd":"%s","python":"%s","handy":"%s","handy_model":"%s","workspace":"%s","workspace_has_claude_md":"%s","workspace_latin":"%s","skills_dir":"%s","skills_count":%s,"ffmpeg":"%s","whisper_cli":"%s","brew":"%s","home_latin":"%s"}' \
+  "$PROBE_VERSION" "$CHECKED_AT" "$(esc "$UNAME")" "$OS_BRANCH" "$(esc "$OS_VERSION")" "$(esc "$ARCH")" "$(esc "$HOME_DIR")" "$(esc "$HOME_WIN")" "$(esc "$WS_WIN")" \
   "$(esc "$CLAUDE_CLI")" "$CLAUDE_SIGNED" "$(esc "$VSCODE")" "$VSCODE_EXT_CLAUDE" "$(esc "$GIT_V")" "$(esc "$NODE_V")" \
   "$(esc "$PY_CMD")" "$(esc "$PY_V")" "$HANDY" "$(esc "$HANDY_MODEL")" "$(esc "$WS")" "$WS_HAS_CLAUDE_MD" "$WS_LATIN" \
-  "$(esc "$SKILLS_DIR")" "${SKILLS_COUNT:-0}" "$FFMPEG" "$WHISPER" "$BREW")
+  "$(esc "$SKILLS_DIR")" "${SKILLS_COUNT:-0}" "$FFMPEG" "$WHISPER" "$BREW" "$HOME_LATIN")
+PROFILE_PATH="$HOME_DIR/.claude/ikigai_env.json"
+PROFILE_OK="no"
 mkdir -p "$HOME_DIR/.claude" 2>/dev/null
-printf '%s\n' "$JSON" > "$HOME_DIR/.claude/ikigai_env.json" 2>/dev/null
+if printf '%s\n' "$JSON" > "$PROFILE_PATH" 2>/dev/null && [ -s "$PROFILE_PATH" ]; then PROFILE_OK="yes"; fi
 
 if [ "$ONLY_JSON" = "1" ]; then printf '%s\n' "$JSON"; exit 0; fi
 
@@ -157,6 +184,7 @@ if [ -n "$PY_CMD" ]; then ok "Python: $PY_V (команда: $PY_CMD)"; else
 if [ -n "$NODE_V" ]; then ok "Node.js $NODE_V"; else warn "Node.js нет (для нашей сборки не обязателен)"; fi
 if [ "$HANDY" = "yes" ]; then
   case "$HANDY_MODEL" in
+    *\.en*|*_en*|*distil*) bad "Handy стоит, но модель $HANDY_MODEL — англоязычная → Handy → Модели → скачать Whisper (многоязычная) или Parakeet V3 → выбрать";;
     *v3*|*V3*) ok "Handy стоит, модель $HANDY_MODEL (многоязычная, русский понимает) — проверь диктовкой, что она скачана";;
     *[Pp]arakeet*) bad "Handy стоит, но модель $HANDY_MODEL — английская → Handy → Модели → скачать Whisper (многоязычная) или Parakeet V3 → выбрать";;
     unknown) warn "Handy стоит, модель не смог прочитать → проверь диктовкой: Блокнот, горячая клавиша, фраза по-русски";;
@@ -164,11 +192,13 @@ if [ "$HANDY" = "yes" ]; then
   esac
 else warn "Handy не найден (голосовой ввод; не обязателен, есть микрофон VS Code)"; fi
 if [ "$WS_HAS_CLAUDE_MD" = "yes" ]; then ok "рабочая папка с CLAUDE.md: $WS"; else warn "в текущей папке нет CLAUDE.md — открой папку второго мозга: File → Open Folder"; fi
-if [ "$WS_LATIN" = "no" ]; then bad "в пути рабочей папки есть не-латинские символы → переименуй папку латиницей (SecondBrain)"; fi
+if [ "$WS_LATIN" = "no" ]; then bad "имя рабочей папки не латиницей → переименуй её латиницей (например SecondBrain) и открой заново: File → Open Folder"; fi
+if [ "$HOME_LATIN" = "no" ]; then warn "в имени твоей учётной записи есть кириллица — учётку переименовывать НЕ нужно и нельзя. Если инструмент споткнётся о путь, перенесём папку мозга в корень диска (например C:\\SecondBrain)"; fi
 printf '  📚 скиллов в %s: %s\n' "$SKILLS_DIR" "${SKILLS_COUNT:-0}"
 if [ "$OS_BRANCH" = "mac" ]; then
   [ "$FFMPEG" = "yes" ] && ok "ffmpeg есть (для рилс-пака)" || warn "ffmpeg нет (нужен только рилс-паку: brew install ffmpeg)"
   [ "$WHISPER" = "yes" ] && ok "whisper-cli есть" || warn "whisper-cli нет (нужен только рилс-паку: brew install whisper-cpp)"
 fi
-printf '  💾 профиль записан: %s/.claude/ikigai_env.json\n\n' "$HOME_DIR"
+if [ "$PROFILE_OK" = "yes" ]; then printf '  💾 профиль записан: %s\n\n' "$PROFILE_PATH"
+else printf '  ❌ профиль НЕ записан: %s недоступен для записи. На корпоративном ноутбуке это бывает — скажи об этом человеку, дальше работай по таблице выше, не ссылаясь на профиль.\n\n' "$PROFILE_PATH"; fi
 printf '%s\n' "$JSON"

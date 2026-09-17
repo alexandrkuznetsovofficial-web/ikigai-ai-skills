@@ -243,8 +243,8 @@ D) **Другое** — напиши что именно
 
 ```bash
 # В терминале, из папки second-brain:
-python3 -m venv brain-rag      # Windows: py -3 -m venv brain-rag
-brain-rag/bin/pip install chromadb
+python3 -m venv brain-rag            # Windows: py -3 -m venv brain-rag
+brain-rag/bin/pip install chromadb   # Windows: brain-rag/Scripts/pip install chromadb
 ```
 
 Создай два файла: `rag_indexer.py` и `rag_query.py` — полные тексты скриптов в скилле `second-brain-os.md` (секция «Уровень 4 — RAG»).

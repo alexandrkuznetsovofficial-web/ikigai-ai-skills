@@ -808,12 +808,18 @@ awesome-claude-skills (karanb192/awesome-claude-skills), AI-Поток Икиг�
 
 ### Установка (10 минут, один раз)
 
-**Требования:** Python 3.9+, ~500MB диска, Mac/Linux или Windows
+**Требования:** Python 3.9+, ~500MB диска, Mac и Linux — путь обкатан, Windows — 🧪 по документации
 
 > **Если Python не установлен** (профиль компьютера, поле `python_cmd`, пустой):
 > Mac: скачай с python.org — на свежих macOS Python уже есть, отдельно ставить обычно не нужно.
 > Windows: Microsoft Store → «Python 3» (ставится без прав администратора и сразу попадает в PATH).
 > Команда Python дальше: Mac и Linux — `python3`, Windows — `py -3`.
+>
+> 🔴 **Windows, честная оговорка.** Библиотека поиска собирается не под все свежие версии Python: если при
+> установке вылезло `Microsoft Visual C++ 14.0 or greater is required` — это тупик на час, и он того не стоит.
+> Сначала попробуй более обкатанную версию (`py -3.12 -m venv ...`). Не помогло — **уровень 4 пропускаем**,
+> он необязательный: система работает и без него, а поиск делает сам Claude по папке `memory/`.
+> Скажи это человеку прямо, не оставляй его воевать со сборкой.
 
 ```bash
 # Mac / Linux:
@@ -910,17 +916,28 @@ if __name__ == "__main__":
 
 Автоматическая индексация раз в сутки:
 
-```bash
-# Mac / Linux — crontab ставится только из файла, со сверкой числа строк:
-crontab -l > /tmp/cron_before.txt 2>/dev/null || : ; wc -l < /tmp/cron_before.txt
-cp /tmp/cron_before.txt /tmp/cron_new.txt
-echo "0 3 * * * cd \$HOME/second-brain && \$HOME/brain-rag/bin/python3 rag_indexer.py" >> /tmp/cron_new.txt
-crontab /tmp/cron_new.txt ; crontab -l | wc -l
+**Mac и Linux.** Путь к папке мозга подставь реальный (значение `workspace` из профиля), не `second-brain`
+наугад: если папка называется иначе, задача будет молча падать каждую ночь.
 
-# Windows — Планировщик задач, путь полностью, без ~ (значение home из профиля):
-schtasks /create /f /sc daily /st 03:00 /tn "IkigaiRagIndex" \
-  /tr "\"C:\Users\<ИМЯ>\brain-rag\Scripts\python.exe\" \"C:\Users\<ИМЯ>\second-brain\rag_indexer.py\""
-schtasks /query /tn "IkigaiRagIndex"
+```bash
+BRAIN="<путь к папке мозга из профиля>"
+crontab -l > /tmp/cron_before_$$.txt 2>/dev/null || : ; BEFORE=$(wc -l < /tmp/cron_before_$$.txt)
+grep -q "rag_indexer" /tmp/cron_before_$$.txt && echo "УЖЕ СТОИТ — второй раз не добавляем" || {
+  cp /tmp/cron_before_$$.txt /tmp/cron_new_$$.txt
+  echo "0 3 * * * cd \"$BRAIN\" && \$HOME/brain-rag/bin/python3 rag_indexer.py >> \$HOME/rag_index.log 2>&1" >> /tmp/cron_new_$$.txt
+  [ "$(wc -l < /tmp/cron_new_$$.txt)" -gt "$BEFORE" ] && crontab /tmp/cron_new_$$.txt || echo "СТОП: не ставим"
+}
+crontab -l | wc -l
+```
+
+**Windows.** `crontab` там нет вообще — команды выше не запускай, иначе человек увидит поток ошибок.
+Путь берём из поля `home_win` профиля (`C:\Users\Иван`), и `schtasks` вызываем через PowerShell:
+Git Bash иначе перепишет `/create` в путь к файлу.
+
+```bash
+HOME_WIN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/ikigai_env.json')))['home_win'])")
+powershell -NoProfile -Command "schtasks /create /f /sc daily /st 03:00 /tn 'IkigaiRagIndex' /tr '\"$HOME_WIN\\brain-rag\\Scripts\\python.exe\" \"$HOME_WIN\\second-brain\\rag_indexer.py\"' /rl LIMITED"
+powershell -NoProfile -Command "schtasks /query /tn 'IkigaiRagIndex'"
 ```
 
 ### Как использовать с Claude Code
