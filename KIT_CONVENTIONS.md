@@ -63,3 +63,50 @@
 `git`, `node`, `python_cmd`, `python`, `handy`, `handy_model`, `workspace`, `workspace_has_claude_md`,
 `workspace_latin`, `skills_dir`, `skills_count`, `ffmpeg`, `whisper_cli`, `brew`, `checked_at`.
 Секретов в профиле нет и быть не должно.
+
+## 7. Контракт памяти (kit 2.0) — единый для всех скиллов
+
+Все скиллы, которые читают или пишут память, опираются только на эти пути и поля. Скилл, которому
+нужен новый файл, сначала дописывает его сюда. `tools/check_kit.py` сверяет тексты скиллов с этой картой.
+
+**Рабочая папка** (`workspace` из профиля пробника) — папка, где лежит `CLAUDE.md`:
+
+| Путь | Что | Пишет | Читает |
+|---|---|---|---|
+| `CLAUDE.md` | правила системы; содержит раздел «Правило двойной ошибки» | architect, memory-upgrade | все |
+| `memory/MEMORY.md` | индекс памяти, раздел «Оперативное» | все (одна строка на задачу) | все |
+| `memory/ACTIVE.md` | фокус: активные задачи. **Единственное место.** Если есть старый `ACTIVE.md` в корне — memory-upgrade ставит в нём строку-указатель, файл не двигает | architect, os, memory-upgrade | morning-brief, orchestrator, audit |
+| `memory/tasks/` | журналы задач `task_YYYY-MM-DD_slug.md` | os, все рабочие скиллы | morning-brief, weekly-distill |
+| `memory/insights/`, `memory/personal/`, `memory/reasoning/` | инсайты · личное (никогда не в облако) · ход мыслей | os | по делу |
+| `memory/archive/` | завершённое (архивировать, не удалять) | weekly-distill, gtd-weekly | audit |
+| `memory/distill/distill_YYYY-MM-DD.md` | итог пятничной дистилляции | weekly-distill | morning-brief (пт), audit |
+| `memory/commitments.md` | журнал обещаний: таблица `дата \| обязательство \| проверить \| статус \| источник`, статус `open` / `done` / `dropped` | architect, memory-upgrade, weekly-distill, os | morning-brief, audit |
+| `memory/PROJECTS.md` | проекты: цель + срок (PARA · Projects) | architect, memory-upgrade, weekly-distill | morning-brief, audit |
+| `memory/feedback_*.md` | правила из повторных правок (правило двойной ошибки) | os, orchestrator | все |
+
+**Поля шапки** (frontmatter) у заметок памяти:
+- `para: project | area | resource | archive` (+ `para_source: rule | manual`);
+- `stage: seed | sprout | evergreen` (+ `stage_source: rule | manual`) — стадии цифрового сада.
+
+Поля читаются **с отступом и без**: `^\s*поле:`. Claude при записи памяти может переносить поля
+внутрь блока `metadata:`. Скрипт, который ищет только `^поле:`, ставит дубли. Чужие значения
+поля `stage:` (не seed / sprout / evergreen) не трогать.
+
+**Ссылки:** `[[имя_файла]]` и `[[name-из-шапки]]` — рабочие оба. Ссылки в файлах не переписывать.
+
+**Вне рабочей папки:**
+- скиллы — только `~/.claude/skills/<имя>/SKILL.md`;
+- граф памяти — `~/.claude/graph/memory_graph.html`. Он лежит вне памяти, чтобы не уезжать в облако и на сервер вместе с именами личных файлов. Библиотека графа лежит рядом, без CDN.
+
+**Расписание** (брифинг, пятничный сад) должно переживать сон компьютера:
+
+| Система | Чем | Не годится |
+|---|---|---|
+| Mac | launchd, `~/Library/LaunchAgents/com.ikigai.<имя>.plist` | cron |
+| Windows | Планировщик заданий, задача `Ikigai <имя>` с `StartWhenAvailable` | — |
+| Сервер Linux | systemd timer с `Persistent=true` (cron допустим: сервер не спит) | — |
+
+**Облако:** память (`memory/`, особенно `personal/`, `sessions/`, `.secrets/`) в GitHub не отправляется
+никогда. GitHub — только для кода и скиллов. Пароли и коды подтверждения у ученика модель не просит.
+
+**Версии:** в шапке каждого скилла есть `kit_version: 2.0`. Аудит показывает версию, которая стоит у ученика.
