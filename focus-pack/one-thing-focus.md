@@ -5,6 +5,7 @@ version: 1.0.0
 category: productivity
 displayName: Фокус-линза «Одна вещь»
 icon: 🎯
+kit_version: 2.0
 ---
 
 # /one-thing — страж ведущей домино

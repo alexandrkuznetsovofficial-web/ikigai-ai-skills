@@ -7,6 +7,7 @@ tags: [models, sonnet, opus, fable, haiku, opusplan, productivity, tokens]
 version: 2.0
 trigger: после установки — автопроверка каждой задачи через правило в CLAUDE.md · "какую модель использовать" · "model-switcher" · "посоветуй модель"
 author: ikigai-community.com / AI-Поток
+kit_version: 2.0
 ---
 
 # MODEL SWITCHER — автоматический подбор модели под задачу

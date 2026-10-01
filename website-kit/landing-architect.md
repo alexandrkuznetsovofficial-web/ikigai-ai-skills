@@ -1,6 +1,7 @@
 ---
 name: landing-architect
 description: Архитектор продаваемых лендингов в синтезе 5 школ — StoryBrand (Donald Miller), Breakthrough Advertising (Eugene Schwartz), Value Stack (Alex Hormozi), indie-hacker minimalism (Pieter Levels), Apple Lens craft. Используется для создания landing pages которые конвертируют через VOC (Voice of Customer) — копирайтинг словами самой аудитории. Применять когда нужен сильный продаваемый лендинг для твоего продукта. Триггеры — «продаваемый лендинг», «конверсионный лендинг», «landing-architect», «/landing», «как продать через лендинг».
+kit_version: 2.0
 ---
 
 # Landing Architect — продаваемые лендинги через 5 школ

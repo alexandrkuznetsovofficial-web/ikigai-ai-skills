@@ -75,14 +75,22 @@
 |---|---|---|---|
 | `CLAUDE.md` | правила системы; содержит раздел «Правило двойной ошибки» | architect, memory-upgrade | все |
 | `memory/MEMORY.md` | индекс памяти, раздел «Оперативное» | все (одна строка на задачу) | все |
-| `memory/ACTIVE.md` | фокус: активные задачи. **Единственное место.** Если есть старый `ACTIVE.md` в корне — memory-upgrade ставит в нём строку-указатель, файл не двигает | architect, os, memory-upgrade | morning-brief, orchestrator, audit |
+| `memory/ACTIVE.md` | фокус: активные задачи. **Единственное место.** Если есть старый `ACTIVE.md` в корне — memory-upgrade ставит в нём строку-указатель, файл не двигает | architect, os, memory-upgrade, founder-context-extractor | morning-brief, orchestrator, audit |
 | `memory/tasks/` | журналы задач `task_YYYY-MM-DD_slug.md` | os, все рабочие скиллы | morning-brief, weekly-distill |
 | `memory/insights/`, `memory/personal/`, `memory/reasoning/` | инсайты · личное (никогда не в облако) · ход мыслей | os | по делу |
 | `memory/archive/` | завершённое (архивировать, не удалять) | weekly-distill, gtd-weekly | audit |
 | `memory/distill/distill_YYYY-MM-DD.md` | итог пятничной дистилляции | weekly-distill | morning-brief (пт), audit |
-| `memory/commitments.md` | журнал обещаний: таблица `дата \| обязательство \| проверить \| статус \| источник`, статус `open` / `done` / `dropped` | architect, memory-upgrade, weekly-distill, os | morning-brief, audit |
-| `memory/PROJECTS.md` | проекты: цель + срок (PARA · Projects) | architect, memory-upgrade, weekly-distill | morning-brief, audit |
+| `memory/brief_YYYY-MM-DD.md` | брифинг без Telegram-бота (файл + системное уведомление) | SETUP_MORNING_BRIEF (режим без бота) | человек, audit (точка 23) |
+| `memory/commitments.md` | журнал обещаний: таблица `дата \| обязательство \| проверить \| статус \| источник`, статус `open` / `done` / `dropped`; `para: project`. Строки не удаляются и не переносятся в архив — меняется только статус | architect, memory-upgrade, weekly-distill, os | morning-brief, audit |
+| `memory/PROJECTS.md` | проекты (PARA · Projects, `para: project`): таблица `проект \| цель \| срок \| статус \| где лежит`, статус `active` / `paused` / `done` / `dropped`. Сюда же — цели года из интервью (результат со сроком). Строки не удаляются | architect, memory-upgrade, founder-context-extractor, weekly-distill | morning-brief, audit |
 | `memory/feedback_*.md` | правила из повторных правок (правило двойной ошибки) | os, orchestrator | все |
+| `memory/feedback_double_error.md` | журнал правила двойной ошибки: шапка `name: feedback_double_error`, `para: area`; раздел `## Журнал` с таблицей `дата \| что поправили дважды \| правило \| файл` — os и orchestrator дописывают туда строку. Образец один — `templates/feedback_double_error.md` | architect, memory-upgrade | os, orchestrator |
+| `memory/user_profile.md` | Master Prompt 1 000–2 000 слов (`para: area`, `stage: evergreen`) + факты о человеке по разделам: «Кто я», «Бизнес», «История решений», «Куда иду» | founder-context-extractor | CLAUDE.md (импорт), все |
+| `memory/strategy/personal_strategy.md` | личная стратегия основателя. Файл один: следующий скилл **дополняет** его по разделам, не перезаписывает | homework-1/ai-strategist, orchestrator | ai-strategist, orchestrator, audit |
+| `memory/reference_*.md`, `memory/playbook_*.md` | справочники и плейбуки (вечнозелёные) | weekly-distill, os | по делу |
+| `memory/goals.md`, `memory/identity.md`, `memory/company.md`, `memory/history.md` | **наследие kit 1.x**. Есть у ученика — читаются как запасной путь (факты — после `user_profile.md`, цели — после `PROJECTS.md`); founder-context-extractor их больше не создаёт, факты пишет в `user_profile.md`, цели — в `PROJECTS.md` | — (новые не создаются) | morning-brief, extractor, os |
+| `memory/areas/`, `memory/projects/`, `memory/resources/` | раскладка коуча-проводника папками (PARA папками). Не двигаем: метки `para:` ставятся поверх | coach | все |
+| `memory/private/`, `memory/sessions/`, `memory/wiki/` | наследие / опция: private и sessions никогда не в облако; wiki — справочник `para: resource` | os | по делу |
 
 **Поля шапки** (frontmatter) у заметок памяти:
 - `para: project | area | resource | archive` (+ `para_source: rule | manual`);
@@ -95,7 +103,15 @@
 **Ссылки:** `[[имя_файла]]` и `[[name-из-шапки]]` — рабочие оба. Ссылки в файлах не переписывать.
 
 **Вне рабочей папки:**
-- скиллы — только `~/.claude/skills/<имя>/SKILL.md`;
+- скиллы — только `~/.claude/skills/<имя>/SKILL.md` (скрипты скилла — в его `scripts/`);
+- карта команды — только `~/.claude/skills/<папка оркестратора>/TEAM.md`, **единственное место**. Специалисты-скиллы —
+  в основной таблице, субагенты из `~/.claude/agents/*.md` — в разделе «Агенты» того же файла. Старый
+  `memory/ai-team.md` — наследие: читается, новых не создаём (team-architect пишет план в `TEAM.md` или ссылку на него);
+- главный агент (ассистент с именем, которое дал ученик) — `~/.claude/skills/<имя-латиницей>/SKILL.md`,
+  собирается по **одному** шаблону `templates/main_agent.md`. Extractor, os и orchestrator своих шаблонов не держат —
+  ссылаются на этот. Брифинг главный агент делегирует скиллу `morning-brief` и триггеров брифинга сам не держит;
+- снимок перед миграцией memory-upgrade — `~/.claude/backups/`;
+- отчёты выпускного чекапа — `~/.claude/audit/checkup_<дата>_before.md` (повтор за день — `_before_2.md`, не перезаписывается), `_after.md` и сохранённый эталон `_standard.md` (пишет second-brain-audit, читает ikigai-graduation для слайда «было → стало»);
 - граф памяти — `~/.claude/graph/memory_graph.html`. Он лежит вне памяти, чтобы не уезжать в облако и на сервер вместе с именами личных файлов. Библиотека графа лежит рядом, без CDN.
 
 **Расписание** (брифинг, пятничный сад) должно переживать сон компьютера:
@@ -106,7 +122,19 @@
 | Windows | Планировщик заданий, задача `Ikigai <имя>` с `StartWhenAvailable` | — |
 | Сервер Linux | systemd timer с `Persistent=true` (cron допустим: сервер не спит) | — |
 
-**Облако:** память (`memory/`, особенно `personal/`, `sessions/`, `.secrets/`) в GitHub не отправляется
-никогда. GitHub — только для кода и скиллов. Пароли и коды подтверждения у ученика модель не просит.
+**Старт сессии в `CLAUDE.md`** — один якорь `## 🌅 Старт сессии` (ставит architect). Старый заголовок
+`🌅 АВТОЗАПУСК СЕССИИ` (morning-brief 1.x) считается тем же блоком: нашёлся любой из двух — второй не дописывать.
+
+**Бюджет ядра `CLAUDE.md`:** цель ≤ ~12 000 знаков, норма до 20 000. Больше — расслоить (регламент в отдельный файл,
+в ядре триггер и ссылка), а не поднимать потолок.
+
+**Бэкап и облако — одна формула для всех скиллов:**
+- у папки мозга облака нет (нет `remote`); GitHub — только для кода и скиллов, в отдельной папке;
+- локальный git хранит **всё**, включая `memory/personal/` и `sessions/` — иначе нет отката;
+- в облако не пускает замок `pre-push` (скилл `auto-commit-backup`), даже если адрес когда-нибудь появится;
+- `.gitignore` мозга исключает **только секреты и мусор**: `.secrets/`, `.env`, `*.session`, `rag_db/`, `brain-rag/`, `*.bak*`.
+  `memory/personal/`, `memory/private/`, `sessions/` в `.gitignore` не пишутся.
+
+Пароли и коды подтверждения у ученика модель не просит.
 
 **Версии:** в шапке каждого скилла есть `kit_version: 2.0`. Аудит показывает версию, которая стоит у ученика.

@@ -1,6 +1,7 @@
 ---
 name: anthropic-academy
 description: Наставник по первоисточникам Anthropic. Триггеры — «а как правильно сделать X», «это лучшая практика?», «правильно ли я строю агента/скилл/промпт/бота», «best practice для Claude Code», «как советует Anthropic», «/academy», «/anthropic».
+kit_version: 2.0
 ---
 
 # Академия Anthropic — наставник по «как правильно»

@@ -5,6 +5,7 @@ version: 1.0.0
 category: copywriting
 displayName: Instagram-копирайтер
 icon: 📸
+kit_version: 2.0
 ---
 
 # Instagram-копирайтер

@@ -4,6 +4,7 @@ description: Лайф-коуч второго мозга. Живёт рядом 
 tags: [coach, ikigai, self-discovery, personal-context, second-brain, para, code, focus]
 version: 2.0
 author: ikigai-community.com / alexandr_ic
+kit_version: 2.0
 ---
 
 # ИкигAI Проводник · лайф-коуч второго мозга

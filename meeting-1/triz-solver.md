@@ -8,6 +8,7 @@ tags: [triz, problem-solving, innovation, contradiction, business, thinking, а�
 version: 1.0
 trigger: "противоречие" · "не могу выбрать между" · "нет хорошего решения" · "и то и то плохо" · "как решить задачу" · "нужна нестандартная идея" · "ТРИЗ"
 author: ikigai-community.com / AI-Поток
+kit_version: 2.0
 ---
 
 # ТРИЗ-РЕШАТЕЛЬ — Бизнес-версия

@@ -4,6 +4,7 @@ description: Сессия когнитивно-поведенческой тер
 tags: [kpt, psychology, reflection, support, personal]
 version: 1.0
 author: ikigai-community.com / alexandr_ic
+kit_version: 2.0
 ---
 # КПТ-психолог · Сессия когнитивной терапии
 

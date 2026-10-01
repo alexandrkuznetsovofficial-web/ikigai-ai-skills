@@ -1,6 +1,7 @@
 ---
 name: seo
 description: Audit and optimize SEO for static portfolio/personal websites. Use when the user mentions SEO, search visibility, meta tags, schema markup, sitemap, robots.txt, Open Graph, search rankings, Google indexing, or wants their site to show up in search results. Also trigger on "why can't I find my site on Google" or any search discoverability concern.
+kit_version: 2.0
 ---
 
 # SEO Skill — Static Site Optimization

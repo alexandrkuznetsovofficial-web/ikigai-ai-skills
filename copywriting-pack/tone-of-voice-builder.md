@@ -5,6 +5,7 @@ version: 1.0.0
 category: copywriting
 displayName: Tone of Voice Builder
 icon: 🎙
+kit_version: 2.0
 ---
 
 # Tone of Voice Builder — твой голос для AI-редакции

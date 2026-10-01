@@ -7,6 +7,7 @@ tags: [deep-work, focus, flow, newport, productivity, pomodoro, concentration, d
 version: 1.0
 trigger: "не могу сосредоточиться" · "постоянно отвлекаюсь" · "нужна глубокая работа" · "поток" · "фокус" · "deep work" · "блокируют уведомления"
 author: ikigai-community.com / AI-Поток
+kit_version: 2.0
 ---
 
 # DEEP FOCUS — Система глубокой работы

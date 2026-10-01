@@ -7,6 +7,7 @@ tags: [first-principles, mental-models, inversion, munger, second-order, pre-mor
 version: 1.0
 trigger: "хочу подумать глубоко" · "почему мы так делаем" · "нестандартный взгляд" · "первые принципы" · "инверсия" · "думать как Маск" · "ментальные модели" · "а что если наоборот" · "предположения"
 author: ikigai-community.com / AI-Поток
+kit_version: 2.0
 ---
 
 # ПЕРВЫЕ ПРИНЦИПЫ — Набор ментальных моделей

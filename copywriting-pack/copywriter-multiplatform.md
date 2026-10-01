@@ -5,6 +5,7 @@ version: 1.0.0
 category: copywriting
 displayName: Мульти-платформенный копирайтер
 icon: ✍️
+kit_version: 2.0
 ---
 
 # Главный копирайтер — из смыслов в посты

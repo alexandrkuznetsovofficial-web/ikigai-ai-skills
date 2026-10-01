@@ -5,6 +5,7 @@ version: 1.0.0
 category: copywriting
 displayName: Threads-копирайтер
 icon: 🧵
+kit_version: 2.0
 ---
 
 # Threads-копирайтер + стратег роста

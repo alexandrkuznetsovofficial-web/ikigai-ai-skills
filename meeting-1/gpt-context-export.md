@@ -7,6 +7,7 @@ tags: [context, chatgpt, migration, digital-profile, second-brain, memory]
 version: 1.0
 trigger: "перенеси контекст из ChatGPT" · "выгрузи меня из джипити" · "gpt-context-export" · "импорт профиля"
 author: ikigai-community.com / AI-Поток
+kit_version: 2.0
 ---
 
 # GPT CONTEXT EXPORT — забери свой контекст из ChatGPT во Второй мозг

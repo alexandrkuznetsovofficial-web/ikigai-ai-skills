@@ -1,0 +1,4 @@
+# Сборка tools/build_dist.py: витрина, выпускной пак, манифест
+dist/
+__pycache__/
+tools/sensitive_local.txt

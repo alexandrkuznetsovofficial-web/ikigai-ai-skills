@@ -2,6 +2,7 @@
 name: content-researcher
 description: >
   Instagram & TikTok content research engine for Claude. Use for: analyzing brand or competitor pages, auditing what video content is working vs broken, generating full video content reports (branded + creator/influencer strategy), benchmarking a category in a region, and preparing content strategy pitches. Triggers: "analyze this page", "content audit", "video content report", "what's working on their Instagram/TikTok", "benchmark their content", "research this brand's content", "what kind of videos should this brand make". ALWAYS use before writing any content strategy or video brief for a D2C or creator-driven brand.
+kit_version: 2.0
 ---
 
 # Content Researcher — Instagram & TikTok Content Intelligence Engine

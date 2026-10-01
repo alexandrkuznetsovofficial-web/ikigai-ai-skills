@@ -5,6 +5,7 @@ version: 1.0.0
 category: copywriting
 displayName: Анти-слоп фильтр
 icon: 🧹
+kit_version: 2.0
 ---
 
 # Анти-слоп — последний рубеж перед публикацией

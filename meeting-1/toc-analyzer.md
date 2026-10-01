@@ -7,6 +7,7 @@ tags: [toc, theory-of-constraints, goldratt, bottleneck, business, throughput, g
 version: 1.0
 trigger: "не растём" · "узкое место" · "что мешает" · "бутылочное горлышко" · "ограничение" · "Голдратт" · "TOC" · "куда вкладывать усилия" · "что сначала"
 author: ikigai-community.com / AI-Поток
+kit_version: 2.0
 ---
 
 # TOC-АНАЛИЗАТОР — Найди то единственное что тебя сдерживает

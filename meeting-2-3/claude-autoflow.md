@@ -5,6 +5,7 @@ version: 1.0.0
 category: config
 displayName: Claude Autoflow
 icon: ⚡
+kit_version: 2.0
 ---
 
 # Claude Autoflow — осознанный авторежим

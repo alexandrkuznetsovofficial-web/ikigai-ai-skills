@@ -4,6 +4,7 @@ description: Первая стратегическая сессия с осно�
 tags: [strategy, founder, session, context, goals]
 version: 1.0
 author: ikigai-community.com / alexandr_ic
+kit_version: 2.0
 ---
 # AI-Стратег · Первая сессия
 
