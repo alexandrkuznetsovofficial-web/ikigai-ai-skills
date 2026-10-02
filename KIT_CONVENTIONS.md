@@ -64,7 +64,7 @@
 `workspace_latin`, `skills_dir`, `skills_count`, `ffmpeg`, `whisper_cli`, `brew`, `checked_at`.
 Секретов в профиле нет и быть не должно.
 
-## 7. Контракт памяти (kit 2.0) — единый для всех скиллов
+## 7. Контракт памяти (kit 2.0; 2.1 — + §8) — единый для всех скиллов
 
 Все скиллы, которые читают или пишут память, опираются только на эти пути и поля. Скилл, которому
 нужен новый файл, сначала дописывает его сюда. `tools/check_kit.py` сверяет тексты скиллов с этой картой.
@@ -83,6 +83,8 @@
 | `memory/brief_YYYY-MM-DD.md` | брифинг без Telegram-бота (файл + системное уведомление) | SETUP_MORNING_BRIEF (режим без бота) | человек, audit (точка 23) |
 | `memory/commitments.md` | журнал обещаний: таблица `дата \| обязательство \| проверить \| статус \| источник`, статус `open` / `done` / `dropped`; `para: project`. Строки не удаляются и не переносятся в архив — меняется только статус | architect, memory-upgrade, weekly-distill, os | morning-brief, audit |
 | `memory/PROJECTS.md` | проекты (PARA · Projects, `para: project`): таблица `проект \| цель \| срок \| статус \| где лежит`, статус `active` / `paused` / `done` / `dropped`. Сюда же — цели года из интервью (результат со сроком). Строки не удаляются | architect, memory-upgrade, founder-context-extractor, weekly-distill | morning-brief, audit |
+| `memory/inbox/` | заметки из Telegram («запомни …»), см. §8 | бот (brain-link) | Claude на компьютере разбирает по папкам |
+| `memory/dialogues/` | журнал диалогов с ботом по дням | бот (brain-link) | по делу |
 | `memory/feedback_*.md` | правила из повторных правок (правило двойной ошибки) | os, orchestrator | все |
 | `memory/feedback_double_error.md` | журнал правила двойной ошибки: шапка `name: feedback_double_error`, `para: area`; раздел `## Журнал` с таблицей `дата \| что поправили дважды \| правило \| файл` — os и orchestrator дописывают туда строку. Образец один — `templates/feedback_double_error.md` | architect, memory-upgrade | os, orchestrator |
 | `memory/user_profile.md` | Master Prompt 1 000–2 000 слов (`para: area`, `stage: evergreen`) + факты о человеке по разделам: «Кто я», «Бизнес», «История решений», «Куда иду» | founder-context-extractor | CLAUDE.md (импорт), все |
@@ -138,3 +140,51 @@
 Пароли и коды подтверждения у ученика модель не просит.
 
 **Версии:** в шапке каждого скилла есть `kit_version: 2.0`. Аудит показывает версию, которая стоит у ученика.
+
+## 8. Контракт связки «компьютер — мастерская, сервер — база» (kit 2.1)
+
+Модель «как у Александра». **Компьютер** (Mac или Windows) — мастерская: Claude Code в VS Code видит
+локальные файлы, здесь правится память и ставятся скиллы. **Сервер** (Ubuntu 24.04, вне РФ) — база:
+бот в Telegram 24/7, утренний брифинг, реплика памяти. Связывает их `brain-sync` каждые 5 минут.
+Старая модель «истина на сервере, компьютер — окно + ночное зеркало» снята; как с неё уйти — `brain-link adopt`.
+
+**Зоны и владельцы.** У каждой зоны ровно один хозяин — так правки не теряются молча и удаления не воскресают.
+
+| Зона | Хозяин | Направление | Если разошлось |
+|---|---|---|---|
+| `memory/**` (кроме двух зон ниже) и `~/.claude/skills/**` | компьютер | компьютер → сервер | версия сервера сохраняется на компьютере как `имя.conflict-server-ГГГГММДД-ЧЧММ.ext`, сервер перезаписывается, уведомление |
+| `memory/inbox/` | бот | сервер → компьютер | имена уникальные (`ГГГГ-ММ-ДД_ЧЧММСС_tg.md`), конфликтов нет; забранное сервер переносит в `inbox/.synced/` (30 дней). На компьютере Claude разбирает inbox по папкам — это уже зона компьютера |
+| `memory/dialogues/` | бот | сервер → компьютер | только дописывается; правка на компьютере → `.conflict-local` |
+
+**Исключено в обе стороны:** `personal/ private/ secret*/ sessions/ .secrets/ .git/ .config/ node_modules/ .venv/ __pycache__/`,
+файлы `.env *.env *.session *.bak* *.conflict-* .DS_Store`, любой файл больше 20 МБ. Список живёт в одном месте —
+`brain-link/scripts/brainlib.py` (`EXCLUDES`); `tools/check_kit.py` сверяет его с этой таблицей.
+
+**Правила синка.** Решения по sha содержимого, не по времени (сдвиг часов не портит данные; расхождение > 120 с —
+предупреждение). Удаление на компьютере → файл на сервере уходит в `~/.brain-trash/ДАТА/` (30 дней).
+Больше 25 удалений или больше 10 % зоны за прогон — стоп до `brain-sync run --allow-mass-delete`.
+Пути приводятся к NFC. Права на сервере ставит сервер (brain, 0640/0750) — права компьютера не переносятся.
+Синк идёт **не через git**, поэтому замок pre-push из `auto-commit-backup` ему не мешает.
+
+**Служебные файлы — вне рабочей папки**, в `~/.config/brain/` (Windows `%USERPROFILE%\.config\brain\`):
+`server_access` (файл доступа), `known_hosts` (ключ сервера закреплён, `StrictHostKeyChecking=yes`),
+`sync_state.json`, `sync_status.json`, `sync.pause`, `sync.lock`, `logs/sync.log`.
+
+**Файл доступа — одна схема на весь кит:** `SERVER_IP`, `SERVER_USER` (до установки — `root`), `SERVER_PORT` (22),
+`BOT_TOKEN`, `USER_ID`, `PASSWORD` (временно, удаляется после `lockdown`). Токен подписки в файл **не пишется** —
+ученик сам запускает `claude setup-token` и передаёт его на сервер через `brain-link put-token` (ввод скрыт).
+Старые ключи `IP / LOGIN / PORT / CLAUDE_TOKEN` читаются как запасной вариант с предупреждением.
+
+**Сервер.** Рабочая папка — `/home/brain` (`CLAUDE.md`, `memory/`, скиллы в `/home/brain/.claude/skills`).
+Пользователь `brain` без пароля и без полного sudo; администрирование — `sudo brain-admin <команда>` (белый список).
+Ключ синка `~/.ssh/brain_sync_ed25519` ограничен в `authorized_keys` командой `brain_sync_server.py`.
+Секреты бота — `/etc/brain-bot/credentials/` (root 0600, `LoadCredential`), не в окружении и не в дереве `/home/brain`.
+Транспорт к модели — только `claude -p`; `ANTHROPIC_API_KEY` не ставится нигде. Вход: только ключи (`lockdown`),
+**без белого списка IP** (ученики на VPN). Аварийный вход — VNC-консоль провайдера.
+
+**Расписания (§7):** `com.ikigai.brain-sync` (launchd, 300 с) / задача `Ikigai brain-sync` (каждые 5 мин,
+`StartWhenAvailable`); на сервере `brain-bot.service`, `brain-brief.timer`, `brain-watch.timer`.
+Утренний брифинг живёт в **одном** месте: есть бот — только на сервере.
+
+**Перед массовой правкой памяти** (`memory-upgrade`, `garden_stage --apply`, `project-splitter`) — `brain-sync pause`,
+после — `brain-sync resume` и `brain-sync run`.
