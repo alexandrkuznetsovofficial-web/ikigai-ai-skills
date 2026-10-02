@@ -1,0 +1,12 @@
+# brain-link kit 2.1 — сторож раз в час; сообщение владельцу не чаще раза в сутки на тип проблемы.
+[Unit]
+Description=brain-watch: ежечасная проверка сервера
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=brain-watch.service
+
+[Install]
+WantedBy=timers.target

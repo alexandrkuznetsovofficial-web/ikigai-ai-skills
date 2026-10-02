@@ -103,7 +103,7 @@ SKIP_SCAN_FILES = {"tools/check_kit.py"}
 TEXT_EXT = {
     ".md", ".txt", ".sh", ".ps1", ".py", ".html", ".htm", ".css", ".js",
     ".json", ".yml", ".yaml", ".toml", ".example", ".plist", ".xml", ".csv",
-    ".ini", ".cfg", ".env", "",
+    ".ini", ".cfg", ".env", "", ".conf", ".local", ".service", ".timer",
 }
 
 # --- Гейт санитизации -------------------------------------------------------
@@ -148,6 +148,10 @@ SENSITIVE_PATTERNS += _load_local_patterns()
 ALLOWLIST = [
     ("infra", "novoselie-server-kit/*", "/home/brain",
      "учебная конвенция: ученик сам создаёт на СВОЁМ сервере пользователя brain"),
+    ("infra", "brain-link/*", "/home/brain",
+     "учебная конвенция kit 2.1: пользователь brain на сервере ученика"),
+    ("infra", "KIT_CONVENTIONS.md", "/home/brain",
+     "контракт связки §8: путь на сервере ученика"),
     ("personal", "*", "memory/personal/secret",
      "упоминание пути как запрета (не в облако), без содержимого"),
 ]
@@ -336,8 +340,8 @@ def skill_targets(files):
 
 
 # --- 2. kit_version -----------------------------------------------------------
-KV_FM = re.compile(r"^\s*kit_version:\s*[\"']?2\.0\b")
-KV_COMMENT = re.compile(r"<!--[^>]*kit_version:\s*2\.0\b")
+KV_FM = re.compile(r"^\s*kit_version:\s*[\"']?2\.[01]\b")
+KV_COMMENT = re.compile(r"<!--[^>]*kit_version:\s*2\.[01]\b")
 
 
 def check_kit_version(rep, root, files_set):

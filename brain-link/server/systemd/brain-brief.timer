@@ -1,0 +1,12 @@
+# brain-link kit 2.1 — брифинг в 05:00 UTC = 08:00 МСК. Persistent: если сервер спал — догонит.
+[Unit]
+Description=brain-brief: утренний брифинг 08:00 МСК
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+Unit=brain-brief.service
+
+[Install]
+WantedBy=timers.target

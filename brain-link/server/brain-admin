@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# brain-admin — kit 2.1 (brain-link). Обслуживание сервера после lockdown, без root-входа.
+# Ставится в /usr/local/sbin/brain-admin (root:root 0755), вызывается: sudo brain-admin <команда>.
+# Белый список команд; аргументы проверяются строго. sudoers: brain ALL=(root) NOPASSWD: /usr/local/sbin/brain-admin
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export LC_ALL=C.UTF-8
+
+BRAIN_HOME=/home/brain
+CRED_DIR=/etc/brain-bot/credentials
+LIB_DIR=/usr/local/lib/brain-bot
+CONF_DIR=/etc/brain-bot   # настройки claude меняет только root
+SRC_DIR=$BRAIN_HOME/.local/share/brain-link/server
+UNITS="brain-bot.service brain-brief.timer brain-watch.timer"
+
+die() { echo "❌ $*" >&2; exit 1; }
+ok() { echo "✅ $*"; }
+warn() { echo "🟡 $*"; }
+
+[ "$(id -u)" -eq 0 ] || die "запускать через sudo: sudo brain-admin $*"
+
+usage() {
+  cat <<'USAGE'
+sudo brain-admin <команда>
+  restart-bot              перезапустить бота
+  status                   состояние бота, таймеров, диска, часов
+  logs [N]                 последние N строк журнала бота (по умолчанию 100, максимум 2000)
+  set-token bot|claude     принять токен со стандартного ввода (ввод скрыт), записать 0600 root, рестарт
+  timesync-restart         перезапустить синхронизацию часов
+  update-bot               обновить код бота и настройки claude из ~/.local/share/brain-link/server
+  selftest                 проверка бота без сети
+  remove-private           удалить на сервере personal/ и прочие исключённые пути из memory (подтверждение YES)
+USAGE
+}
+
+owner_id() {
+  systemctl show -p Environment --value brain-bot.service 2>/dev/null | tr ' ' '\n' | sed -n 's/^OWNER_ID=//p' | head -1
+}
+
+# Копирует один файл из папки brain в root-владение. Читаем С ПРАВАМИ brain (runuser),
+# поэтому подложенный симлинк на /etc/shadow и т.п. root-чтения не даст.
+safe_install() { # src dst mode owner:group
+  local src=$1 dst=$2 mode=$3 og=$4
+  [ -f "$src" ] && [ ! -L "$src" ] || die "нет обычного файла: $src"
+  local tmp; tmp=$(mktemp "$(dirname "$dst")/.tmp.XXXXXX")
+  runuser -u brain -- head -c 1048577 -- "$src" > "$tmp" || { rm -f "$tmp"; die "не читается: $src"; }
+  [ "$(stat -c %s "$tmp")" -le 1048576 ] || { rm -f "$tmp"; die "слишком большой файл: $src"; }
+  chown "$og" "$tmp"; chmod "$mode" "$tmp"
+  echo "$tmp"
+}
+
+cmd=${1:-}
+case "$cmd" in
+  restart-bot)
+    systemctl restart brain-bot.service
+    sleep 3
+    systemctl is-active --quiet brain-bot.service && ok "бот перезапущен" || die "бот не поднялся: sudo brain-admin logs 50"
+    ;;
+
+  status)
+    for u in $UNITS; do printf '%-22s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"; done
+    echo "--- диск"; df -h "$BRAIN_HOME" | tail -1
+    echo "--- часы"; timedatectl show -p NTPSynchronized -p Timezone 2>/dev/null || true
+    echo "--- синк"; if [ -f "$BRAIN_HOME/.brain-sync/heartbeat" ]; then stat -c 'heartbeat: %y' "$BRAIN_HOME/.brain-sync/heartbeat"; else echo "heartbeat: нет"; fi
+    echo "--- секреты"; ls -l "$CRED_DIR" 2>/dev/null | sed 1d | awk '{print $1, $3, $NF}' || true
+    echo "--- таймеры"; systemctl list-timers 'brain-*' --no-pager 2>/dev/null | head -5 || true
+    ;;
+
+  logs)
+    n=${2:-100}
+    [[ "$n" =~ ^[0-9]{1,4}$ ]] && [ "$n" -ge 1 ] && [ "$n" -le 2000 ] || die "N — число от 1 до 2000"
+    journalctl -u brain-bot.service -u brain-brief.service -u brain-watch.service -n "$n" --no-pager
+    ;;
+
+  set-token)
+    name=${2:-}
+    case "$name" in
+      bot) re='^[0-9]{6,12}:[A-Za-z0-9_-]{30,}$' ;;
+      claude) re='^sk-ant-[A-Za-z0-9_-]{20,}$' ;;
+      *) die "set-token bot|claude" ;;
+    esac
+    if [ -t 0 ]; then
+      read -r -s -p "Вставь токен ($name) и нажми Enter: " value; echo
+    else
+      IFS= read -r value || true
+    fi
+    value=${value//$'\r'/}
+    [ "${#value}" -le 400 ] || die "слишком длинная строка"
+    [[ "$value" =~ $re ]] || die "это не похоже на токен ($name). Ничего не записано."
+    install -d -m 0700 -o root -g root "$CRED_DIR"
+    tmp=$(mktemp "$CRED_DIR/.tmp.XXXXXX")
+    printf '%s' "$value" > "$tmp"
+    unset value
+    chmod 0600 "$tmp"; chown root:root "$tmp"
+    mv -f "$tmp" "$CRED_DIR/${name}_token"
+    ok "токен $name записан в $CRED_DIR/${name}_token (0600 root)"
+    if systemctl is-enabled --quiet brain-bot.service 2>/dev/null; then
+      systemctl restart brain-bot.service && ok "бот перезапущен"
+    fi
+    ;;
+
+  timesync-restart)
+    timedatectl set-ntp true
+    systemctl restart systemd-timesyncd.service 2>/dev/null || warn "systemd-timesyncd не найден (возможно, chrony)"
+    sleep 5
+    timedatectl show -p NTPSynchronized
+    ;;
+
+  update-bot)
+    # Только код бота и настройки claude: юниты и сам brain-admin отсюда НЕ обновляются —
+    # папка принадлежит brain, иначе это был бы путь к root.
+    [ -d "$SRC_DIR" ] && [ ! -L "$SRC_DIR" ] || die "нет папки $SRC_DIR"
+    install -d -m 0755 -o root -g root "$LIB_DIR" "$CONF_DIR"
+    t1=$(safe_install "$SRC_DIR/brain_bot.py" "$LIB_DIR/brain_bot.py" 0755 root:root)
+    python3 - "$t1" <<'PY' || { rm -f "$t1"; die "brain_bot.py не компилируется"; }
+import ast, sys
+ast.parse(open(sys.argv[1], encoding="utf-8").read(), feature_version=(3, 9))
+PY
+    t2=$(safe_install "$SRC_DIR/claude_settings.json" "$CONF_DIR/claude_settings.json" 0644 root:root)
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["permissions"]["deny"]' "$t2" \
+      || { rm -f "$t1" "$t2"; die "claude_settings.json битый или без deny"; }
+    for f in "$LIB_DIR/brain_bot.py" "$CONF_DIR/claude_settings.json"; do
+      [ -f "$f" ] && cp -p "$f" "$f.bak.$(date +%Y%m%d_%H%M%S)"
+    done
+    mv -f "$t1" "$LIB_DIR/brain_bot.py"
+    mv -f "$t2" "$CONF_DIR/claude_settings.json"
+    ok "код бота и настройки обновлены"
+    "$0" selftest || warn "selftest с замечаниями"
+    systemctl restart brain-bot.service && ok "бот перезапущен"
+    ;;
+
+  selftest)
+    rc=0
+    for n in bot_token claude_token; do
+      f="$CRED_DIR/$n"
+      if [ -f "$f" ] && [ "$(stat -c '%a %U' "$f")" = "600 root" ]; then ok "секрет $n: 0600 root"; else echo "❌ секрет $n: нет или права не 0600 root"; rc=1; fi
+    done
+    [ "$(stat -c '%a %U' "$CRED_DIR" 2>/dev/null)" = "700 root" ] && ok "$CRED_DIR: 0700 root" || { echo "❌ $CRED_DIR не 0700 root"; rc=1; }
+    oid=$(owner_id || true)
+    [[ "$oid" =~ ^[0-9]+$ ]] && ok "OWNER_ID задан в юните" || { echo "❌ OWNER_ID в юните не задан (fail-closed)"; rc=1; }
+    systemctl show -p User --value brain-bot.service | grep -qx brain && ok "бот запускается под brain" || { echo "❌ бот не под brain"; rc=1; }
+    if grep -rqs 'ANTHROPIC_API_KEY' /etc/environment /etc/systemd/system/brain-*.service "$BRAIN_HOME/.profile" "$BRAIN_HOME/.bashrc"; then
+      echo "❌ где-то задан ANTHROPIC_API_KEY — убрать"; rc=1
+    else ok "ANTHROPIC_API_KEY нигде не задан"; fi
+    runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" \
+      PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      /usr/bin/python3 "$LIB_DIR/brain_bot.py" selftest || rc=1
+    exit $rc
+    ;;
+
+  remove-private)
+    mem=$BRAIN_HOME/memory
+    [ -d "$mem" ] || die "нет $mem"
+    mapfile -d '' found < <(find "$mem" \( -type d \( -name personal -o -name private -o -name 'secret*' -o -name sessions -o -name .secrets -o -name .git -o -name .config \) -prune -print0 \) -o \( -type f \( -name .env -o -name '*.env' -o -name '*.session' \) -print0 \))
+    if [ "${#found[@]}" -eq 0 ]; then ok "исключённых путей на сервере нет"; exit 0; fi
+    echo "Будут удалены на сервере (на компьютере всё остаётся):"
+    printf '  %s\n' "${found[@]}"
+    read -r -p "Напиши YES, чтобы удалить: " answer
+    [ "$answer" = "YES" ] || die "отменено"
+    for p in "${found[@]}"; do
+      case "$p" in "$mem"/*) rm -rf --one-file-system -- "$p" ;; *) die "путь вне memory: $p" ;; esac
+    done
+    ok "удалено: ${#found[@]}"
+    ;;
+
+  ""|-h|--help|help) usage ;;
+  *) usage; die "неизвестная команда: $cmd" ;;
+esac

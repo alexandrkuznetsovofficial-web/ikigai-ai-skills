@@ -1,0 +1,4 @@
+# brain-link kit 2.1 — голос бота (VOICE=1): ставится в /home/brain/.venv-voice
+# python3 -m venv ~/.venv-voice && ~/.venv-voice/bin/pip install -r requirements-voice.txt
+# Модель small (~460 МБ) скачается в ~/.cache/huggingface при первом голосовом.
+faster-whisper>=1.1,<2

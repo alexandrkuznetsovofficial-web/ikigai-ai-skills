@@ -1,0 +1,4 @@
+# brain-link kit 2.1 — единственное право brain на root: белый список brain-admin.
+# Ставит harden.sh в /etc/sudoers.d/brain (0440) только после `visudo -cf`.
+Defaults:brain env_reset, !setenv
+brain ALL=(root) NOPASSWD: /usr/local/sbin/brain-admin

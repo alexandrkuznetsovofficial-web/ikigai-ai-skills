@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  brain-sync каждые 5 минут (kit 2.1, KIT_CONVENTIONS §8). Ставит brain-link (шаг schedule).
+  Плейсхолдеры (подставляет установщик, значения XML-экранированы: & → &amp;, < → &lt;):
+    {{PYTHON3}}       абсолютный путь к python3 (command -v python3)
+    {{BRAIN_SYNC_PY}} абсолютный путь к brain-link/scripts/brain_sync.py
+    {{HOME}}          домашняя папка
+    {{PATH}}          PATH для фоновой задачи (папка python3, /opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin)
+  Место: ~/Library/LaunchAgents/com.ikigai.brain-sync.plist
+  Проверка: plutil -lint …; launchctl bootstrap gui/$(id -u) …; launchctl kickstart gui/$(id -u)/com.ikigai.brain-sync
+  «Operation not permitted» в журнале — память в «Документах»: Полный доступ к диску для этого python3.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ikigai.brain-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{{PYTHON3}}</string>
+    <string>{{BRAIN_SYNC_PY}}</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>{{PATH}}</string>
+    <key>HOME</key><string>{{HOME}}</string>
+    <key>PYTHONIOENCODING</key><string>utf-8</string>
+  </dict>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <key>StandardOutPath</key><string>{{HOME}}/Library/Logs/brain-sync.log</string>
+  <key>StandardErrorPath</key><string>{{HOME}}/Library/Logs/brain-sync.log</string>
+</dict>
+</plist>

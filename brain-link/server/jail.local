@@ -1,0 +1,13 @@
+# brain-link kit 2.1 — fail2ban: перебор SSH. Ставит harden.sh в /etc/fail2ban/jail.local.
+# __SSH_PORT__ подставляет harden.sh (по умолчанию 22). Ubuntu 24.04 пишет журнал sshd
+# в journald, отсюда backend = systemd.
+[DEFAULT]
+bantime = 1h
+findtime = 10m
+maxretry = 5
+backend = systemd
+
+[sshd]
+enabled = true
+port = __SSH_PORT__
+mode = aggressive

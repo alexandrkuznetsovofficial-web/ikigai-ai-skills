@@ -1,0 +1,34 @@
+# brain-link kit 2.1 — сторож: диск, часы, синк, жив ли бот. Без модели, только токен бота.
+[Unit]
+Description=brain-watch: сторож сервера второго мозга (brain-link)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=brain
+Group=brain
+WorkingDirectory=/home/brain
+ExecStart=/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py watch
+Environment=OWNER_ID=__OWNER_ID__
+Environment=BOT_TZ=Europe/Moscow
+Environment=LANG=C.UTF-8
+LoadCredential=bot_token:/etc/brain-bot/credentials/bot_token
+UMask=0027
+TimeoutStartSec=120
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/brain/.local/state/brain-bot
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+TasksMax=64

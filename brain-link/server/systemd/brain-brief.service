@@ -1,0 +1,39 @@
+# brain-link kit 2.1 — утренний брифинг владельцу. Запускает brain-brief.timer.
+[Unit]
+Description=brain-brief: утренний брифинг в Telegram (brain-link)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=brain
+Group=brain
+WorkingDirectory=/home/brain
+ExecStart=/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py brief
+Environment=OWNER_ID=__OWNER_ID__
+Environment=BOT_TZ=Europe/Moscow
+Environment=DIALOGUES=0
+Environment=LANG=C.UTF-8
+Environment=PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin
+LoadCredential=bot_token:/etc/brain-bot/credentials/bot_token
+LoadCredential=claude_token:/etc/brain-bot/credentials/claude_token
+UMask=0027
+TimeoutStartSec=600
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/brain/.claude /home/brain/.cache /home/brain/.local/state/brain-bot
+ReadWritePaths=-/home/brain/.local/state/claude -/home/brain/.local/share/claude
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=1500M
+CPUQuota=150%
+TasksMax=256
