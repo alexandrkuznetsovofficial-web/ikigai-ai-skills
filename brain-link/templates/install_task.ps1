@@ -7,9 +7,11 @@
 # Запуск (из Git Bash тоже — файлом, не одной строкой):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File "<путь>\install_task.ps1"
 #   необязательно: -Python "C:\...\pythonw.exe" -Script "C:\...\brain_sync.py"
+#   -Transport local:<папка> — ТОЛЬКО ДЛЯ ТЕСТОВ (лаборатория CI, BRAIN_SYNC_TRANSPORT): синк в локальную папку
 param(
   [string]$Python = "",
-  [string]$Script = ""
+  [string]$Script = "",
+  [string]$Transport = ""
 )
 $ErrorActionPreference = 'Stop'
 $name = "Ikigai brain-sync"
@@ -34,7 +36,13 @@ if (-not $Python -or -not (Test-Path -LiteralPath $Python)) {
   exit 1
 }
 
-$action = New-ScheduledTaskAction -Execute $Python -Argument ("`"{0}`" run" -f $Script) -WorkingDirectory $env:USERPROFILE
+$taskArgs = ("`"{0}`" run" -f $Script)
+if ($Transport) {
+  # только лаборатория CI: у задачи Планировщика нет своих переменных окружения — передаём флагом
+  if ($Transport -notmatch '^(ssh|local:.+)$') { Write-Output "СТОП: -Transport — ssh или local:<папка>"; exit 1 }
+  $taskArgs += (" --transport `"{0}`"" -f $Transport)
+}
+$action = New-ScheduledTaskAction -Execute $Python -Argument $taskArgs -WorkingDirectory $env:USERPROFILE
 
 # Каждые 5 минут бесконечно. Новые сборки Windows без RepetitionDuration повторяют бесконечно;
 # старые сборки Windows 10 на это ругаются — тогда ставим 10 лет.

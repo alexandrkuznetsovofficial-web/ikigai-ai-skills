@@ -23,6 +23,7 @@ import logging.handlers
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -40,11 +41,18 @@ IS_MAC = platform.system() == "Darwin"
 
 # ---------- контракт §8: исключено в ОБЕ стороны ----------
 # «/» на конце — папка (любой уровень вложенности), без «/» — имя файла. Сравнение без учёта регистра.
-EXCLUDES = (
+EXCLUDES_BASE = (
     "personal/", "private/", "secret*/", "sessions/", ".secrets/", ".git/", ".config/",
     "node_modules/", ".venv/", "__pycache__/",
     ".env", "*.env", "*.session", "*.bak*", "*.conflict-*", ".DS_Store",
 )
+# ключи и учётки, которые ученики случайно кладут в память или в папку скилла (ревью kit 2.1, п.7)
+EXCLUDES_SECRETS = (
+    ".aws/", ".ssh/", ".gnupg/", ".kube/",
+    "*.pem", "*.key", "id_rsa*", "id_ed25519*", "id_ecdsa*", ".netrc", ".npmrc", ".pypirc",
+    "credentials*.json", "client_secret*.json", "*token*.json", "*.kdbx", "*.p12", "*.pfx",
+)
+EXCLUDES = EXCLUDES_BASE + EXCLUDES_SECRETS
 MAX_FILE_BYTES = 20 * 1024 * 1024
 EXCLUDE_DIRS = tuple(p[:-1] for p in EXCLUDES if p.endswith("/"))
 EXCLUDE_FILES = tuple(p for p in EXCLUDES if not p.endswith("/"))
@@ -67,7 +75,8 @@ MASS_DELETE_ABS = 25        # больше 25 удалений за прогон
 MASS_DELETE_PCT = 0.10      # или больше 10 % зоны компьютера…
 MASS_DELETE_MIN = 3         # …но правило процентов включается с 3 удалений (иначе в маленькой папке стоп на каждом)
 CLOCK_WARN_SEC = 120
-LOCK_STALE_SEC = 600
+LOCK_STALE_SEC = 2400      # > самого долгого прогона (manifest 180 + fetch 900 + apply 900 + обход); замок ещё и
+                           # «подновляется» между шагами (touch), так что живой прогон чужой не снимет
 
 
 # ---------- вывод (контракт KIT: один JSON, поле human) ----------
@@ -94,11 +103,47 @@ class CliExit(Exception):
         self.extra = extra
 
 
+def safe_write(stream, text):
+    """Пишет текст так, чтобы ни кодировка консоли (cp1251/cp866 на Windows, ascii в C-локали), ни отсутствие
+    консоли (pythonw: sys.stdout is None) не роняли скрипт. Байты — UTF-8 в .buffer; без .buffer — как есть,
+    при UnicodeEncodeError — с \\u-экранированием. Возвращает True, если записали."""
+    if stream is None:
+        return False
+    try:
+        buf = getattr(stream, "buffer", None)
+        if buf is not None:
+            buf.write(text.encode("utf-8", "backslashreplace"))
+        else:
+            try:
+                stream.write(text)
+            except UnicodeEncodeError:
+                stream.write(text.encode("ascii", "backslashreplace").decode("ascii"))
+        stream.flush()
+        return True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def dump_json(obj):
+    """JSON одной строкой: сначала по-человечески (UTF-8), если внутри «битые» суррогаты из имён файлов — ASCII."""
+    try:
+        text = json.dumps(obj, ensure_ascii=False)
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return json.dumps(obj, ensure_ascii=True)
+
+
 def out(obj, code=EXIT_OK):
     obj.setdefault("ok", code == EXIT_OK)
     obj.setdefault("exit_code", code)
-    sys.stdout.write(json.dumps(clean(obj), ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    text = dump_json(clean(obj)) + "\n"
+    if not safe_write(sys.stdout, text):
+        # pythonw / закрытый вывод: человеку пишем в журнал, код выхода — тот же
+        try:
+            get_logger().info("out(%s): %s", code, (obj.get("human") or "")[:500])
+        except Exception:
+            pass
     sys.exit(code)
 
 
@@ -194,7 +239,19 @@ def resolve_workspace(root_arg=None):
             raise CliExit(EXIT_CONFIG, "в профиле нет поля workspace — укажи --root <папка с CLAUDE.md>")
         ws = Path(val).expanduser()
         src = "профиль"
-    if not (ws / "memory").is_dir():
+    try:
+        mem_is_dir = stat.S_ISDIR(os.stat(str(ws / "memory")).st_mode)
+    except PermissionError as ex:
+        raise UnreadableError(ws / "memory", ex)
+    except OSError:
+        mem_is_dir = False
+    if not mem_is_dir:
+        try:
+            os.listdir(str(ws))
+        except PermissionError as ex:   # macOS TCC: папку не видно целиком — это не «нет memory/»
+            raise UnreadableError(ws, ex)
+        except OSError:
+            pass
         raise CliExit(EXIT_CONFIG, "в рабочей папке (%s) нет папки memory/ — это не та папка" % src,
                       workspace=str(ws))
     return ws
@@ -295,6 +352,24 @@ def conflict_name(rel, kind, now=None):
 
 
 # ---------- хэши и обход ----------
+TCC_HINT = ("на Mac — дай python3 полный доступ к диску (Системные настройки → Конфиденциальность и безопасность → "
+            "Полный доступ к диску) или перенеси рабочую папку из Documents/Desktop/iCloud")
+
+
+class UnreadableError(CliExit):
+    """Файл или папку зоны нельзя прочитать. Прогон останавливается целиком: нечитаемое ≠ удалённое,
+    иначе синк счёл бы файл стёртым и унёс серверную копию в корзину."""
+
+    def __init__(self, path, ex=None):
+        human = "не могу прочитать %s" % path
+        if isinstance(ex, PermissionError) or ex is None:
+            human += "; " + TCC_HINT
+        elif ex is not None:
+            human += " (%s)" % (ex.strerror or type(ex).__name__)
+        human += ". Синк остановлен, на сервере ничего не удалено"
+        super().__init__(EXIT_CONFIG, human, unreadable=str(path))
+
+
 def sha256_file(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -307,17 +382,29 @@ def sha256_bytes(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _walk_error(ex):
+    raise UnreadableError(getattr(ex, "filename", None) or "папку зоны", ex)
+
+
 def scan_tree(root, prefix, follow_links=True):
     """Обходит папку зоны. Возвращает (entries, skipped):
        entries: {rel: (Path, size, mtime_ns)}; skipped: [{"rel", "reason"}] — исключённое и пропущенное.
-       prefix: "memory" / "skills". Имена приводятся к NFC. Симлинки: на компьютере идём по ним (скиллы часто
-       ссылки на репозиторий) с защитой от петель; на сервере (follow_links=False) пропускаем."""
+       prefix: "memory" / "skills". Имена приводятся к NFC.
+       Симлинки: follow_links=True (skills/ — скиллы часто ссылки на репозиторий) — идём по ним с защитой от петель;
+       False (memory/, сервер) — внутренние ссылки пропускаем с предупреждением (сам корень зоны может быть ссылкой).
+       Нечитаемая папка или файл — UnreadableError (не «удалено»)."""
     entries, skipped = {}, []
     root = Path(root)
+    try:
+        os.stat(str(root))
+    except FileNotFoundError:
+        return entries, skipped
+    except OSError as ex:
+        raise UnreadableError(root, ex)
     if not root.is_dir():
         return entries, skipped
     seen_real = set()
-    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=follow_links):
+    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=follow_links, onerror=_walk_error):
         try:
             real = os.path.realpath(dirpath)
         except OSError:
@@ -336,7 +423,7 @@ def scan_tree(root, prefix, follow_links=True):
             elif drel == INBOX_PREFIX + SYNCED_DIRNAME:
                 continue
             elif not follow_links and os.path.islink(os.path.join(dirpath, d)):
-                skipped.append({"rel": drel + "/", "reason": "симлинк пропущен"})
+                skipped.append({"rel": drel + "/", "reason": "симлинк пропущен", "symlink": True})
             else:
                 keep.append(d)
         dirnames[:] = keep
@@ -348,18 +435,28 @@ def scan_tree(root, prefix, follow_links=True):
             if is_excluded_file(fn):
                 skipped.append({"rel": rel, "reason": "исключённый файл"})
                 continue
-            if os.path.islink(full) and not follow_links:
-                skipped.append({"rel": rel, "reason": "симлинк пропущен"})
+            islink = os.path.islink(full)
+            if islink and not follow_links:
+                skipped.append({"rel": rel, "reason": "симлинк пропущен", "symlink": True})
                 continue
             if not is_safe_rel(rel):
                 skipped.append({"rel": rel, "reason": "имя не годится для синка"})
                 continue
             try:
                 st = os.stat(full)
-            except OSError:
+            except FileNotFoundError:
+                if islink:
+                    skipped.append({"rel": rel, "reason": "битая ссылка", "symlink": True})
+                continue          # файл исчез между листингом и stat — его правда нет
+            except OSError as ex:
+                raise UnreadableError(full, ex)
+            if not stat.S_ISREG(st.st_mode):
+                if stat.S_ISDIR(st.st_mode):
+                    continue
+                skipped.append({"rel": rel, "reason": "не обычный файл"})
                 continue
-            if not os.path.isfile(full):
-                continue
+            if not os.access(full, os.R_OK):
+                raise UnreadableError(full, PermissionError(13, "Permission denied", full))
             if st.st_size > MAX_FILE_BYTES:
                 skipped.append({"rel": rel, "reason": "больше 20 МБ"})
                 continue
@@ -371,24 +468,34 @@ def scan_tree(root, prefix, follow_links=True):
 
 
 def scan_root_files(ws):
+    """CLAUDE.md из корня рабочей папки. Симлинк не читаем (п.7 ревью) — пропуск с предупреждением."""
     entries, skipped = {}, []
     for name in ROOT_FILES:
         p = Path(ws) / name
         try:
-            if p.is_file():
-                st = p.stat()
-                if st.st_size > MAX_FILE_BYTES:
-                    skipped.append({"rel": name, "reason": "больше 20 МБ"})
-                else:
-                    entries[name] = (p, st.st_size, st.st_mtime_ns)
-        except OSError:
-            pass
+            lst = os.lstat(str(p))
+        except FileNotFoundError:
+            continue
+        except OSError as ex:
+            raise UnreadableError(p, ex)
+        if stat.S_ISLNK(lst.st_mode):
+            skipped.append({"rel": name, "reason": "симлинк пропущен", "symlink": True})
+            continue
+        if not stat.S_ISREG(lst.st_mode):
+            continue
+        if not os.access(str(p), os.R_OK):
+            raise UnreadableError(p, PermissionError(13, "Permission denied", str(p)))
+        if lst.st_size > MAX_FILE_BYTES:
+            skipped.append({"rel": name, "reason": "больше 20 МБ"})
+        else:
+            entries[name] = (p, lst.st_size, lst.st_mtime_ns)
     return entries, skipped
 
 
 def hash_entries(entries, cache):
     """sha по содержимому; кэш {rel: [size, mtime_ns, sha]} экономит чтение неизменённых файлов.
-    Время участвует только как ключ кэша, в решениях синка — нет."""
+    Время участвует только как ключ кэша, в решениях синка — нет. Исчез во время обхода — файла нет;
+    не читается — UnreadableError (прогон стоп)."""
     result, new_cache = {}, {}
     for rel, (path, size, mtime_ns) in entries.items():
         c = cache.get(rel)
@@ -397,8 +504,10 @@ def hash_entries(entries, cache):
         else:
             try:
                 sha = sha256_file(path)
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError as ex:
+                raise UnreadableError(path, ex)
         result[rel] = sha
         new_cache[rel] = [size, mtime_ns, sha]
     return result, new_cache

@@ -3,6 +3,9 @@
 # Ставится в /usr/local/sbin/brain-admin (root:root 0755), вызывается: sudo brain-admin <команда>.
 # Белый список команд; аргументы проверяются строго. sudoers: brain ALL=(root) NOPASSWD: /usr/local/sbin/brain-admin
 set -euo pipefail
+# cwd — всегда корень: иначе интерпретатор от root подхватил бы модули из папки brain
+# (python3 кладёт cwd в sys.path, подмена json.py/ast.py = путь brain→root).
+cd /
 umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C.UTF-8
@@ -12,6 +15,7 @@ CRED_DIR=/etc/brain-bot/credentials
 LIB_DIR=/usr/local/lib/brain-bot
 CONF_DIR=/etc/brain-bot   # настройки claude меняет только root
 SRC_DIR=$BRAIN_HOME/.local/share/brain-link/server
+BAK_DIR=/var/backups/brain-link
 UNITS="brain-bot.service brain-brief.timer brain-watch.timer"
 
 die() { echo "❌ $*" >&2; exit 1; }
@@ -30,6 +34,10 @@ sudo brain-admin <команда>
   timesync-restart         перезапустить синхронизацию часов
   update-bot               обновить код бота и настройки claude из ~/.local/share/brain-link/server
   selftest                 проверка бота без сети
+  selfcheck-security       самопроверка безопасности на живом claude (приманки, секреты, SSRF) в песочнице
+                           юнита brain-bot (systemd-run с его свойствами); ≤ 8 вызовов, не чаще раза в сутки
+  canary-init              положить приманки самопроверки (фальшивые CANARY-значения), идемпотентно
+  update-claude            обновить Claude Code официальным установщиком под brain, проверить флаги, рестарт бота
   remove-private           удалить на сервере personal/ и прочие исключённые пути из memory (подтверждение YES)
 USAGE
 }
@@ -60,11 +68,21 @@ case "$cmd" in
 
   status)
     for u in $UNITS; do printf '%-22s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"; done
+    # строка «ufw: active|inactive|none» — её читает audit (sudo -n brain-admin status), формат не менять
+    if command -v ufw >/dev/null 2>&1; then
+      if ufw status 2>/dev/null | grep -qi '^Status: active'; then echo "ufw: active"; else echo "ufw: inactive"; fi
+    else echo "ufw: none"; fi
     echo "--- диск"; df -h "$BRAIN_HOME" | tail -1
     echo "--- часы"; timedatectl show -p NTPSynchronized -p Timezone 2>/dev/null || true
     echo "--- синк"; if [ -f "$BRAIN_HOME/.brain-sync/heartbeat" ]; then stat -c 'heartbeat: %y' "$BRAIN_HOME/.brain-sync/heartbeat"; else echo "heartbeat: нет"; fi
     echo "--- секреты"; ls -l "$CRED_DIR" 2>/dev/null | sed 1d | awk '{print $1, $3, $NF}' || true
     echo "--- таймеры"; systemctl list-timers 'brain-*' --no-pager 2>/dev/null | head -5 || true
+    echo "--- fail2ban"; fail2ban-client status sshd 2>/dev/null | grep -E 'Currently banned|Total banned' | sed 's/^[^A-Za-z]*//' || echo "fail2ban: нет"
+    # файлы из папки brain root читает С ПРАВАМИ brain: подложенный симлинк на /etc/shadow ничего не даст
+    st=$BRAIN_HOME/.local/state/brain-bot
+    if runuser -u brain -- test -e "$st/safe_mode"; then echo "safe_mode: on"; runuser -u brain -- head -c 2000 "$st/safe_mode"; echo
+    else echo "safe_mode: off"; fi
+    runuser -u brain -- sed -n 's/^ "status": "\([a-z]*\)".*/selfcheck: \1/p' "$st/selfcheck.json" 2>/dev/null | head -1 || true
     ;;
 
   logs)
@@ -77,7 +95,7 @@ case "$cmd" in
     name=${2:-}
     case "$name" in
       bot) re='^[0-9]{6,12}:[A-Za-z0-9_-]{30,}$' ;;
-      claude) re='^sk-ant-[A-Za-z0-9_-]{20,}$' ;;
+      claude) re='^sk-ant-oat[0-9A-Za-z_-]{20,}$' ;;   # только токен подписки (claude setup-token), не API-ключ
       *) die "set-token bot|claude" ;;
     esac
     if [ -t 0 ]; then
@@ -113,15 +131,18 @@ case "$cmd" in
     [ -d "$SRC_DIR" ] && [ ! -L "$SRC_DIR" ] || die "нет папки $SRC_DIR"
     install -d -m 0755 -o root -g root "$LIB_DIR" "$CONF_DIR"
     t1=$(safe_install "$SRC_DIR/brain_bot.py" "$LIB_DIR/brain_bot.py" 0755 root:root)
-    python3 - "$t1" <<'PY' || { rm -f "$t1"; die "brain_bot.py не компилируется"; }
+    # Проверки содержимого — от brain и в изолированном режиме (-I: без cwd, PYTHON*, user site).
+    # Root-интерпретатор файлов из папки brain не трогает вообще.
+    runuser -u brain -- /usr/bin/python3 -I - "$t1" <<'PY' || { rm -f "$t1"; die "brain_bot.py не компилируется"; }
 import ast, sys
 ast.parse(open(sys.argv[1], encoding="utf-8").read(), feature_version=(3, 9))
 PY
     t2=$(safe_install "$SRC_DIR/claude_settings.json" "$CONF_DIR/claude_settings.json" 0644 root:root)
-    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["permissions"]["deny"]' "$t2" \
-      || { rm -f "$t1" "$t2"; die "claude_settings.json битый или без deny"; }
+    runuser -u brain -- /usr/bin/python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); p=d["permissions"]; assert p["deny"] and p["allow"] and d.get("disableAllHooks") is True' "$t2" \
+      || { rm -f "$t1" "$t2"; die "claude_settings.json битый или без deny/allow/disableAllHooks"; }
+    install -d -m 0700 -o root -g root "$BAK_DIR"
     for f in "$LIB_DIR/brain_bot.py" "$CONF_DIR/claude_settings.json"; do
-      [ -f "$f" ] && cp -p "$f" "$f.bak.$(date +%Y%m%d_%H%M%S)"
+      [ -f "$f" ] && cp -p "$f" "$BAK_DIR/$(basename "$f").$(date +%Y%m%d_%H%M%S)"
     done
     mv -f "$t1" "$LIB_DIR/brain_bot.py"
     mv -f "$t2" "$CONF_DIR/claude_settings.json"
@@ -137,29 +158,141 @@ PY
       if [ -f "$f" ] && [ "$(stat -c '%a %U' "$f")" = "600 root" ]; then ok "секрет $n: 0600 root"; else echo "❌ секрет $n: нет или права не 0600 root"; rc=1; fi
     done
     [ "$(stat -c '%a %U' "$CRED_DIR" 2>/dev/null)" = "700 root" ] && ok "$CRED_DIR: 0700 root" || { echo "❌ $CRED_DIR не 0700 root"; rc=1; }
+    cc=$BRAIN_HOME/.local/state/brain-bot/claude-config
+    [ -d "$cc" ] && [ ! -L "$cc" ] && [ "$(stat -c '%a %U' "$cc")" = "700 brain" ] && ok "конфиг claude бота: $cc (0700 brain)" \
+      || { echo "❌ нет $cc 0700 brain (CLAUDE_CONFIG_DIR бота) — повтори harden"; rc=1; }
+    for f in "$BRAIN_HOME"/.claude/settings.json "$BRAIN_HOME"/.claude/settings.local.json; do
+      [ -e "$f" ] && warn "$f есть — бот его НЕ читает (--setting-sources пустой), но лучше убрать"
+    done
     oid=$(owner_id || true)
     [[ "$oid" =~ ^[0-9]+$ ]] && ok "OWNER_ID задан в юните" || { echo "❌ OWNER_ID в юните не задан (fail-closed)"; rc=1; }
     systemctl show -p User --value brain-bot.service | grep -qx brain && ok "бот запускается под brain" || { echo "❌ бот не под brain"; rc=1; }
     if grep -rqs 'ANTHROPIC_API_KEY' /etc/environment /etc/systemd/system/brain-*.service "$BRAIN_HOME/.profile" "$BRAIN_HOME/.bashrc"; then
       echo "❌ где-то задан ANTHROPIC_API_KEY — убрать"; rc=1
     else ok "ANTHROPIC_API_KEY нигде не задан"; fi
+    if [ -f "$CONF_DIR/canary.list" ] && [ "$(stat -c '%a %U' "$CONF_DIR/canary.list")" = "600 root" ]; then ok "приманки самопроверки: $CONF_DIR/canary.list (0600 root)"
+    else echo "❌ нет приманок самопроверки ($CONF_DIR/canary.list 0600 root) — sudo brain-admin canary-init"; rc=1; fi
     runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" \
       PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
-      /usr/bin/python3 "$LIB_DIR/brain_bot.py" selftest || rc=1
+      /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selftest || rc=1
     exit $rc
     ;;
 
+  canary-init)
+    # Приманки — ФАЛЬШИВЫЕ уникальные значения CANARY-<случайно>, генерируются при установке.
+    # Настоящие токены здесь не используются никогда. Значения помнит только root: $CONF_DIR/canary.list (0600).
+    install -d -m 0755 -o root -g root "$CONF_DIR"
+    LIST=$CONF_DIR/canary.list
+    gen() { printf 'CANARY-%s' "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
+    if [ -f "$LIST" ] && [ ! -L "$LIST" ] && [ "$(grep -c '^CANARY-[0-9a-f]\{16,\}$' "$LIST")" -ge 3 ]; then
+      mapfile -t V < <(grep '^CANARY-' "$LIST" | head -3); ok "приманки уже есть — значения прежние"
+    else
+      V=("$(gen)" "$(gen)" "$(gen)")
+      tmp=$(mktemp "$CONF_DIR/.tmp.XXXXXX"); printf '%s\n' "${V[@]}" > "$tmp"
+      chmod 0600 "$tmp"; chown root:root "$tmp"; mv -f "$tmp" "$LIST"
+      ok "приманки сгенерированы: $LIST (0600 root)"
+    fi
+    tmp=$(mktemp "$CONF_DIR/.tmp.XXXXXX")
+    printf 'brain-link canary: FAKE secret for the security self-check, not a real token\n%s\n' "${V[0]}" > "$tmp"
+    chmod 0600 "$tmp"; chown root:root "$tmp"; mv -f "$tmp" "$CONF_DIR/canary"
+    ok "приманка $CONF_DIR/canary (0600 root)"
+    # В домашней папке brain пишем ОТ brain: подложенный симлинк root-записи не даст.
+    put_brain() { # path content
+      printf '%s\n' "$2" | runuser -u brain -- sh -c 'umask 077; d=$(dirname "$1"); { [ -d "$d" ] && [ ! -L "$d" ]; } || exit 3
+        t="$1.tmp.$$"; cat > "$t" && chmod 600 "$t" && mv -f "$t" "$1"' sh "$1"
+    }
+    put_brain "$BRAIN_HOME/.config/brain-canary" "brain-link canary: FAKE secret ${V[1]}" \
+      && ok "приманка ~/.config/brain-canary (0600 brain)" || warn "не положил ~/.config/brain-canary (нет папки?)"
+    put_brain "$BRAIN_HOME/.claude/.canary-credentials.json" \
+      "{\"claudeAiOauth\": {\"accessToken\": \"${V[2]}\", \"note\": \"brain-link canary, fake\"}}" \
+      && ok "приманка ~/.claude/.canary-credentials.json (0600 brain)" || warn "не положил ~/.claude/.canary-credentials.json"
+    ;;
+
+  selfcheck-security)
+    # Честная проверка: тот же код бота, тот же claude, ТЕ ЖЕ свойства песочницы, что у brain-bot.service
+    # (LoadCredential, ProtectHome, ProtectProc, IPAddressDeny…) — читаем их из установленного юнита
+    # и передаём systemd-run. Нет systemd-run или он не принял свойства — запуск с тем же окружением
+    # без песочницы, в selfcheck.json пометка sandbox=fallback.
+    UNIT=/etc/systemd/system/brain-bot.service
+    [ -f "$UNIT" ] || die "нет $UNIT — сначала brain-link bot"
+    grep -q '__OWNER_ID__' "$UNIT" && die "OWNER_ID в юните не задан — сначала brain-link bot"
+    [ -f "$CONF_DIR/canary.list" ] || "$0" canary-init
+    props=(-p User=brain -p Group=brain -p "WorkingDirectory=$BRAIN_HOME" -p RuntimeMaxSec=1800)
+    while IFS= read -r line; do
+      case "$line" in ''|'#'*|'['*) continue ;; esac
+      case "${line%%=*}" in
+        Type|Restart|RestartSec|ExecStart|ExecStartPre|ExecStartPost|ExecReload|ExecStop|TimeoutStartSec|\
+        StartLimitIntervalSec|StartLimitBurst|WorkingDirectory|User|Group) continue ;;
+      esac
+      props+=(-p "$line")
+    done < <(sed -n '/^\[Service\]/,/^\[/p' "$UNIT")
+    grep -q '^LoadCredential=canary_list:' "$UNIT" || props+=(-p "LoadCredential=canary_list:$CONF_DIR/canary.list")
+    out=$(mktemp); err=$(mktemp); rc=0; mode=systemd
+    if command -v systemd-run >/dev/null 2>&1; then
+      systemd-run --quiet --wait --pipe --collect --unit="brain-selfcheck-$$" "${props[@]}" -p User=brain /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
+      if ! grep -q '^SELFCHECK=' "$out"; then
+        warn "systemd-run не выполнил самопроверку ($(head -1 "$err")) — запускаю с тем же окружением без песочницы"
+        mode=fallback
+      fi
+    else
+      warn "systemd-run нет — запуск с тем же окружением без песочницы systemd"
+      mode=fallback
+    fi
+    if [ "$mode" = fallback ]; then
+      rc=0
+      CD=$(mktemp -d /run/brain-selfcheck.XXXXXX)
+      for n in bot_token claude_token; do if [ -f "$CRED_DIR/$n" ]; then cp "$CRED_DIR/$n" "$CD/$n"; fi; done
+      cp "$CONF_DIR/canary.list" "$CD/canary_list"
+      chown -R brain:brain "$CD"; chmod 0700 "$CD"; chmod 0600 "$CD"/*
+      oid=$(owner_id || true)
+      tz=$(systemctl show -p Environment --value brain-bot.service 2>/dev/null | tr ' ' '\n' | sed -n 's/^BOT_TZ=//p' | head -1)
+      runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BOT_TZ="${tz:-Europe/Moscow}" \
+        PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" CREDENTIALS_DIRECTORY="$CD" BRAIN_SELFCHECK_SANDBOX=fallback \
+        /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
+      rm -rf "$CD"
+    fi
+    cat "$out"
+    grep -E '^(ERROR|CRITICAL)' "$err" | tail -5 >&2 || true
+    rm -f "$out" "$err"
+    exit "$rc"
+    ;;
+
+  update-claude)
+    LOG=$(mktemp)
+    if runuser -l brain -c 'curl -fsSL https://claude.ai/install.sh | bash' >"$LOG" 2>&1; then
+      ok "Claude Code обновлён официальным установщиком (под brain)"
+    else tail -5 "$LOG" >&2; rm -f "$LOG"; die "установщик Claude Code упал (сеть? место на диске?)"; fi
+    rm -f "$LOG"
+    cc=$BRAIN_HOME/.local/state/brain-bot/claude-config
+    CL="env -i HOME=$BRAIN_HOME PATH=$BRAIN_HOME/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=$cc $BRAIN_HOME/.local/bin/claude"
+    v=$(runuser -u brain -- $CL --version 2>/dev/null | head -1 || true)
+    echo "claude: ${v:-не отвечает}"
+    h=$(runuser -u brain -- $CL --help 2>/dev/null || true)
+    miss=0
+    for f in --tools --setting-sources --allowedTools --disallowedTools; do
+      if grep -q -- "$f" <<<"$h"; then ok "флаг $f есть"; else echo "❌ флага $f нет"; miss=1; fi
+    done
+    systemctl restart brain-bot.service && ok "бот перезапущен (флаги на месте → безопасный режим по причине claude-flags снимется сам)"
+    [ "$miss" = 0 ] || die "не все флаги изоляции есть — бот остаётся в безопасном режиме, напиши куратору"
+    ;;
+
   remove-private)
+    # Всё внутри memory принадлежит brain, поэтому find и rm идут С ПРАВАМИ brain (runuser):
+    # подменённый между find и rm путь (симлинк на /etc и т.п.) root-удаления не даст.
+    # find -P не ходит по симлинкам; rm -rf удаляет сам симлинк, а не цель.
     mem=$BRAIN_HOME/memory
-    [ -d "$mem" ] || die "нет $mem"
-    mapfile -d '' found < <(find "$mem" \( -type d \( -name personal -o -name private -o -name 'secret*' -o -name sessions -o -name .secrets -o -name .git -o -name .config \) -prune -print0 \) -o \( -type f \( -name .env -o -name '*.env' -o -name '*.session' \) -print0 \))
+    [ -d "$mem" ] && [ ! -L "$mem" ] || die "нет $mem (или это симлинк)"
+    mapfile -d '' found < <(runuser -u brain -- find -P "$mem" -xdev \( -type d \( -name personal -o -name private -o -name 'secret*' -o -name sessions -o -name .secrets -o -name .git -o -name .config \) -prune -print0 \) -o \( \( -type f -o -type l \) \( -name .env -o -name '*.env' -o -name '*.session' \) -print0 \))
     if [ "${#found[@]}" -eq 0 ]; then ok "исключённых путей на сервере нет"; exit 0; fi
     echo "Будут удалены на сервере (на компьютере всё остаётся):"
-    printf '  %s\n' "${found[@]}"
-    read -r -p "Напиши YES, чтобы удалить: " answer
+    printf '  %q\n' "${found[@]}"
+    answer=""
+    read -r -t 60 -p "Напиши YES в течение 60 секунд, чтобы удалить: " answer || die "время вышло или ввода нет — отменено"
     [ "$answer" = "YES" ] || die "отменено"
     for p in "${found[@]}"; do
-      case "$p" in "$mem"/*) rm -rf --one-file-system -- "$p" ;; *) die "путь вне memory: $p" ;; esac
+      case "$p" in "$mem"/*) ;; *) die "путь вне memory: $p" ;; esac
+      case "/$p/" in */../*|*/./*) die "подозрительный путь: $p" ;; esac
+      runuser -u brain -- rm -rf --one-file-system -- "$p" || warn "не удалилось: $p"
     done
     ok "удалено: ${#found[@]}"
     ;;

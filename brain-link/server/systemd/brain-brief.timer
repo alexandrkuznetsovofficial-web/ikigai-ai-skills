@@ -1,9 +1,10 @@
-# brain-link kit 2.1 — брифинг в 05:00 UTC = 08:00 МСК. Persistent: если сервер спал — догонит.
+# brain-link kit 2.1 — брифинг в 08:00 по часовому поясу владельца (BOT_TZ; harden подставляет его
+# вместо Europe/Moscow). Persistent: если сервер спал — догонит. Пояс в OnCalendar — systemd ≥ 235.
 [Unit]
-Description=brain-brief: утренний брифинг 08:00 МСК
+Description=brain-brief: утренний брифинг 08:00 (BOT_TZ)
 
 [Timer]
-OnCalendar=*-*-* 05:00:00 UTC
+OnCalendar=*-*-* 08:00:00 Europe/Moscow
 Persistent=true
 RandomizedDelaySec=60
 Unit=brain-brief.service

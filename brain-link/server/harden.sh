@@ -4,7 +4,12 @@
 #
 #   ADMIN_PUBKEY="ssh-ed25519 AAAA… you@laptop" \
 #   SYNC_PUBKEY="ssh-ed25519 AAAA… brain-sync"  \
-#   SERVER_PORT=22 OWNER_ID=123456789 bash harden.sh
+#   SERVER_PORT=22 OWNER_ID=123456789 BOT_TZ=Europe/Moscow bash harden.sh
+#
+# BOT_TZ (по умолчанию Europe/Moscow) — часовой пояс владельца: брифинг приходит в 08:00 по нему.
+# BRAIN_LAB_SKIP_UFW_ENABLE=1 — ТОЛЬКО ДЛЯ ТЕСТОВ (лаборатория CI): правила ufw кладутся, `ufw enable` — нет.
+# На контейнерных VPS (OpenVZ/LXC) ufw/swap могут быть недоступны: harden не обрывается,
+# помечает шаг ❌ и доделывает остальное; итог тогда ❌.
 #
 # Что НЕ делает (сознательно): не меняет порт SSH, не ставит белый список IP, не выключает
 # вход по паролю — sshd_00-brain.conf кладётся выключенным (*.disabled), включает его
@@ -18,22 +23,38 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 BRAIN=brain
 BH=/home/brain
 PORT=${SERVER_PORT:-22}
+TZ_NAME=${BOT_TZ:-Europe/Moscow}
+BAK_DIR=/var/backups/brain-link
+CLAUDE_CFG=$BH/.local/state/brain-bot/claude-config
 FAIL=0
 
 ok()   { echo "✅ $*"; }
 warn() { echo "🟡 $*"; }
 bad()  { echo "❌ $*"; FAIL=1; }
 stamp() { date +%Y%m%d_%H%M%S; }
-# put SRC DST MODE OWNER — ставит файл, если отличается; старую версию — в .bak
+# put SRC DST MODE OWNER — ставит файл, если отличается. Старую версию — в /var/backups/brain-link/,
+# а НЕ рядом: apt.conf.d, sudoers.d, sshd_config.d и systemd читают «соседей» (.bak рядом — мусор или вред).
 put() {
   local src=$1 dst=$2 mode=$3 own=$4
   if [ -f "$dst" ] && cmp -s "$src" "$dst"; then chmod "$mode" "$dst"; chown "$own" "$dst"; return 0; fi
-  [ -f "$dst" ] && cp -p "$dst" "$dst.bak.$(stamp)"
+  if [ -f "$dst" ]; then
+    install -d -m 0700 -o root -g root "$BAK_DIR"
+    cp -p "$dst" "$BAK_DIR/$(echo "${dst#/}" | tr '/' '_').$(stamp)"
+  fi
   install -m "$mode" -o "${own%%:*}" -g "${own##*:}" "$src" "$dst"
 }
 
 [ "$(id -u)" -eq 0 ] || { echo "❌ запускать от root"; exit 1; }
 [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || { echo "❌ SERVER_PORT — число"; exit 1; }
+if [[ ! "$TZ_NAME" =~ ^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$ ]] || [ ! -f "/usr/share/zoneinfo/$TZ_NAME" ]; then
+  echo "❌ BOT_TZ=$TZ_NAME — нет такого часового пояса (пример: Europe/Moscow, Asia/Almaty)"; exit 1
+fi
+# Ключ админа и ключ синка обязаны различаться: ключ синка ограничен command=, и если это тот же
+# ключ — либо админ теряет вход, либо синк получает полный shell под brain.
+key_body() { echo "$1" | awk '{print $2}'; }
+if [ -n "${ADMIN_PUBKEY:-}" ] && [ -n "${SYNC_PUBKEY:-}" ] && [ "$(key_body "$ADMIN_PUBKEY")" = "$(key_body "$SYNC_PUBKEY")" ]; then
+  echo "❌ ADMIN_PUBKEY и SYNC_PUBKEY — один и тот же ключ. Для синка нужен отдельный ключ (brain-link keys)"; exit 1
+fi
 . /etc/os-release 2>/dev/null || true
 [ "${ID:-}" = ubuntu ] && ok "ОС: ${PRETTY_NAME:-Ubuntu}" || warn "ОС не Ubuntu (${PRETTY_NAME:-?}) — кит проверен на Ubuntu 24.04"
 
@@ -48,14 +69,20 @@ fi
 # 2. Swap 2G (4 ГБ RAM: claude + голос) и vm.swappiness=10
 if [ -n "$(swapon --show --noheadings 2>/dev/null)" ]; then ok "swap уже есть: $(swapon --show --noheadings | awk '{print $3}' | head -1)"
 else
-  if [ ! -f /swapfile ]; then fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none; fi
-  chmod 600 /swapfile
-  mkswap /swapfile >/dev/null 2>&1 || true
-  swapon /swapfile && ok "swap 2G включён" || bad "swap не включился"
-  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  if [ ! -f /swapfile ]; then
+    fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none 2>/dev/null || rm -f /swapfile
+  fi
+  if [ -f /swapfile ]; then
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null 2>&1 || true
+    if swapon /swapfile 2>/dev/null; then
+      ok "swap 2G включён"
+      grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    else bad "swap не включился (контейнерный VPS? тогда swap даёт провайдер)"; fi
+  else bad "не удалось создать /swapfile"; fi
 fi
 echo 'vm.swappiness=10' > /etc/sysctl.d/99-brain.conf
-sysctl -q -p /etc/sysctl.d/99-brain.conf && ok "vm.swappiness=10"
+sysctl -q -p /etc/sysctl.d/99-brain.conf 2>/dev/null && ok "vm.swappiness=10" || warn "vm.swappiness не применился (контейнерный VPS?)"
 
 # 3. Пакеты
 if apt-get update -qq && apt-get install -y -qq ufw fail2ban unattended-upgrades python3 python3-venv \
@@ -68,14 +95,25 @@ else
 fi
 
 # 4. Файрвол: всё входящее закрыто, кроме SSH. Порт сверяем с тем, что реально слушает sshd.
-SSHD_PORTS=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -u | tr '\n' ' ')
-if ! echo " $SSHD_PORTS " | grep -q " $PORT "; then
+# Каждый вызов ufw — с `|| bad`: в контейнере (нет iptables/модулей) ufw падает, а harden обязан доделать остальное.
+SSHD_PORTS=$( (sshd -T 2>/dev/null || true) | awk '$1=="port"{print $2}' | sort -u | tr '\n' ' ')
+if ! command -v ufw >/dev/null 2>&1; then
+  bad "ufw недоступен (не установился) — файрвол не включён"
+elif ! echo " $SSHD_PORTS " | grep -q " $PORT "; then
   bad "sshd слушает порт(ы) [${SSHD_PORTS:-?}], а SERVER_PORT=$PORT — ufw НЕ включаю, чтобы не запереть вход"
+elif [ "${BRAIN_LAB_SKIP_UFW_ENABLE:-0}" = 1 ]; then
+  # ТОЛЬКО ДЛЯ ТЕСТОВ (лаборатория CI в контейнере): правила кладём, файрвол не включаем
+  if ufw default deny incoming >/dev/null 2>&1 && ufw default allow outgoing >/dev/null 2>&1 \
+     && ufw allow "$PORT/tcp" comment 'ssh (brain-link)' >/dev/null 2>&1; then
+    warn "ufw: правила добавлены, ufw enable пропущено: лаборатория (BRAIN_LAB_SKIP_UFW_ENABLE=1)"
+  else bad "ufw: правила не добавились (лаборатория)"; fi
+elif ufw default deny incoming >/dev/null 2>&1 \
+     && ufw default allow outgoing >/dev/null 2>&1 \
+     && ufw allow "$PORT/tcp" comment 'ssh (brain-link)' >/dev/null 2>&1 \
+     && ufw --force enable >/dev/null 2>&1; then
+  ok "ufw: deny incoming, открыт только $PORT/tcp"
 else
-  ufw default deny incoming >/dev/null
-  ufw default allow outgoing >/dev/null
-  ufw allow "$PORT/tcp" comment 'ssh (brain-link)' >/dev/null
-  ufw --force enable >/dev/null && ok "ufw: deny incoming, открыт только $PORT/tcp" || bad "ufw не включился"
+  bad "ufw недоступен (контейнерный VPS?) — файрвол не включён, закрой порты в панели провайдера"
 fi
 
 # 5. fail2ban: sshd, бан 1 ч после 5 попыток
@@ -107,7 +145,10 @@ for d in memory memory/inbox memory/dialogues .claude .claude/skills .cache .loc
   install -d -m 0750 -o "$BRAIN" -g "$BRAIN" "$BH/$d"
 done
 install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$BH/.local/state/brain-bot"
-ok "папки /home/brain (0750) готовы"
+# Конфиг Claude Code бота (CLAUDE_CONFIG_DIR): .claude.json, история, кэш — здесь, а не в ~/.claude.
+# В ~/.claude остаются только скиллы. Вход Claude у бота — только токен из LoadCredential.
+install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$CLAUDE_CFG"
+ok "папки /home/brain (0750) готовы, конфиг claude бота: $CLAUDE_CFG (0700)"
 
 # 9. SSH-ключи brain: ключ админа + ключ синка с ограничением command=
 install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$BH/.ssh"
@@ -148,20 +189,49 @@ put "$HERE/brain_bot.py" /usr/local/lib/brain-bot/brain_bot.py 0755 root:root
 put "$HERE/claude_settings.json" "/etc/brain-bot/claude_settings.json" 0644 root:root
 for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.service brain-watch.timer; do
   TMPU=$(mktemp)
-  if [[ "${OWNER_ID:-}" =~ ^[0-9]+$ ]]; then sed "s/__OWNER_ID__/$OWNER_ID/" "$HERE/systemd/$u" > "$TMPU"
+  # Часовой пояс: в юнитах по умолчанию Europe/Moscow (Environment=BOT_TZ и OnCalendar таймера)
+  if [[ "${OWNER_ID:-}" =~ ^[0-9]+$ ]]; then sed -e "s/__OWNER_ID__/$OWNER_ID/" -e "s#Europe/Moscow#$TZ_NAME#g" "$HERE/systemd/$u" > "$TMPU"
   elif [ -f "/etc/systemd/system/$u" ] && grep -qE '^Environment=OWNER_ID=[0-9]+$' "/etc/systemd/system/$u"; then
-    oid=$(sed -n 's/^Environment=OWNER_ID=//p' "/etc/systemd/system/$u"); sed "s/__OWNER_ID__/$oid/" "$HERE/systemd/$u" > "$TMPU"
-  else cp "$HERE/systemd/$u" "$TMPU"; fi
+    oid=$(sed -n 's/^Environment=OWNER_ID=//p' "/etc/systemd/system/$u"); sed -e "s/__OWNER_ID__/$oid/" -e "s#Europe/Moscow#$TZ_NAME#g" "$HERE/systemd/$u" > "$TMPU"
+  else sed "s#Europe/Moscow#$TZ_NAME#g" "$HERE/systemd/$u" > "$TMPU"; fi
   put "$TMPU" "/etc/systemd/system/$u" 0644 root:root; rm -f "$TMPU"
 done
 systemctl daemon-reload
+if command -v systemd-analyze >/dev/null 2>&1; then
+  systemd-analyze calendar "*-*-* 08:00:00 $TZ_NAME" >/dev/null 2>&1 && ok "брифинг в 08:00 по $TZ_NAME" \
+    || bad "systemd не понимает OnCalendar с поясом $TZ_NAME (нужен systemd ≥ 235)"
+fi
+# Юниты бота запрещают сеть к localhost (IPAddressDeny=localhost), кроме 127.0.0.53 — stub systemd-resolved.
+# Если DNS на сервере идёт через другой локальный адрес (dnsmasq 127.0.0.1 и т.п.), бот не резолвит имена.
+NS=$(awk '$1=="nameserver"{print $2}' /etc/resolv.conf 2>/dev/null | tr '\n' ' ')
+case " $NS " in
+  *" 127.0.0.53 "*) ok "DNS через systemd-resolved (127.0.0.53) — бот его видит" ;;
+  *" 127."*|*" ::1 "*) bad "DNS через локальный адрес [$NS], не 127.0.0.53: бот (IPAddressDeny=localhost) не сможет резолвить имена — добавь адрес в IPAddressAllow юнитов" ;;
+  *) ok "DNS: [$NS] (не loopback) — IPAddressDeny=localhost не мешает" ;;
+esac
 grep -q '__OWNER_ID__' /etc/systemd/system/brain-bot.service \
   && warn "OWNER_ID не задан — бот не стартует, пока его не подставит brain-link bot (fail-closed)" \
   || ok "юниты brain-bot / brief / watch установлены"
 
+# 12б. Приманки самопроверки безопасности: ФАЛЬШИВЫЕ уникальные CANARY-значения (настоящие токены — никогда).
+# /etc/brain-bot/canary (root 0600), ~/.config/brain-canary и ~/.claude/.canary-credentials.json (brain 0600),
+# список значений — /etc/brain-bot/canary.list (root 0600, боту его отдаёт LoadCredential=canary_list).
+if /usr/local/sbin/brain-admin canary-init >/tmp/brain-canary.$$ 2>&1; then ok "приманки самопроверки на месте"
+else bad "приманки самопроверки не легли: $(grep -E '❌|🟡' /tmp/brain-canary.$$ | head -2 | tr '\n' ' ')"; fi
+rm -f /tmp/brain-canary.$$
+
 # 13. Вход только по ключам — кладём ВЫКЛЮЧЕННЫМ, включает lockdown
 put "$HERE/sshd_00-brain.conf" /etc/ssh/sshd_config.d/00-brain.conf.disabled 0644 root:root
 ok "sshd 00-brain.conf.disabled положен (включит brain-link lockdown)"
+
+# 14. Старые .bak, которые прошлые версии кита клали рядом с конфигами, — переносим в $BAK_DIR
+for f in /etc/apt/apt.conf.d/20auto-upgrades.bak.* /etc/sudoers.d/brain.bak.* /etc/fail2ban/jail.local.bak.* \
+         /etc/ssh/sshd_config.d/00-brain.conf.disabled.bak.* /etc/systemd/system/brain-*.bak.* \
+         /etc/brain-bot/claude_settings.json.bak.* /usr/local/lib/brain-bot/brain_bot.py.bak.*; do
+  [ -f "$f" ] || continue
+  install -d -m 0700 -o root -g root "$BAK_DIR"
+  mv -f "$f" "$BAK_DIR/$(echo "${f#/}" | tr '/' '_')" && warn "старая копия $f перенесена в $BAK_DIR"
+done
 
 # Итог
 if [ "$FAIL" -eq 0 ]; then echo "ИТОГ: ✅ harden прошёл"; else echo "ИТОГ: ❌ есть ошибки — смотри строки с ❌"; fi

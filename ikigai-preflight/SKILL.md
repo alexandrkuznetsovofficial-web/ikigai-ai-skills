@@ -103,6 +103,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\sk
   PowerShell из таблицы выше, затем перезапустить VS Code.
 - **Python нет.** Нужен не всем: только пакам вроде почты и календаря. Windows: Microsoft Store → «Python 3».
   Mac: обычно уже есть.
+- **Связка с сервером (brain-link, пробник 1.1).** Поля `ssh` (версия встроенного OpenSSH; на Windows — из
+  `System32\OpenSSH`, не из Git Bash), `ssh_keygen`, `ssh_key` (есть ли `~/.ssh/id_ed25519`), `python_version`
+  (нужен 3.9+). Справочно, ни на что не влияют: `rsync`, `wsl`, `tailscale`. Нет ssh на Windows → Параметры →
+  Приложения → Дополнительные компоненты → «Клиент OpenSSH» → Добавить.
 
 ## Режим «Проверь мой Модуль 0»
 

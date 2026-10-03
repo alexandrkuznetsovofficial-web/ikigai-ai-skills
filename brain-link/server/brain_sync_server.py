@@ -18,6 +18,11 @@ brain-link/scripts/brainlib.py; tests/test_sync.py сверяет их, прав
 
 Корень — /home/brain (переопределяется BRAIN_ROOT, для тестов). Ключи путей протокола:
     "CLAUDE.md" → <root>/CLAUDE.md · "memory/…" → <root>/memory/… · "skills/…" → <root>/.claude/skills/…
+
+Имена. Ключи протокола — всегда NFC. На ext4 имена не нормализуются: файл, приехавший когда-то в NFD (scp/rsync
+с Mac), лежит на диске в NFD. Поэтому путь на диске ищется по каждому компоненту: точное имя, иначе имя, чья NFC-форма
+совпадает (resolve_component). Запись нового — в NFC; при загрузке поверх NFD-файла и по флагу плана normalize_names
+(init/adopt) NFD-имена переименовываются в NFC, если такого NFC-имени рядом ещё нет.
 """
 import fnmatch
 import hashlib
@@ -39,11 +44,17 @@ SERVER_VERSION = "2.1"
 PROTOCOL = 1
 
 # ---- копия brainlib (сверяется тестом) ----
-EXCLUDES = (
+EXCLUDES_BASE = (
     "personal/", "private/", "secret*/", "sessions/", ".secrets/", ".git/", ".config/",
     "node_modules/", ".venv/", "__pycache__/",
     ".env", "*.env", "*.session", "*.bak*", "*.conflict-*", ".DS_Store",
 )
+EXCLUDES_SECRETS = (
+    ".aws/", ".ssh/", ".gnupg/", ".kube/",
+    "*.pem", "*.key", "id_rsa*", "id_ed25519*", "id_ecdsa*", ".netrc", ".npmrc", ".pypirc",
+    "credentials*.json", "client_secret*.json", "*token*.json", "*.kdbx", "*.p12", "*.pfx",
+)
+EXCLUDES = EXCLUDES_BASE + EXCLUDES_SECRETS
 MAX_FILE_BYTES = 20 * 1024 * 1024
 EXCLUDE_DIRS = tuple(p[:-1] for p in EXCLUDES if p.endswith("/"))
 EXCLUDE_FILES = tuple(p for p in EXCLUDES if not p.endswith("/"))
@@ -144,25 +155,102 @@ def zone_base(rel):
     return os.path.join(r, "memory") if rel.startswith("memory/") else os.path.join(r, ".claude", "skills")
 
 
-def target_path(rel):
-    """Абсолютный путь на сервере для ключа протокола. Ни одна часть пути внутри корня не может быть симлинком."""
+_DIR_CACHE = {}
+
+
+def _listdir(path):
+    """Точка подмены для тестов (эмуляция ФС, которая не нормализует имена)."""
+    return os.listdir(path)
+
+
+def _entries(d):
+    if d not in _DIR_CACHE:
+        try:
+            _DIR_CACHE[d] = list(_listdir(d))
+        except (FileNotFoundError, NotADirectoryError):
+            _DIR_CACHE[d] = []
+    return _DIR_CACHE[d]
+
+
+def _forget(d):
+    _DIR_CACHE.pop(d, None)
+
+
+def resolve_component(d, comp):
+    """Реальное имя на диске для NFC-компонента comp в папке d: точное совпадение, иначе по NFC-форме, иначе comp."""
+    names = _entries(d)
+    if comp in names:
+        return comp
+    for n in names:
+        if nfc(n) == comp:
+            return n
+    return comp
+
+
+def _rel_components(rel):
     if not is_safe_rel(rel):
         raise Refuse("недопустимый путь: %r" % rel[:200])
-    r = root_dir()
     if rel in ROOT_FILES:
-        base, parts = r, [rel]
-    else:
-        head, _, tail = rel.partition("/")
-        base = os.path.join(r, "memory") if head == "memory" else os.path.join(r, ".claude", "skills")
-        parts = tail.split("/")
-    cur = r
-    for comp in os.path.relpath(base, r).split(os.sep) + parts:
-        if comp in (".", ""):
-            continue
-        cur = os.path.join(cur, comp)
+        return [rel]
+    head, _, tail = rel.partition("/")
+    base = ["memory"] if head == "memory" else [".claude", "skills"]
+    return base + tail.split("/")
+
+
+def target_path(rel):
+    """Абсолютный путь НА ДИСКЕ для ключа протокола (NFC → реальное имя, см. шапку).
+    Ни одна часть пути внутри корня не может быть симлинком."""
+    cur = root_dir()
+    for comp in _rel_components(rel):
+        cur = os.path.join(cur, resolve_component(cur, comp))
         if os.path.islink(cur):
             raise Refuse("симлинк на пути: %r" % rel[:200])
-    return os.path.join(base, *parts)
+    return cur
+
+
+def normalize_path(rel):
+    """Как target_path, но NFD-компоненты по дороге переименовываются в NFC (если NFC-имени рядом нет).
+    Возвращает путь, куда писать (последний компонент — NFC, если файла ещё нет)."""
+    cur = root_dir()
+    for comp in _rel_components(rel):
+        real = resolve_component(cur, comp)
+        if real != comp and comp not in _entries(cur):
+            try:
+                os.rename(os.path.join(cur, real), os.path.join(cur, comp))
+                real = comp
+            except OSError:
+                pass
+            _forget(cur)
+        cur = os.path.join(cur, real)
+        if os.path.islink(cur):
+            raise Refuse("симлинк на пути: %r" % rel[:200])
+    return cur
+
+
+def normalize_names():
+    """Флаг плана normalize_names (init/adopt): все NFD-имена в зонах → NFC, где нет коллизии. Глубокие — первыми."""
+    todo, renamed = [], []
+    for prefix, base in zone_roots():
+        if not os.path.isdir(base) or os.path.islink(base):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+            dirnames[:] = [d for d in dirnames if not is_excluded_dir(d)
+                           and not os.path.islink(os.path.join(dirpath, d))]
+            for name in dirnames + filenames:
+                if nfc(name) != name:
+                    todo.append((dirpath, name))
+    todo.sort(key=lambda x: -len(x[0]))
+    for dirpath, name in todo:
+        new = nfc(name)
+        if new in _listdir(dirpath):
+            continue                       # коллизия: оба имени существуют — не трогаем
+        try:
+            os.rename(os.path.join(dirpath, name), os.path.join(dirpath, new))
+            renamed.append(os.path.relpath(os.path.join(dirpath, new), root_dir()))
+        except OSError:
+            pass
+        _forget(dirpath)
+    return renamed
 
 
 def sha256_file(path):
@@ -174,12 +262,15 @@ def sha256_file(path):
 
 
 def current_sha(path):
+    """sha файла на сервере; None — файла нет. Нечитаемый файл — отказ (нечитаемое ≠ отсутствующее)."""
     try:
         if os.path.islink(path) or not os.path.isfile(path):
             return None
         return sha256_file(path)
-    except OSError:
+    except FileNotFoundError:
         return None
+    except OSError as ex:
+        raise Refuse("не могу прочитать на сервере %s: %s" % (path, ex.strerror or type(ex).__name__))
 
 
 # ---------- обход ----------
@@ -188,7 +279,11 @@ def walk_zone(base, prefix, private_mode=False):
     found, skipped = {}, []
     if not os.path.isdir(base) or os.path.islink(base):
         return found, skipped
-    for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+    def onerror(ex):
+        raise Refuse("не могу прочитать на сервере %s: %s" % (getattr(ex, "filename", base),
+                                                             ex.strerror or type(ex).__name__))
+
+    for dirpath, dirnames, filenames in os.walk(base, followlinks=False, onerror=onerror):
         reldir = os.path.relpath(dirpath, base)
         reldir = "" if reldir == "." else nfc(reldir.replace(os.sep, "/"))
         in_private = any(_match_any(p, PRIVATE_DIRS) for p in reldir.split("/") if p)
@@ -219,11 +314,20 @@ def walk_zone(base, prefix, private_mode=False):
                 continue   # .git внутри personal и т.п. не везём даже по флагу
             try:
                 st = os.stat(full)
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError as ex:
+                raise Refuse("не могу прочитать на сервере %s: %s" % (full, ex.strerror or type(ex).__name__))
             if st.st_size > MAX_FILE_BYTES:
                 skipped.append({"rel": rel, "reason": "больше 20 МБ"})
                 continue
+            if rel in found:
+                # ext4: рядом NFC- и NFD-имя одного файла. Ключ один — берём точное NFC, второе докладываем
+                if fn == nfc(fn):
+                    skipped.append({"rel": rel, "reason": "есть копия с именем в NFD: %s" % found[rel][0]})
+                else:
+                    skipped.append({"rel": rel, "reason": "есть копия с именем в NFD: %s" % full})
+                    continue
             found[rel] = (full, st.st_size, st.st_mtime_ns)
     return found, skipped
 
@@ -256,8 +360,10 @@ def hashed(found, cache, new_cache):
         else:
             try:
                 sha = sha256_file(full)
-            except OSError:
+            except FileNotFoundError:
                 continue
+            except OSError as ex:
+                raise Refuse("не могу прочитать на сервере %s: %s" % (full, ex.strerror or type(ex).__name__))
         res[rel] = sha
         new_cache[rel] = [size, mt, sha]
     return res
@@ -269,7 +375,7 @@ def sync_files():
         f, s = walk_zone(base, prefix)
         found.update(f)
         skipped += s
-    claude_md = os.path.join(root_dir(), "CLAUDE.md")
+    claude_md = os.path.join(root_dir(), resolve_component(root_dir(), "CLAUDE.md"))
     if os.path.isfile(claude_md) and not os.path.islink(claude_md):
         st = os.stat(claude_md)
         if st.st_size <= MAX_FILE_BYTES:
@@ -288,6 +394,7 @@ def private_files():
 # ---------- файлы и права ----------
 def ensure_dir(path):
     if not os.path.isdir(path):
+        _forget(os.path.dirname(path))
         os.makedirs(path, mode=0o750, exist_ok=True)
         try:
             os.chmod(path, 0o750)
@@ -329,6 +436,7 @@ def move_aside(src, dest):
     dest = unique_path(dest)
     ensure_parents(dest)
     os.replace(src, dest)
+    _forget(os.path.dirname(src))
     try:
         os.utime(dest, None)   # срок 30 дней считаем от момента переноса
     except OSError:
@@ -423,7 +531,8 @@ def cmd_manifest():
     found, skipped = sync_files()
     files = hashed(found, cache, new_cache)
     res = {"ok": True, "version": SERVER_VERSION, "protocol": PROTOCOL, "server_time": server_now(),
-           "files": files, "skipped": skipped[:200]}
+           "files": files, "skipped": skipped[:200],
+           "heartbeat": os.path.isfile(os.path.join(state_dir(), "heartbeat"))}
     if req.get("private_report"):
         priv = private_files()
         res["private"] = {"count": len(priv), "bytes": sum(v[1] for v in priv.values()),
@@ -506,10 +615,6 @@ def cmd_apply():
         for rel, spec in uploads.items():
             if zone_of(rel) != "computer" or excluded(rel) or not isinstance(spec, dict):
                 raise Refuse("загрузка вне зоны компьютера: %r" % rel[:200])
-            if rel not in staged:
-                raise Refuse("в архиве нет файла из плана: %r" % rel[:200])
-            if staged[rel][1] != spec.get("sha"):
-                raise Refuse("sha не совпал (файл испорчен в пути): %r" % rel[:200])
             target_path(rel)
         for rel in deletes:
             if zone_of(rel) != "computer" or excluded(rel):
@@ -520,15 +625,28 @@ def cmd_apply():
                 raise Refuse("подтверждение не из inbox: %r" % rel[:200])
             target_path(rel)
 
-        res = {"ok": True, "written": [], "deleted": [], "acked": [], "skipped": [], "server_time": server_now()}
+        if os.environ.get("BRAIN_TEST_FAIL_APPLY"):   # только для тестов: «apply упал после fetch»
+            raise Refuse("тестовый отказ apply")
+        res = {"ok": True, "written": [], "deleted": [], "acked": [], "skipped": [], "renamed": [],
+               "server_time": server_now()}
+        if plan.get("normalize_names"):
+            res["renamed"] = normalize_names()[:200]
         for rel, spec in sorted(uploads.items()):
-            dest = target_path(rel)
-            if current_sha(dest) != spec.get("expected"):
-                res["skipped"].append({"rel": rel, "reason": "changed"})   # кто-то правил между вызовами
+            # один испорченный/недоехавший файл не валит весь прогон: он пропускается, остальное пишется
+            if rel not in staged:
+                res["skipped"].append({"rel": rel, "reason": "нет в архиве"})
                 continue
+            if staged[rel][1] != spec.get("sha"):
+                res["skipped"].append({"rel": rel, "reason": "sha не совпал"})
+                continue
+            dest = target_path(rel)
             if os.path.isdir(dest):
                 res["skipped"].append({"rel": rel, "reason": "на сервере здесь папка"})
                 continue
+            if current_sha(dest) != spec.get("expected"):
+                res["skipped"].append({"rel": rel, "reason": "changed"})   # кто-то правил между вызовами
+                continue
+            dest = normalize_path(rel)
             ensure_parents(dest)
             os.replace(staged[rel][0], dest)
             os.chmod(dest, 0o640)
@@ -589,9 +707,26 @@ def cmd_version():
           "python": sys.version.split()[0]})
 
 
+def _write(stream, text):
+    """UTF-8 байтами: локаль sshd-сессии бывает C/POSIX (ascii) — кириллица и ↑↓ не должны ронять сервер."""
+    try:
+        buf = getattr(stream, "buffer", None)
+        if buf is not None:
+            buf.write(text.encode("utf-8", "backslashreplace"))
+        else:
+            stream.write(text)
+        stream.flush()
+    except (OSError, ValueError, UnicodeError):
+        pass
+
+
 def emit(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    try:
+        text = json.dumps(obj, ensure_ascii=False)
+        text.encode("utf-8")
+    except UnicodeEncodeError:   # суррогаты из «битых» имён файлов
+        text = json.dumps(obj, ensure_ascii=True)
+    _write(sys.stdout, text + "\n")
 
 
 def main():
@@ -600,7 +735,7 @@ def main():
     words = raw.split() if raw is not None else sys.argv[1:]
     cmd = words[0] if words else ""
     if cmd not in ALLOWED or len(words) > 1:
-        sys.stderr.write("brain_sync_server: команда не разрешена\n")
+        _write(sys.stderr, "brain_sync_server: команда не разрешена\n")
         return 1
     ensure_dir(state_dir())
     lock_f = open(os.path.join(state_dir(), "server.lock"), "a")
@@ -611,10 +746,10 @@ def main():
          "heartbeat": cmd_heartbeat, "version": cmd_version}[cmd]()
         return 0
     except Refuse as ex:
-        sys.stderr.write("brain_sync_server: отказ: %s\n" % ex)
+        _write(sys.stderr, "brain_sync_server: отказ: %s\n" % ex)
         return 3
     except Exception as ex:
-        sys.stderr.write("brain_sync_server: ошибка %s: %s\n" % (type(ex).__name__, str(ex)[:300]))
+        _write(sys.stderr, "brain_sync_server: ошибка %s: %s\n" % (type(ex).__name__, str(ex)[:300]))
         return 4
     finally:
         lock_f.close()

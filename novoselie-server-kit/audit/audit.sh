@@ -2,18 +2,26 @@
 # =============================================================================
 #  AI-ПОТОК · АУДИТ-ПАК
 #  Проверяет, что у тебя уже собрано, и показывает, чего не хватает
-#  до цели: мозг живёт на сервере 24/7, Telegram-бот говорит с ним из подписки.
+#  до цели (kit 2.1): компьютер — мастерская, сервер — база. Правишь на компьютере,
+#  сервер держит копию памяти и Telegram-бота 24/7, бот говорит из подписки.
 #
 #  Запуск:  bash audit.sh [папка мозга]
 #  Папку мозга скрипт находит сам: workspace из ~/.claude/ikigai_env.json.
 #  Ничего не ломает и не устанавливает. Только смотрит и рассказывает.
 # =============================================================================
 
-VERSION="2.0"   # kit 2.0: добавлен блок 7 — точки 13–23 эталона второго мозга
+VERSION="2.1"   # kit 2.0: блок 7 — точки 13–23 эталона; kit 2.1: файл доступа §8, блок 8 — связка brain-link
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPORT="$SCRIPT_DIR/audit_report.md"
 PROMPT_FILE="$SCRIPT_DIR/PROMPT_for_claude.txt"
-ACCESS_FILE="${BRAIN_ACCESS_FILE:-$HOME/.config/brain/server_access}"
+# Файл доступа (KIT_CONVENTIONS §8): ~/.config/brain/server_access; старый путь (Windows через Git Bash) — запасной.
+ACCESS_NEW="$HOME/.config/brain/server_access"
+ACCESS_OLD="$HOME/.secrets/brain/server_access.txt"
+ACCESS_FILE="${BRAIN_ACCESS_FILE:-$ACCESS_NEW}"
+ACCESS_LEGACY_PATH=0
+if [ -z "${BRAIN_ACCESS_FILE:-}" ] && [ ! -f "$ACCESS_NEW" ] && [ -f "$ACCESS_OLD" ]; then ACCESS_FILE="$ACCESS_OLD"; ACCESS_LEGACY_PATH=1; fi
+KNOWN_HOSTS="$HOME/.config/brain/known_hosts"
+ADMIN_KEY="$HOME/.ssh/id_ed25519"
 
 # --- цвета (отключаются, если терминал не умеет) ---------------------------
 if [ -t 1 ] && command -v tput >/dev/null 2>&1 && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
@@ -219,14 +227,21 @@ if [ -f "$ACCESS_FILE" ]; then
   if [ "$PERM" = "-rw-------" ]; then ok "Права на файл доступа правильные (600)"
   else warn "Права на файл доступа $PERM — должно быть -rw------- ; выполни: chmod 600 $ACCESS_FILE"; fi
 
-  # читаем БЕЗ вывода значений
-  SERVER_IP="$(grep -E '^[[:space:]]*SERVER_IP[[:space:]]*=' "$ACCESS_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "'"'"'')"
-  SERVER_USER="$(grep -E '^[[:space:]]*SERVER_USER[[:space:]]*=' "$ACCESS_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "'"'"'')"
-  SP="$(grep -E '^[[:space:]]*SERVER_PORT[[:space:]]*=' "$ACCESS_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "'"'"'')"
+  [ "$ACCESS_LEGACY_PATH" = "1" ] && { warn "Файл доступа лежит по старому пути — перенеси его в $ACCESS_NEW (brain-link detect скопирует сам)"; agentdo "запусти brain-link detect: он перенесёт файл доступа на новый путь ~/.config/brain/server_access"; }
+
+  # читаем БЕЗ вывода значений; новые ключи §8, старые IP / LOGIN / PORT — запасной вариант с предупреждением
+  akey() { grep -E "^[[:space:]]*(export[[:space:]]+)?$1[[:space:]]*=" "$ACCESS_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "'"'"''; }
+  SERVER_IP="$(akey SERVER_IP)"; SERVER_USER="$(akey SERVER_USER)"; SP="$(akey SERVER_PORT)"
+  OLD_KEYS=""
+  [ -z "$SERVER_IP" ]   && SERVER_IP="$(akey IP)"     && [ -n "$SERVER_IP" ]   && OLD_KEYS="$OLD_KEYS IP→SERVER_IP"
+  [ -z "$SERVER_USER" ] && SERVER_USER="$(akey LOGIN)" && [ -n "$SERVER_USER" ] && OLD_KEYS="$OLD_KEYS LOGIN→SERVER_USER"
+  [ -z "$SP" ]          && SP="$(akey PORT)"           && [ -n "$SP" ]          && OLD_KEYS="$OLD_KEYS PORT→SERVER_PORT"
+  [ -n "$OLD_KEYS" ] && { warn "В файле доступа старые ключи:$OLD_KEYS — переименуй (схема kit 2.1)"; agentdo "переименуй в файле доступа старые ключи:$OLD_KEYS (значения не показывай)"; }
+  [ -n "$(akey CLAUDE_TOKEN)" ] && { warn "В файле доступа лежит CLAUDE_TOKEN — токен подписки там не хранится"; manual "Удали строку CLAUDE_TOKEN из файла доступа; токен на сервер передаётся шагом brain-link put-token claude (ты запускаешь сама)"; }
   [ -n "$SP" ] && SERVER_PORT="$SP"
   [ -z "$SERVER_USER" ] && SERVER_USER="root"
   grep -qE '^[[:space:]]*BOT_TOKEN[[:space:]]*=[[:space:]]*[0-9]+:' "$ACCESS_FILE" 2>/dev/null && HAS_BOT_TOKEN=1
-  USER_ID_VAL="$(grep -E '^[[:space:]]*(USER_ID|OWNER_USER_ID)[[:space:]]*=' "$ACCESS_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "'"'"'')"
+  USER_ID_VAL="$(akey USER_ID)"; [ -z "$USER_ID_VAL" ] && USER_ID_VAL="$(akey OWNER_USER_ID)"
   case "$USER_ID_VAL" in ''|*[!0-9]*) HAS_USER_ID=0 ;; *) HAS_USER_ID=1 ;; esac
 
   if is_placeholder "$SERVER_IP"; then bad "IP сервера не вписан (или стоит заглушка)"; manual "Впиши в $ACCESS_FILE строку SERVER_IP=<IP от FoxCloud>"
@@ -236,7 +251,7 @@ if [ -f "$ACCESS_FILE" ]; then
 else
   bad "Файла доступа нет — заготовки к серверу не собраны"
   info "Это тот самый чек-лист из чата: сервер, бот, user_id"
-  manual "Создай файл ~/.config/brain/server_access (шаблон рядом: server_access.example)"
+  manual "Создай файл ~/.config/brain/server_access (шаблон рядом: server_access.example; ключи SERVER_IP, SERVER_USER, SERVER_PORT, BOT_TOKEN, USER_ID)"
   manual "Закажи VPS на ru.foxcloud.net, кодовое слово «Икигай», Нидерланды, Ubuntu 24.04, 2 vCPU / 4 GB / 50 GB"
   manual "Создай бота у @BotFather → получи токен"
   manual "Узнай свой user_id у @userinfobot"
@@ -246,7 +261,8 @@ fi
 BOT_USERNAME=""
 if [ "$HAS_BOT_TOKEN" = "1" ] && command -v curl >/dev/null 2>&1; then
   BT="$(grep -E '^[[:space:]]*BOT_TOKEN[[:space:]]*=' "$ACCESS_FILE" | head -1 | cut -d= -f2- | tr -d ' "'"'"'')"
-  RESP="$(curl -s --max-time 15 "https://api.telegram.org/bot${BT}/getMe" 2>/dev/null)"
+  # адрес с токеном отдаём curl через stdin (-K -), чтобы токен не попал в список процессов
+  RESP="$(printf 'url = "https://api.telegram.org/bot%s/getMe"\n' "$BT" | curl -s --max-time 15 -K - 2>/dev/null)"
   if printf '%s' "$RESP" | grep -q '"ok":true'; then
     BOT_USERNAME="$(printf '%s' "$RESP" | sed -n 's/.*"username":"\([^"]*\)".*/\1/p')"
     ok "Бот живой и отвечает Telegram: @${BOT_USERNAME}"
@@ -263,54 +279,102 @@ fi
 head1 "5. Сервер"
 
 SRV_OK=0
-SSH="ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12 -p $SERVER_PORT"
+# Ключ сервера — только закреплённый (brain-link keys кладёт его в ~/.config/brain/known_hosts).
+# Нет закреплённого — проверяем по обычному ~/.ssh/known_hosts, но новый ключ молча не принимаем.
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=12 -o StrictHostKeyChecking=yes -p "$SERVER_PORT")
+# путь в кавычках внутри значения: ssh сам делит значение -o по пробелам (папка пользователя с пробелом)
+[ -s "$KNOWN_HOSTS" ] && SSH_OPTS+=(-o "UserKnownHostsFile=\"$KNOWN_HOSTS\"")
+[ -f "$ADMIN_KEY" ] && SSH_OPTS+=(-i "$ADMIN_KEY")
+SSH="ssh ${SSH_OPTS[*]}"
+ssh_srv() { ssh "${SSH_OPTS[@]}" "$@"; }
 
 if is_placeholder "$SERVER_IP"; then
   bad "Сервера пока нет — это главный недостающий кусок"
   info "Без сервера мозг живёт только пока открыт ноутбук"
 else
-  if $SSH "${SERVER_USER}@${SERVER_IP}" 'echo alive' >/dev/null 2>&1; then
-    ok "Сервер отвечает, вход по ключу работает"
-    SRV_OK=1
+  # после brain-link lockdown root закрыт — тогда ходим под brain
+  for U in "$SERVER_USER" brain; do
+    if ssh_srv "${U}@${SERVER_IP}" 'echo alive' >/dev/null 2>&1; then SERVER_USER="$U"; SRV_OK=1; break; fi
+  done
+  if [ "$SRV_OK" = "1" ]; then
+    ok "Сервер отвечает, вход по ключу работает (пользователь $SERVER_USER)"
+    [ -s "$KNOWN_HOSTS" ] && ok "Ключ сервера закреплён (~/.config/brain/known_hosts)" || warn "Ключ сервера не закреплён в ~/.config/brain/known_hosts — это делает brain-link keys"
   else
-    warn "Сервер не пускает без пароля — не настроен вход по ключу"
-    info "Починить одной командой:  ssh-copy-id -p $SERVER_PORT ${SERVER_USER}@${SERVER_IP}"
-    info "(введёшь пароль один раз — дальше вход без пароля, и скрипт увидит сервер)"
-    manual "Выполни: ssh-copy-id -p $SERVER_PORT ${SERVER_USER}@${SERVER_IP} и запусти аудит снова"
+    warn "Сервер не пускает по ключу (или ключ сервера не закреплён)"
+    info "Починить: шаг brain-link keys — он создаст ключи, закрепит ключ сервера и покажет одну команду"
+    manual "Скажи Claude Code: «Запусти brain-link, шаг keys» — и выполни одну команду, которую он покажет (пароль root вводишь сама)"
   fi
 fi
 
 if [ "$SRV_OK" = "1" ]; then
-  SRV_INFO="$($SSH "${SERVER_USER}@${SERVER_IP}" '
-    . /etc/os-release 2>/dev/null
-    echo "OS=$PRETTY_NAME"
-    echo "RAM=$(free -m 2>/dev/null | awk "/Mem:/{print \$2}")"
-    echo "CPU=$(nproc 2>/dev/null)"
-    echo "DISK=$(df -BG --output=size / 2>/dev/null | tail -1 | tr -dc 0-9)"
-    id brain >/dev/null 2>&1 && echo "BRAINUSER=yes" || echo "BRAINUSER=no"
-    if [ -x /usr/bin/claude ] || command -v claude >/dev/null 2>&1; then echo "CLAUDE=yes"; else
-      if [ -x /home/brain/.local/bin/claude ]; then echo "CLAUDE=yes"; else echo "CLAUDE=no"; fi; fi
-    ENVF=$(grep -rlE "^CLAUDE_CODE_OAUTH_TOKEN=" /home/brain/.config/ 2>/dev/null | head -1)
-    if [ -n "$ENVF" ]; then echo "OAUTH=yes"; echo "OAUTHPERM=$(stat -c %a "$ENVF" 2>/dev/null)"; else echo "OAUTH=no"; fi
-    grep -rqE "^ANTHROPIC_API_KEY=" /home/brain/.config/ /etc/environment 2>/dev/null && echo "APIKEY=yes" || echo "APIKEY=no"
-    ( [ -f /home/brain/CLAUDE.md ] && echo "BRAINMD=yes" ) || echo "BRAINMD=no"
-    echo "MEMN=$(find /home/brain/memory -name "*.md" 2>/dev/null | wc -l)"
-    U=$(systemctl list-unit-files --no-pager --no-legend 2>/dev/null | awk "{print \$1}" | grep -iE "bot|brain|bridge" | head -1)
-    if [ -n "$U" ]; then
-      echo "UNIT=$U"
-      systemctl is-active  "$U" >/dev/null 2>&1 && echo "UNITACTIVE=yes"  || echo "UNITACTIVE=no"
-      systemctl is-enabled "$U" >/dev/null 2>&1 && echo "UNITENABLED=yes" || echo "UNITENABLED=no"
-      systemctl cat "$U" 2>/dev/null | grep -q "Restart=always" && echo "UNITRESTART=yes" || echo "UNITRESTART=no"
-    else echo "UNIT="; fi
-    crontab -l 2>/dev/null | grep -cqE "backup|snapshot|rsync" && echo "BACKUP=yes" || echo "BACKUP=no"
-    echo "SKILLSN=$(find /home/brain/.claude/skills -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
-    grep -rqE "^(ALLOWED_USERS|OWNER_USER_ID|TELEGRAM_OWNER)=" /home/brain/.config/ /home/brain/*/.env 2>/dev/null && echo "WHITELIST=yes" || echo "WHITELIST=no"
-    ALLCRON=$( { crontab -l 2>/dev/null; sudo -u brain crontab -l 2>/dev/null; } )
-    echo "$ALLCRON" | grep -qE "git.*(commit|add)|auto.?commit" && echo "AUTOCOMMIT=yes" || echo "AUTOCOMMIT=no"
-    { echo "$ALLCRON"; systemctl list-timers --no-pager 2>/dev/null; } | grep -qiE "brief|morning" && echo "BRIEF=yes" || echo "BRIEF=no"
-    [ -d /home/brain/.claude/skills/cto ] && echo "TEAMKIT=yes" || echo "TEAMKIT=no"
-    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active" && echo "UFW=yes" || echo "UFW=no"
-  ' 2>/dev/null)"
+  SRV_INFO="$(ssh_srv "${SERVER_USER}@${SERVER_IP}" 'bash -s' 2>/dev/null <<'REMOTE'
+. /etc/os-release 2>/dev/null
+echo "OS=$PRETTY_NAME"
+echo "RAM=$(free -m 2>/dev/null | awk '/Mem:/{print $2}')"
+echo "CPU=$(nproc 2>/dev/null)"
+echo "DISK=$(df -BG --output=size / 2>/dev/null | tail -1 | tr -dc 0-9)"
+id brain >/dev/null 2>&1 && echo "BRAINUSER=yes" || echo "BRAINUSER=no"
+if [ -x /home/brain/.local/bin/claude ] || command -v claude >/dev/null 2>&1; then echo "CLAUDE=yes"; else echo "CLAUDE=no"; fi
+# токен подписки: kit 2.1 — /etc/brain-bot/credentials/claude_token (root 0600); старая модель — env-файл в ~/.config
+if [ "$(id -u)" = 0 ]; then
+  if [ -s /etc/brain-bot/credentials/claude_token ]; then echo "OAUTH=yes"; echo "OAUTHPERM=$(stat -c '%a %U' /etc/brain-bot/credentials/claude_token)"; echo "OAUTHKIND=cred"
+  else ENVF=$(grep -rlE "^CLAUDE_CODE_OAUTH_TOKEN=" /home/brain/.config/ 2>/dev/null | head -1)
+    if [ -n "$ENVF" ]; then echo "OAUTH=yes"; echo "OAUTHPERM=$(stat -c '%a %U' "$ENVF")"; echo "OAUTHKIND=env"; else echo "OAUTH=no"; fi
+  fi
+else
+  sudo -n brain-admin status 2>/dev/null | grep -q 'claude_token' && { echo "OAUTH=yes"; echo "OAUTHPERM=$(sudo -n brain-admin status 2>/dev/null | awk '/claude_token/{print $1, $2}' | head -1)"; echo "OAUTHKIND=cred"; } || echo "OAUTH=unknown"
+fi
+grep -sqE "ANTHROPIC_API_KEY" /etc/environment /home/brain/.profile /home/brain/.bashrc /home/brain/.bash_profile /etc/systemd/system/brain-*.service 2>/dev/null \
+  || grep -rqsE "^ANTHROPIC_API_KEY=" /home/brain/.config/ 2>/dev/null && echo "APIKEY=yes" || echo "APIKEY=no"
+( [ -f /home/brain/CLAUDE.md ] && echo "BRAINMD=yes" ) || echo "BRAINMD=no"
+echo "MEMN=$(find /home/brain/memory -name "*.md" 2>/dev/null | wc -l)"
+if systemctl list-unit-files brain-bot.service --no-legend 2>/dev/null | grep -q brain-bot; then U=brain-bot.service
+else U=$(systemctl list-unit-files --no-pager --no-legend 2>/dev/null | awk '{print $1}' | grep -iE "bot|brain|bridge" | grep -vE '^brain-(brief|watch)' | head -1); fi
+if [ -n "$U" ]; then
+  echo "UNIT=$U"
+  systemctl is-active  "$U" >/dev/null 2>&1 && echo "UNITACTIVE=yes"  || echo "UNITACTIVE=no"
+  systemctl is-enabled "$U" >/dev/null 2>&1 && echo "UNITENABLED=yes" || echo "UNITENABLED=no"
+  systemctl cat "$U" 2>/dev/null | grep -q "Restart=always" && echo "UNITRESTART=yes" || echo "UNITRESTART=no"
+  echo "UNITUSER=$(systemctl show -p User --value "$U" 2>/dev/null)"
+else echo "UNIT="; fi
+[ -f /home/brain/.brain-sync/heartbeat ] && echo "HEARTBEAT=$(stat -c %Y /home/brain/.brain-sync/heartbeat)" || echo "HEARTBEAT="
+crontab -l 2>/dev/null | grep -qE "backup|snapshot|rsync" && echo "BACKUP=yes" || echo "BACKUP=no"
+echo "SKILLSN=$(find /home/brain/.claude/skills -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
+if systemctl show -p Environment --value brain-bot.service 2>/dev/null | tr ' ' '\n' | grep -qE '^OWNER_ID=[0-9]+$'; then echo "WHITELIST=yes"
+else grep -rqE "^(ALLOWED_USERS|OWNER_USER_ID|TELEGRAM_OWNER)=" /home/brain/.config/ /home/brain/*/.env 2>/dev/null && echo "WHITELIST=yes" || echo "WHITELIST=no"; fi
+ALLCRON=$( { crontab -l 2>/dev/null; sudo -n -u brain crontab -l 2>/dev/null; } )
+echo "$ALLCRON" | grep -qE "git.*(commit|add)|auto.?commit" && echo "AUTOCOMMIT=yes" || echo "AUTOCOMMIT=no"
+{ echo "$ALLCRON"; systemctl list-timers --no-pager 2>/dev/null; } | grep -qiE "brief|morning" && echo "BRIEF=yes" || echo "BRIEF=no"
+[ -d /home/brain/.claude/skills/cto ] && echo "TEAMKIT=yes" || echo "TEAMKIT=no"
+# ufw: только «ufw status» (от root или через brain-admin). systemctl is-active ufw врёт: юнит active и при выключенном файрволе.
+# Нет ufw вовсе (контейнерный VPS) — UFW=none.
+if [ "$(id -u)" = 0 ]; then
+  if ! command -v ufw >/dev/null 2>&1; then echo "UFW=none"
+  else ufw status 2>/dev/null | grep -q "Status: active" && echo "UFW=yes" || echo "UFW=no"; fi
+else
+  BAS=$(sudo -n brain-admin status 2>/dev/null)
+  if printf '%s\n' "$BAS" | grep -qiE '^(ufw[: ]+active|status: active)'; then echo "UFW=yes"
+  elif printf '%s\n' "$BAS" | grep -qiE '^(ufw[: ]+(inactive|not active)|status: inactive)'; then echo "UFW=no"
+  else echo "UFW=unknown"; fi
+fi
+# --- для блока 8 (связка kit 2.1) ---
+echo "LK_NOW=$(date +%s)"
+echo "LK_NTP=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+echo "LK_PRIVATE=$(find /home/brain/memory /home/brain/.claude/skills -type d \( -name personal -o -name private -o -iname 'secret*' -o -name sessions -o -name .secrets \) 2>/dev/null | head -3 | tr '\n' ' ')"
+echo "LK_F2B=$(systemctl is-active fail2ban 2>/dev/null)"
+if [ "$(id -u)" = 0 ]; then
+  echo "LK_PWAUTH=$(sshd -T 2>/dev/null | awk '$1=="passwordauthentication"{print $2}')"
+  P=$(stat -c '%a %U' /etc/brain-bot/credentials/bot_token /etc/brain-bot/credentials/claude_token 2>/dev/null | sort -u | tr '\n' ';')
+  echo "LK_CREDS=$P"
+else
+  [ -f /etc/ssh/sshd_config.d/00-brain.conf ] && echo "LK_PWAUTH=no" || echo "LK_PWAUTH=unknown"
+  P=$(sudo -n brain-admin status 2>/dev/null | awk '/_token/{print $1, $2}' | sort -u | tr '\n' ';')
+  echo "LK_CREDS=$P"
+fi
+[ -f /etc/ssh/sshd_config.d/00-brain.conf ] && echo "LK_LOCKDOWN=yes" || echo "LK_LOCKDOWN=no"
+echo "LK_DISK=$(df --output=pcent /home 2>/dev/null | tail -1 | tr -dc 0-9)"
+REMOTE
+)"
 
   g(){ printf '%s' "$SRV_INFO" | grep -E "^$1=" | head -1 | cut -d= -f2-; }
 
@@ -322,29 +386,33 @@ if [ "$SRV_OK" = "1" ]; then
   [ "${S_DISK:-0}" -ge 40 ] 2>/dev/null && ok "Диск: ${S_DISK} ГБ" || warn "Диск: ${S_DISK:-?} ГБ — по схеме 50 ГБ"
 
   [ "$(g BRAINUSER)" = "yes" ] && ok "Отдельный пользователь brain создан (мозг живёт не под root)" \
-      || { bad "Нет пользователя brain — мозг ещё не переехал"; agentdo "создай на сервере пользователя brain и перенеси мозг (модуль 02)"; }
+      || { bad "Нет пользователя brain — сервер ещё не подготовлен"; agentdo "запусти brain-link, шаг harden (модуль 02)"; }
 
   if [ "$(g CLAUDE)" = "yes" ]; then ok "Claude Code установлен на сервере"
-  else bad "На сервере нет Claude Code — мозгу нечем думать"; agentdo "поставь Claude Code на сервер: curl -fsSL https://claude.ai/install.sh | bash"; fi
+  else bad "На сервере нет Claude Code — мозгу нечем думать"; agentdo "запусти brain-link, шаг claude (официальный установщик под brain)"; fi
 
   if [ "$(g OAUTH)" = "yes" ]; then
-    ok "Токен подписки на сервере есть (CLAUDE_CODE_OAUTH_TOKEN)"
-    [ "$(g OAUTHPERM)" = "600" ] && ok "Права на env-файл 600 — правильно" || { warn "Права на env-файл $(g OAUTHPERM), должно быть 600"; agentdo "поставь chmod 600 на env-файл с токеном"; }
+    case "$(g OAUTHKIND)" in
+      cred) ok "Токен подписки на сервере есть (/etc/brain-bot/credentials, kit 2.1)" ;;
+      *)    ok "Токен подписки на сервере есть (env-файл старой модели)"; warn "Токен лежит в env-файле в ~brain/.config — в kit 2.1 он живёт в /etc/brain-bot/credentials"; agentdo "перенеси токен по-новому: brain-link put-token claude (я запущу сама), старый env-файл потом удали" ;;
+    esac
+    case "$(g OAUTHPERM)" in "600 root"|"600 brain"|"-rw------- root"|"-rw------- brain") ok "Права на файл с токеном 600 — правильно" ;;
+      *) warn "Права на файл с токеном: $(g OAUTHPERM) — должно быть 600"; agentdo "поставь права 600 на файл с токеном подписки на сервере" ;; esac
+  elif [ "$(g OAUTH)" = "unknown" ]; then
+    info "Токен подписки отсюда не виден (вход под brain без brain-admin) — проверит brain-link verify"
   else
     bad "На сервере нет токена подписки — бот не сможет думать"
-    manual "Выполни У СЕБЯ в терминале: claude setup-token  → получишь строку sk-ant-oat…"
-    manual "Впиши её в $ACCESS_FILE строкой CLAUDE_TOKEN=… (в чат не вставлять!)"
-    agentdo "перенеси CLAUDE_TOKEN на сервер в ~brain/.config/<имя>/env как CLAUDE_CODE_OAUTH_TOKEN, chmod 600"
+    manual "Запусти САМА в своём терминале: brain_link.py put-token claude — откроется вход в Claude, токен вводится скрыто и сразу уходит на сервер (в чат и в файл доступа не вставлять!)"
   fi
 
   [ "$(g APIKEY)" = "no" ] && ok "API-ключа на сервере нет — работает из подписки" \
-      || { bad "На сервере есть ANTHROPIC_API_KEY — он ПЕРЕБИВАЕТ подписку, платежи пойдут по счётчику"; agentdo "убери ANTHROPIC_API_KEY с сервера (проверь и /etc/environment) — должен остаться только CLAUDE_CODE_OAUTH_TOKEN"; }
+      || { bad "На сервере есть ANTHROPIC_API_KEY — он ПЕРЕБИВАЕТ подписку, платежи пойдут по счётчику"; agentdo "убери ANTHROPIC_API_KEY с сервера (проверь /etc/environment, профили brain и юниты brain-*) — токен подписки остаётся только в /etc/brain-bot/credentials"; }
 
   [ "$(g BRAINMD)" = "yes" ] && ok "CLAUDE.md на сервере есть" || warn "На сервере нет CLAUDE.md"
-  S_MEMN="$(g MEMN)"
-  if [ "${S_MEMN:-0}" -ge 5 ] 2>/dev/null; then ok "Память на сервере: $S_MEMN файлов — истина переехала"
-  elif [ "${S_MEMN:-0}" -ge 1 ] 2>/dev/null; then warn "Память на сервере: $S_MEMN файлов — переехало не всё"; agentdo "долей память на сервер (модуль 02)"
-  else bad "На сервере нет памяти — мозг пустой"; agentdo "перенеси память на сервер (модуль 02)"; fi
+  S_MEMN="$(g MEMN)"; S_HB="$(g HEARTBEAT)"
+  if [ "${S_MEMN:-0}" -ge 5 ] 2>/dev/null; then ok "Копия памяти на сервере: $S_MEMN файлов"
+  elif [ "${S_MEMN:-0}" -ge 1 ] 2>/dev/null; then warn "Копия памяти на сервере: всего $S_MEMN файлов"; agentdo "проверь синк: brain-link status, затем brain-link init (новый сервер) или adopt (старая модель)"
+  else bad "На сервере нет памяти — бот отвечает вслепую"; agentdo "включи синк памяти: brain-link init (чистый сервер) или adopt (сервер по старой модели)"; fi
 
   S_UNIT="$(g UNIT)"
   if [ -n "$S_UNIT" ]; then
@@ -352,24 +420,30 @@ if [ "$SRV_OK" = "1" ]; then
     [ "$(g UNITACTIVE)"  = "yes" ] && ok "  бот запущен прямо сейчас" || { bad "  бот НЕ запущен"; agentdo "подними сервис бота и разберись, почему он упал"; }
     [ "$(g UNITENABLED)" = "yes" ] && ok "  автозапуск после перезагрузки включён" || { warn "  автозапуск выключен"; agentdo "включи автозапуск сервиса бота"; }
     [ "$(g UNITRESTART)" = "yes" ] && ok "  сам поднимается после падения (Restart=always)" || { warn "  нет Restart=always"; agentdo "добавь Restart=always в сервис бота"; }
+    [ "$S_UNIT" = "brain-bot.service" ] || { warn "  это не стандартный brain-bot kit 2.1"; agentdo "поставь стандартного бота: brain-link, шаг bot (старый будет выключен, не удалён)"; }
   else
     bad "Сервиса бота на сервере нет — бот ещё не собран"
-    agentdo "собери Telegram-бота на сервере под пользователем brain с systemd и Restart=always (модуль 03A)"
+    agentdo "запусти brain-link, шаг bot (модуль 03A)"
   fi
 
-  [ "$(g BACKUP)" = "yes" ] && ok "Бэкапы настроены" || { warn "Бэкапов не видно"; agentdo "настрой бэкап: снапшоты на сервере + ночное зеркало на мой компьютер (модуль 04)"; }
-  [ "$(g UFW)"    = "yes" ] && ok "Файрвол включён" || warn "Файрвол выключен — займёмся после запуска (модуль 05)"
+  if [ -n "$S_HB" ]; then ok "Сервер — копия, главная версия и бэкап (локальный git) — на компьютере; синк отмечается на сервере"
+  elif [ "$(g BACKUP)" = "yes" ]; then warn "На сервере снапшоты старой модели — в kit 2.1 главная копия на компьютере"; agentdo "переведи на связку: brain-link adopt (снапшоты на сервере будут выключены, не удалены)"
+  else warn "Синк с компьютера ещё не работал"; agentdo "включи связку: brain-link init или adopt, затем schedule"; fi
+  case "$(g UFW)" in yes) ok "Файрвол включён" ;; unknown) info "Файрвол отсюда не виден (вход под brain) — проверит блок 8" ;; none) warn "На сервере нет ufw (похоже на контейнерный VPS) — закрой порты в панели хостера (модуль 08)" ;; *) warn "Файрвол выключен — его включает brain-link harden (модуль 05)" ;; esac
 
   # --- сверка с definition of done ---
   S_SKN="$(g SKILLSN)"
   if [ "${S_SKN:-0}" -ge 5 ] 2>/dev/null; then ok "Скиллы на сервере: $S_SKN — бот видит команду"
-  else bad "На сервере нет скиллов ($S_SKN) — бот видит память, но не умеет ей пользоваться"; agentdo "перенеси ~/.claude/skills на сервер, в домашнюю папку пользователя мозга"; fi
+  else bad "На сервере нет скиллов ($S_SKN) — бот видит память, но не умеет ей пользоваться"; agentdo "скиллы едут синком из ~/.claude/skills в /home/brain/.claude/skills — проверь brain-link status"; fi
 
   if [ "$(g WHITELIST)" = "yes" ]; then ok "Белый список включён — бот отвечает только владельцу"
-  else bad "У бота НЕТ белого списка — любой посторонний тратит твою подписку"; agentdo "добавь проверку OWNER_USER_ID ДО вызова мозга — на текст, голосовые и фото"; fi
+  else bad "У бота НЕТ белого списка — любой посторонний тратит твою подписку"; agentdo "поставь стандартного бота brain-link (шаг bot): он отвечает только по OWNER_ID из USER_ID"; fi
 
-  [ "$(g AUTOCOMMIT)" = "yes" ] && ok "Автокоммиты мозга настроены" \
-      || { warn "Автокоммитов не видно — правки мозга нечем откатывать"; agentdo "настрой автокоммиты второго мозга каждые 30 минут (auto-commit-backup)"; }
+  # автокоммиты в kit 2.1 живут на компьютере (блок 3, auto-commit-backup); на сервере — только старая модель
+  if [ -z "$S_HB" ]; then
+    [ "$(g AUTOCOMMIT)" = "yes" ] && ok "Автокоммиты мозга на сервере настроены (старая модель)" \
+        || info "Автокоммитов на сервере нет — в kit 2.1 история правок живёт в git на компьютере"
+  fi
 
   [ "$(g BRIEF)" = "yes" ] && ok "Утренний брифинг стоит в расписании" \
       || { warn "Утреннего брифинга нет — это заодно проверка, что связка cron + бот + память жива"; agentdo "поставь утренний брифинг по расписанию (SETUP_MORNING_BRIEF)"; }
@@ -388,18 +462,34 @@ ENGINE_OK=0; BRIDGE_OK=0
 # 6.1 — думает ли мозг на сервере из подписки
 if [ "$SRV_OK" = "1" ] && [ "$(printf '%s' "$SRV_INFO" | grep -c '^CLAUDE=yes')" = "1" ]; then
   printf '  %s·%s спрашиваю мозг на сервере (до 90 сек)…\n' "$DIM" "$D"
-  ANSWER="$($SSH "${SERVER_USER}@${SERVER_IP}" 'bash -s' <<'REMOTE'
+  ANSWER="$(ssh_srv "${SERVER_USER}@${SERVER_IP}" 'bash -s' <<'REMOTE'
+CL=/home/brain/.local/bin/claude; [ -x "$CL" ] || CL=claude
+if [ "$(id -u)" != 0 ]; then echo "NOT_ROOT"; exit 0; fi
+if [ -s /etc/brain-bot/credentials/claude_token ]; then
+  # kit 2.1: токен только у root. В argv его нет: файл открывает root как stdin, внутри sh -c токен читается
+  # в переменную и уходит claude только окружением. Настройки и конфиг-папка — те же, что у бота.
+  CCD=/home/brain/.local/state/brain-bot/claude-config; [ -d "$CCD" ] || CCD=/home/brain/.claude
+  ST=/etc/brain-bot/claude_settings.json; [ -f "$ST" ] || ST=
+  cd /tmp && runuser -u brain -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin \
+    CLAUDE_CONFIG_DIR="$CCD" sh -c 'IFS= read -r CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CODE_OAUTH_TOKEN
+      if [ -n "$2" ]; then exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" --settings "$2" </dev/null
+      else exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" </dev/null; fi' sh "$CL" "$ST" \
+    < /etc/brain-bot/credentials/claude_token 2>&1 | tail -3
+  exit 0
+fi
 ENVF=$(grep -rlE "^CLAUDE_CODE_OAUTH_TOKEN=" /home/brain/.config/ 2>/dev/null | head -1)
 if [ -z "$ENVF" ]; then echo "NO_ENV_FILE"; exit 0; fi
 sudo -u brain -i bash -lc "unset ANTHROPIC_API_KEY; set -a; . '$ENVF'; set +a; cd /home/brain 2>/dev/null; timeout 80 claude -p 'Ответь ровно одним словом: живой'" 2>&1 | tail -3
 REMOTE
 )"
-  if printf '%s' "$ANSWER" | grep -qi 'жив'; then
+  if printf '%s' "$ANSWER" | grep -q 'NOT_ROOT'; then
+    info "После lockdown вход root закрыт — мозг проверь из Telegram: напиши боту /status и любой вопрос"
+  elif printf '%s' "$ANSWER" | grep -qi 'жив'; then
     ok "МОЗГ НА СЕРВЕРЕ ДУМАЕТ и отвечает из твоей подписки"
     ENGINE_OK=1
   elif printf '%s' "$ANSWER" | grep -qiE 'credit|balance|login|auth|subscription|invalid'; then
     bad "Мозг на сервере не пускает по подписке — токен протух или не тот"
-    agentdo "перевыпусти токен подписки (claude setup-token) и положи на сервер заново"
+    manual "Перевыпусти токен подписки: запусти САМА brain_link.py put-token claude"
   else
     warn "Мозг на сервере не ответил внятно — смотри модуль 08 «Если не взлетело»"
   fi
@@ -415,7 +505,7 @@ if [ -n "$BOT_USERNAME" ] && [ "$HAS_USER_ID" = "1" ]; then
     [Nn]*) info "Пропустил отправку" ;;
     *)
       BT="$(grep -E '^[[:space:]]*BOT_TOKEN[[:space:]]*=' "$ACCESS_FILE" | head -1 | cut -d= -f2- | tr -d ' "'"'"'')"
-      SEND="$(curl -s --max-time 15 -X POST "https://api.telegram.org/bot${BT}/sendMessage" \
+      SEND="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$BT" | curl -s --max-time 15 -K - -X POST \
               --data-urlencode "chat_id=${USER_ID_VAL}" \
               --data-urlencode "text=Проверка связи от аудит-пака AI-Потока. Если ты видишь это сообщение — бот твой, токен верный, user_id верный." 2>/dev/null)"
       unset BT
@@ -767,12 +857,117 @@ info "Работает ли это на деле (тест из папки пр�
 [ $((PT_PART+PT_NO)) -gt 0 ] && info "Почти всё это закрывает один скилл memory-upgrade — он покажет план и без «делай» ничего не меняет"
 
 # =============================================================================
+# БЛОК 8 — СВЯЗКА «КОМПЬЮТЕР — МАСТЕРСКАЯ, СЕРВЕР — БАЗА» (kit 2.1, brain-link)
+# Отдельный счёт, как у блока 7: ветку A/B/ГОТОВО выше не меняет.
+# Серверные точки берутся из того же ssh-запроса блока 5 (поля LK_*).
+# =============================================================================
+head1 "8. Связка компьютер ↔ сервер (kit 2.1)"
+
+LK_YES=0; LK_PART=0; LK_NO=0; LK_ROWS=(); LK_FIX=()
+lk() { # <есть|частично|нет> <название> <что видно> [чем чинить]
+  case "$1" in
+    есть)     LK_YES=$((LK_YES+1));   printf '  🟢 %s — %s\n' "$2" "$3"; printf -- '- 🟢 %s — %s\n' "$2" "$3" >>"$REPORT.tmp" ;;
+    частично) LK_PART=$((LK_PART+1)); printf '  🟡 %s — %s\n' "$2" "$3"; printf -- '- 🟡 %s — %s\n' "$2" "$3" >>"$REPORT.tmp" ;;
+    *)        LK_NO=$((LK_NO+1));     printf '  🔴 %s — %s\n' "$2" "$3"; printf -- '- 🔴 %s — %s\n' "$2" "$3" >>"$REPORT.tmp" ;;
+  esac
+  LK_ROWS+=("| $2 | $1 | $3 |")
+  case "$1" in есть) ;; *) [ -n "${4:-}" ] && LK_FIX+=("$2: $4") ;; esac
+  return 0
+}
+CFG_BRAIN="$HOME/.config/brain"
+
+# 8.1 расписание синка
+case "$OS_NAME" in
+  Darwin)
+    if [ -f "$HOME/Library/LaunchAgents/com.ikigai.brain-sync.plist" ]; then
+      if launchctl print "gui/$(id -u)/com.ikigai.brain-sync" >/dev/null 2>&1; then lk есть "Расписание синка" "launchd com.ikigai.brain-sync загружен (каждые 5 минут)"
+      else lk частично "Расписание синка" "plist есть, но в launchd не загружен" "brain-link schedule"; fi
+    else lk нет "Расписание синка" "нет launchd com.ikigai.brain-sync" "brain-link schedule"; fi ;;
+  MINGW*|MSYS*|CYGWIN*)
+    if MSYS_NO_PATHCONV=1 schtasks.exe /Query /TN "Ikigai brain-sync" >/dev/null 2>&1; then lk есть "Расписание синка" "задача Планировщика «Ikigai brain-sync»"
+    else lk нет "Расписание синка" "задачи «Ikigai brain-sync» нет" "brain-link schedule"; fi ;;
+  *) lk частично "Расписание синка" "на этой системе расписание ставится вручную (systemd user timer)" "brain-link schedule — для Mac и Windows" ;;
+esac
+
+# 8.2 синк свежий (sync_status.json не старше 15 минут) и 8.3 нет паузы
+ST_JSON="$CFG_BRAIN/sync_status.json"
+if [ -f "$ST_JSON" ]; then
+  LAST_OK="$(sed -n 's/.*"last_success_epoch":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ST_JSON" | head -1)"
+  FAILS="$(sed -n 's/.*"consecutive_failures":[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ST_JSON" | head -1)"
+  AGE=$(( $(date +%s) - ${LAST_OK:-0} ))
+  if [ -n "$LAST_OK" ] && [ "$AGE" -le 900 ] && [ "${FAILS:-0}" = "0" ]; then lk есть "Синк свежий" "последний успешный синк $((AGE/60)) мин назад"
+  elif [ -n "$LAST_OK" ] && [ "$AGE" -le 86400 ]; then lk частично "Синк свежий" "последний успешный синк $((AGE/60)) мин назад, ошибок подряд: ${FAILS:-0}" "brain-link status — там причина; модуль 08"
+  else lk нет "Синк свежий" "успешного синка нет больше суток (ошибок подряд: ${FAILS:-?})" "brain-link status, затем модуль 08"; fi
+else lk нет "Синк свежий" "синк ещё ни разу не запускался" "brain-link init / adopt, затем schedule"; fi
+if [ -f "$CFG_BRAIN/sync.pause" ]; then lk частично "Синк не на паузе" "стоит пауза (sync.pause)" "brain-link resume, когда закончишь массовую правку"
+else lk есть "Синк не на паузе" "паузы нет"; fi
+
+# 8.4 ключ сервера закреплён
+if [ -s "$KNOWN_HOSTS" ]; then lk есть "Ключ сервера закреплён" "~/.config/brain/known_hosts"
+else lk нет "Ключ сервера закреплён" "нет ~/.config/brain/known_hosts — подмену сервера никто не заметит" "brain-link keys"; fi
+
+# 8.5 нет пароля в скриптах и выключенной проверки ключа сервера (шаблоны собраны по частям,
+# чтобы этот файл сам не попадал под поиск)
+# ловим и вариант через «=», и через пробел (так пишут в ~/.ssh/config), с кавычками и без
+PAT_PASS="ssh""pass"; PAT_NOHOST="StrictHostKeyChecking([[:space:]]*=[[:space:]]*|[[:space:]]+)[\"']?""no"
+WHERE85=()
+for f in "$HOME/Library/LaunchAgents"/*.plist "$HOME/.ssh/config" "$CFG_BRAIN"/*.ps1; do
+  [ -f "$f" ] && grep -qiE "$PAT_PASS|$PAT_NOHOST" "$f" 2>/dev/null && WHERE85+=("$(basename "$f")")
+done
+crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -qiE "$PAT_PASS|$PAT_NOHOST" && WHERE85+=("crontab")
+if [ -n "$BRAIN_DIR" ]; then
+  while IFS= read -r f; do WHERE85+=("${f#$BRAIN_DIR/}"); done < <(find "$BRAIN_DIR" -maxdepth 4 \( -name .git -o -name node_modules \) -prune -o \
+      -type f \( -name '*.sh' -o -name '*.py' -o -name '*.plist' -o -name '*.ps1' \) -print 2>/dev/null \
+      | head -500 | while IFS= read -r f; do grep -qiE "$PAT_PASS|$PAT_NOHOST" "$f" 2>/dev/null && printf '%s\n' "$f"; done | head -5)
+fi
+if [ ${#WHERE85[@]} -eq 0 ]; then lk есть "Вход без пароля в скриптах" "пароль через $PAT_PASS и выключенная проверка ключа сервера не найдены"
+else lk нет "Вход без пароля в скриптах" "найдено в: ${WHERE85[*]}" "заменить на вход по ключу и закреплённый known_hosts (brain-link keys); пароль из файлов убрать"; fi
+
+# 8.6–8.14 — сервер
+if [ "$SRV_OK" = "1" ]; then
+  P=$(g LK_PRIVATE)
+  [ -z "$(printf '%s' "$P" | tr -d ' ')" ] && lk есть "Личного на сервере нет" "personal/ private/ secret/ sessions/ не найдены" \
+    || lk нет "Личного на сервере нет" "найдено: $P" "забрать домой: brain-link adopt --pull-private; удалить на сервере: sudo brain-admin remove-private"
+  case "$(g UFW)" in yes) lk есть "Файрвол" "ufw active" ;; unknown) lk частично "Файрвол" "отсюда не видно (вход под brain)" "sudo brain-admin status" ;;
+    none) lk частично "Файрвол" "ufw нет (контейнерный VPS?)" "файрвол в панели хостера, модуль 08" ;;
+    *) lk нет "Файрвол" "ufw выключен" "brain-link harden" ;; esac
+  [ "$(g LK_F2B)" = "active" ] && lk есть "fail2ban" "active" || lk нет "fail2ban" "$(g LK_F2B)" "brain-link harden"
+  case "$(g LK_PWAUTH)" in
+    no)  lk есть "Вход только по ключам" "PasswordAuthentication no" ;;
+    yes) if [ "$(g LK_LOCKDOWN)" = "yes" ]; then lk нет "Вход только по ключам" "lockdown включён, а пароль всё ещё принимается" "модуль 08: проверить файлы в /etc/ssh/sshd_config.d"
+         else lk частично "Вход только по ключам" "пароль ещё принимается — до lockdown так и должно быть" "brain-link lockdown после зелёного verify"; fi ;;
+    *)   lk частично "Вход только по ключам" "не смог проверить" "brain-link verify" ;;
+  esac
+  if [ "$(g UNIT)" = "brain-bot.service" ] && [ "$(g UNITACTIVE)" = "yes" ] && [ "$(g UNITUSER)" = "brain" ]; then lk есть "Бот под brain" "brain-bot active, User=brain"
+  elif [ "$(g UNIT)" = "brain-bot.service" ]; then lk нет "Бот под brain" "brain-bot: active=$(g UNITACTIVE), User=$(g UNITUSER)" "brain-link bot"
+  else lk нет "Бот под brain" "стандартного brain-bot нет" "brain-link bot"; fi
+  C=$(g LK_CREDS)
+  if [ -z "$C" ]; then lk нет "Секреты бота 0600 root" "секретов в /etc/brain-bot/credentials нет (или не видно)" "brain-link put-token claude и put-token bot"
+  elif printf '%s' "$C" | tr ';' '\n' | sed '/^$/d' | grep -vqE '^(600|-rw-------) root$'; then lk нет "Секреты бота 0600 root" "права: $C" "sudo brain-admin set-token … заново (ставит 0600 root)"
+  else lk есть "Секреты бота 0600 root" "оба токена 0600 root"; fi
+  [ "$(g APIKEY)" = "no" ] && lk есть "API-ключа нет" "ANTHROPIC_API_KEY на сервере не задан" || lk нет "API-ключа нет" "ANTHROPIC_API_KEY найден" "убрать отовсюду (модуль 02, шаг 3)"
+  NOWL=$(date +%s); NOWS=$(g LK_NOW); SKEW=$(( ${NOWS:-0} - NOWL )); SKEW=${SKEW#-}
+  if [ "$(g LK_NTP)" = "yes" ] && [ "$SKEW" -lt 60 ]; then lk есть "Часы" "NTP синхронизирован, расхождение ~${SKEW} с"
+  else lk нет "Часы" "NTPSynchronized=$(g LK_NTP), расхождение ~${SKEW} с" "на сервере: sudo brain-admin timesync-restart"; fi
+  DK=$(g LK_DISK)
+  if [ "${DK:-0}" -lt 85 ] 2>/dev/null; then lk есть "Диск" "занято ${DK:-?}%"
+  else lk нет "Диск" "занято ${DK:-?}% (порог 85%)" "почистить ~/.cache на сервере, старые журналы: модуль 08"; fi
+else
+  lk нет "Сервер по ключу" "нет входа по ключу — серверные проверки связки пропущены" "brain-link keys"
+fi
+
+LK_ALL=$((LK_YES + LK_PART + LK_NO))
+say ""
+say "  Связка kit 2.1: есть $LK_YES · частично $LK_PART · нет $LK_NO → $LK_YES из $LK_ALL"
+info "Живьём (бот → inbox, правка → сервер, «красная команда») связку проверяет brain-link verify"
+
+# =============================================================================
 # ВЕРДИКТ
 # =============================================================================
 TOTAL=$((OK_N+WARN_N+FAIL_N))
 PCT=0; [ "$TOTAL" -gt 0 ] && PCT=$(( OK_N * 100 / TOTAL ))
 
-if   [ "$SRV_OK" != "1" ] && is_placeholder "$SERVER_IP"; then BRANCH="A"; BRANCH_TXT="Сервера пока нет. Твой путь: заказать VPS → перенести мозг → собрать бота."
+if   [ "$SRV_OK" != "1" ] && is_placeholder "$SERVER_IP"; then BRANCH="A"; BRANCH_TXT="Сервера пока нет. Твой путь: заказать VPS → brain-link (detect → … → lockdown)."
 elif [ "$ENGINE_OK" = "1" ] && [ "$BRIDGE_OK" = "1" ] && [ "$FAIL_N" -eq 0 ]; then BRANCH="ГОТОВО"; BRANCH_TXT="Система собрана: мозг на сервере думает, бот с ним соединён."
 else BRANCH="B"; BRANCH_TXT="Сервер есть, но собран не до конца. Твой путь: закрыть красные пункты выше."
 fi
@@ -782,6 +977,7 @@ printf '%sИТОГ%s   🟢 %s   🟡 %s   🔴 %s      готовность ~%s
 printf '%sВЕТКА %s%s — %s\n' "$B" "$BRANCH" "$D" "$BRANCH_TXT"
 if [ -n "$BRAIN_DIR" ]; then printf '%sЭТАЛОН 13–23%s   🟢 есть %s   🟡 частично %s   🔴 нет %s   ⚪ не применимо %s   → %s из %s применимых\n' "$B" "$D" "$PT_YES" "$PT_PART" "$PT_NO" "$PT_NA" "$PT_YES" "$PT_APPL"
 else printf '%sЭТАЛОН 13–23%s   не проверено — нет папки мозга\n' "$B" "$D"; fi
+printf '%sСВЯЗКА kit 2.1%s   🟢 %s   🟡 %s   🔴 %s   → %s из %s\n' "$B" "$D" "$LK_YES" "$LK_PART" "$LK_NO" "$LK_YES" "$LK_ALL"
 printf '%s══════════════════════════════════════════════════════════════%s\n' "$B" "$D"
 
 {
@@ -795,6 +991,9 @@ printf '%s═══════════════════════�
   printf '\n### Точки 13–23 эталона (kit 2.0)\n\n'
   printf '| № | Точка | Вердикт | Что видно |\n|---|---|---|---|\n'
   for r in "${PT_ROWS[@]}"; do printf '%s\n' "$r"; done
+  printf -- '\n- Связка компьютер ↔ сервер (kit 2.1): есть %s · частично %s · нет %s → **%s из %s**\n' "$LK_YES" "$LK_PART" "$LK_NO" "$LK_YES" "$LK_ALL"
+  printf '\n### Связка kit 2.1\n\n| Точка | Вердикт | Что видно |\n|---|---|---|\n'
+  for r in "${LK_ROWS[@]}"; do printf '%s\n' "$r"; done
   printf '\nВерсия набора: %s\n' "$([ "$KIT_WITH" -gt 0 ] && echo "${KIT_LIST}; без версии — $KIT_WITHOUT" || { [ "$SK_KIT" = 0 ] && echo "скиллов набора нет" || echo "kit_version нет ни у одного скилла набора — набор до kit 2.0"; })"
 } >>"$REPORT.tmp"
 
@@ -812,14 +1011,19 @@ fi
 
 # --- генерируем персональный промпт ---------------------------------------
 {
-  printf 'Ты мой технический помощник. Я участница AI-Потока. Цель: мой второй мозг живёт\n'
-  printf 'на моём сервере 24/7, а мой Telegram-бот разговаривает с ним из моей ПОДПИСКИ\n'
-  printf '(переменная CLAUDE_CODE_OAUTH_TOKEN), а не по API-ключу.\n\n'
+  printf 'Ты мой технический помощник. Я участница AI-Потока. Цель (kit 2.1): компьютер — мастерская,\n'
+  printf 'сервер — база. Память и скиллы правлю на компьютере, сервер держит их копию и моего\n'
+  printf 'Telegram-бота 24/7, бот думает из моей ПОДПИСКИ, а не по API-ключу. Ставит всё скилл brain-link.\n\n'
   printf 'Я прогнала аудит. Вот что он нашёл — отчёт целиком в файле:\n%s\n\n' "$REPORT"
   printf 'МОЯ ВЕТКА: %s — %s\n\n' "$BRANCH" "$BRANCH_TXT"
   if [ ${#TODO_AGENT[@]} -gt 0 ]; then
     printf 'ЗАКРОЙ ЭТИ ПУНКТЫ, по одному, после каждого — короткий отчёт мне:\n'
     i=1; for t in "${TODO_AGENT[@]}"; do printf '%s. %s\n' "$i" "$t"; i=$((i+1)); done
+    printf '\n'
+  fi
+  if [ ${#LK_FIX[@]} -gt 0 ]; then
+    printf 'СВЯЗКА КОМПЬЮТЕР ↔ СЕРВЕР (kit 2.1) — чинит скилл brain-link, по шагам:\n'
+    i=1; for t in "${LK_FIX[@]}"; do printf '%s. %s\n' "$i" "$t"; i=$((i+1)); done
     printf '\n'
   fi
   if [ ${#PT_FIX[@]} -gt 0 ]; then
@@ -832,15 +1036,17 @@ fi
   fi
   printf 'ПРАВИЛА (соблюдай неукоснительно):\n'
   printf -- '- Никогда не выводи в чат пароли и токены. Только путь к файлу и факт наличия.\n'
-  printf -- '- Секреты живут в env-файлах с правами 600. Не в коде, не в git, не в чате.\n'
+  printf -- '- Токены на сервер передаю я сама шагом brain-link put-token (скрытый ввод); на сервере они\n'
+  printf '  живут в /etc/brain-bot/credentials (root, 600). Не в коде, не в git, не в чате, не в файле доступа.\n'
   printf -- '- Личное (здоровье, семья, финансы) на сервер НЕ переносим.\n'
-  printf -- '- Команду claude setup-token я выполняю САМА в своём терминале — ты её не запускаешь\n'
-  printf '  и её вывод не читаешь.\n'
+  printf -- '- Команду brain-link put-token claude (внутри — claude setup-token) я выполняю САМА в своём\n'
+  printf '  терминале — ты её не запускаешь и её вывод не читаешь.\n'
   printf -- '- Ничего необратимого без моего явного «да».\n'
   printf -- '- Инструкции бери из кита novoselie-server-kit в репозитории\n'
   printf '  https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills\n'
-  printf '  (модуль 02 — переезд мозга, 03A — бот с нуля, 03 — подключение готового бота,\n'
-  printf '   04 — бэкапы, 05 — безопасность, 06 — приёмка, 08 — если не взлетело).\n\n'
+  printf '  и скилла brain-link (detect → keys → harden → claude → put-token → init/adopt → schedule →\n'
+  printf '  bot → verify → lockdown); модули: 02 — сервер и Claude, 03A — бот, 04 — кто чем владеет,\n'
+  printf '  05 — безопасность, 06 — приёмка, 08 — если не взлетело.\n\n'
   printf 'Сначала покажи мне план. Потом делай.\n'
   printf 'Когда закончишь — я снова запущу audit.sh, и он должен показать зелёным\n'
   printf '«МОЗГ НА СЕРВЕРЕ ДУМАЕТ» и «Бот написал тебе в Telegram».\n'

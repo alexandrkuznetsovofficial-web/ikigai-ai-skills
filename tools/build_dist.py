@@ -68,6 +68,12 @@ PACK_ITEMS = [
     "KIT_CONVENTIONS.md",
     "GRADUATION_PACK.md",
     "graduation/ikigai-graduation.md",
+    "brain-link/",
+]
+
+# Внутри папок пака не берём (префиксы путей): тесты нужны разработчику, не ученику.
+PACK_EXCLUDE = [
+    "brain-link/tests/",
 ]
 
 # Не публикуется ни на витрину, ни в пак. Папки — SKIP_DIRS из check_kit.py
@@ -145,7 +151,7 @@ def pack_files(root, files):
     chosen, missing = [], []
     for item in PACK_ITEMS:
         if item.endswith("/"):
-            sub = [f for f in files if f.startswith(item)]
+            sub = [f for f in files if f.startswith(item) and not any(f.startswith(x) for x in PACK_EXCLUDE)]
             if not sub:
                 missing.append(item)
             chosen.extend(sub)

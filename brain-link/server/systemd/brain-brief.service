@@ -23,7 +23,8 @@ TimeoutStartSec=600
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/brain/.claude /home/brain/.cache /home/brain/.local/state/brain-bot
+# CLAUDE_CONFIG_DIR бота — внутри .local/state/brain-bot; ~/.claude (скиллы) и ~/.brain-sync — только чтение
+ReadWritePaths=/home/brain/.cache /home/brain/.local/state/brain-bot
 ReadWritePaths=-/home/brain/.local/state/claude -/home/brain/.local/share/claude
 PrivateTmp=yes
 PrivateDevices=yes
@@ -32,7 +33,22 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+# kit 2.1: ядро, /proc, IPC, capabilities. ProcSubset=pid прячет /proc/uptime и т.п. — бот берёт CLOCK_BOOTTIME.
+ProtectProc=invisible
+ProcSubset=pid
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+PrivateIPC=yes
+SystemCallArchitectures=native
 RestrictNamespaces=yes
+# SSRF: ни облачных метаданных (link-local 169.254/16), ни сервисов на localhost.
+# Исключение — 127.0.0.53 (stub systemd-resolved, через него резолвятся имена на Ubuntu 24.04);
+# Allow сильнее Deny, остальной интернет (Telegram, Anthropic) не затронут.
+IPAddressDeny=link-local localhost multicast
+IPAddressAllow=127.0.0.53/32
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 MemoryMax=1500M
 CPUQuota=150%

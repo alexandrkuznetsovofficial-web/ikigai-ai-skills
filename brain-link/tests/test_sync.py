@@ -202,14 +202,24 @@ class TestBasics(SyncCase):
         self.assertEqual(again["downloaded_count"], 0)
         self.assertFalse(r.lpath("memory/inbox/" + name).exists())
 
-    def test_new_file_created_on_server_comes_home(self):
+    def test_new_file_created_on_server_goes_to_quarantine(self):
+        """п.6: новый серверный файл зоны компьютера в рабочие пути не попадает — только копия .conflict-server."""
         r = self.r
         r.base_setup()
         r.sw("memory/from_server.md", "сервер\n")
+        r.sw("CLAUDE.md", "# правила\n")            # совпадает — не трогаем
         res = r.ok("run")
-        self.assertIn("memory/from_server.md", res["downloaded"])
-        self.assertEqual(r.lr("memory/from_server.md"), "сервер\n")
-        self.assertEqual(r.ok("run")["downloaded_count"], 0)
+        self.assertEqual(res["downloaded_count"], 0)
+        self.assertEqual(res["quarantined"], ["memory/from_server.md"])
+        self.assertFalse(r.lpath("memory/from_server.md").exists(), "в рабочий путь не кладём")
+        copies = r.conflicts(r.ws / "memory", "server")
+        self.assertEqual(len(copies), 1)
+        self.assertTrue(copies[0].name.startswith("from_server.conflict-server-"))
+        self.assertEqual(copies[0].read_text(encoding="utf-8"), "сервер\n")
+        again = r.ok("run")                          # та же версия второй раз не карантинится
+        self.assertEqual((again["quarantined"], again["deleted_count"]), ([], 0))
+        self.assertEqual(len(r.conflicts(r.ws / "memory", "server")), 1)
+        self.assertTrue(r.spath("memory/from_server.md").exists(), "на сервере не удаляем")
 
 
 # ---------------------------------------------------------------- конфликты
@@ -387,7 +397,7 @@ class TestExcludesAndNames(SyncCase):
 
     def test_excludes_single_source_of_truth(self):
         srv = load_server_module()
-        for name in ("EXCLUDES", "MAX_FILE_BYTES", "PRIVATE_DIRS", "ROOT_FILES", "ZONE_PREFIXES", "INBOX_PREFIX",
+        for name in ("EXCLUDES", "EXCLUDES_BASE", "EXCLUDES_SECRETS", "MAX_FILE_BYTES", "PRIVATE_DIRS", "ROOT_FILES", "ZONE_PREFIXES", "INBOX_PREFIX",
                      "DIALOGUES_PREFIX", "SYNCED_DIRNAME", "TMP_SUFFIX", "PLAN_MEMBER"):
             self.assertEqual(getattr(srv, name), getattr(bl, name), "brain_sync_server.%s ≠ brainlib" % name)
         if CONVENTIONS.exists():
@@ -397,7 +407,13 @@ class TestExcludesAndNames(SyncCase):
             tokens = set()
             for chunk in re.findall(r"`([^`]+)`", m.group(1)):
                 tokens.update(chunk.split())
-            self.assertEqual(tokens, set(bl.EXCLUDES), "EXCLUDES расходится с KIT_CONVENTIONS §8")
+            # строка §8 обязана перечислять базовый список; секретные шаблоны (п.7 ревью) — либо там же, либо
+            # целиком отсутствуют (тогда ждут правки KIT_CONVENTIONS). Наполовину — расхождение.
+            self.assertTrue(set(bl.EXCLUDES_BASE) <= tokens,
+                            "KIT_CONVENTIONS §8 не содержит %s" % sorted(set(bl.EXCLUDES_BASE) - tokens))
+            extra = tokens - set(bl.EXCLUDES_BASE)
+            self.assertIn(extra, (set(), set(bl.EXCLUDES_SECRETS)),
+                          "секретные исключения в §8 расходятся с brainlib: %s" % sorted(extra ^ set(bl.EXCLUDES_SECRETS)))
 
     def test_nfc_nfd_names(self):
         r = self.r
@@ -537,7 +553,10 @@ class TestControl(SyncCase):
         lock.write_text("{}")
         res = r.ok("run")
         self.assertTrue(res.get("busy"), "свежий lock — прогон пропущен")
-        old = time.time() - 11 * 60
+        old = time.time() - 30 * 60                       # 30 мин — ещё «живой» (прогон может идти долго)
+        os.utime(str(lock), (old, old))
+        self.assertTrue(r.ok("run").get("busy"))
+        old = time.time() - (bl.LOCK_STALE_SEC + 60)
         os.utime(str(lock), (old, old))
         r.lw("memory/MEMORY.md", "после lock\n")
         res = r.ok("run")
@@ -551,8 +570,10 @@ class TestControl(SyncCase):
         other = r.tmp / "other_srv"
         other.mkdir()
         for _ in range(3):
-            rc, _ = r.sync("run", transport="local:%s" % other)
-            self.assertEqual(rc, 1)
+            rc, res = r.sync("run", transport="local:%s" % other)
+            self.assertEqual(rc, 4)                      # п.11: другой сервер — код 4 и совет brain-link init
+            self.assertIn("brain-link init", res["human"])
+            self.assertTrue(res.get("target_mismatch"))
         st = json.loads((r.cfg / "sync_status.json").read_text(encoding="utf-8"))
         self.assertEqual(st["consecutive_failures"], 3)
         self.assertIn("last_notified", st)
@@ -744,7 +765,7 @@ class TestPlanUnit(unittest.TestCase):
                                   remote={"memory/a": "A0", "memory/b": "B2", "memory/c": "C0", "memory/s": "S"},
                                   base={"memory/a": "A0", "memory/b": "B0", "memory/c": "C0"})
         self.assertEqual(P["uploads"], {"memory/a": "A0", "memory/b": "B2", "memory/n": None})
-        self.assertEqual(P["fetch"], {"memory/b": "conflict-server", "memory/s": "download"})
+        self.assertEqual(P["fetch"], {"memory/b": "conflict-server", "memory/s": "quarantine"})
         self.assertEqual(P["deletes"], {"memory/c": "C0"})
 
     def test_mass_delete_rule(self):
@@ -753,6 +774,321 @@ class TestPlanUnit(unittest.TestCase):
         self.assertTrue(brain_sync.mass_delete_hit(3, 20))
         self.assertFalse(brain_sync.mass_delete_hit(2, 10))
         self.assertFalse(brain_sync.mass_delete_hit(5, 100))
+
+
+# ---------------------------------------------------------------- находки ревью kit 2.1 (п.1–11)
+class TestReviewFixes(SyncCase):
+    def setUp(self):
+        super().setUp()
+        # тесты внутри процесса пишут журнал — только во временную папку, не в настоящий ~/.config/brain
+        self._old_cfg = os.environ.get("BRAIN_CONFIG_DIR")
+        os.environ["BRAIN_CONFIG_DIR"] = str(self.r.cfg)
+        for name in ("brain-sync", "brain-sync-test"):
+            lg = __import__("logging").getLogger(name)
+            for h in list(lg.handlers):
+                lg.removeHandler(h)
+                h.close()
+
+    def tearDown(self):
+        if self._old_cfg is None:
+            os.environ.pop("BRAIN_CONFIG_DIR", None)
+        else:
+            os.environ["BRAIN_CONFIG_DIR"] = self._old_cfg
+        super().tearDown()
+
+    # п.1 — кодировка консоли Windows и pythonw
+    def test_cp1251_console_gives_valid_utf8_json(self):
+        r = self.r
+        r.base_setup()
+        r.lw("memory/MEMORY.md", "индекс v2 ✅\n")
+        rc, res = r.sync("run", extra_env={"PYTHONIOENCODING": "cp1251"})
+        self.assertEqual(rc, 0, res)
+        self.assertIn("↑1", res["human"])
+        rc, res = r.sync("status", extra_env={"PYTHONIOENCODING": "ascii"})
+        self.assertEqual(rc, 0)
+
+    def test_out_without_stdout_pythonw(self):
+        saved = sys.stdout
+        try:
+            sys.stdout = None
+            with self.assertRaises(SystemExit) as cm:
+                bl.out({"human": "синк ↑1 ✅"}, bl.EXIT_CONFIRM)
+        finally:
+            sys.stdout = saved
+        self.assertEqual(cm.exception.code, bl.EXIT_CONFIRM)
+        self.assertIn("синк", (self.r.cfg / "logs" / "sync.log").read_text(encoding="utf-8"), "человеку — в журнал")
+        buf = io.StringIO()
+        self.assertTrue(bl.safe_write(buf, "↑↓✅🟡\n"))
+        self.assertIn("✅", buf.getvalue())
+        # суррогат из «битого» имени файла не ломает JSON
+        self.assertIn("\\udcff", bl.dump_json({"x": "a\udcffb"}))
+
+    # п.2 — нечитаемое ≠ удалённое
+    @unittest.skipIf(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                     "chmod 000 не действует на Windows и под root")
+    def test_unreadable_folder_stops_run_and_server_untouched(self):
+        r = self.r
+        r.lw("memory/MEMORY.md", "индекс\n")
+        r.lw("memory/projects/p1.md", "проект\n")
+        r.ok("init", "--yes")
+        locked = r.ws / "memory" / "projects"
+        os.chmod(str(locked), 0)
+        try:
+            rc, res = r.sync("run")
+            self.assertEqual(rc, 1)
+            self.assertIn("не могу прочитать", res["human"])
+            self.assertIn("полный доступ к диску", res["human"])
+        finally:
+            os.chmod(str(locked), 0o755)
+        self.assertEqual(r.sr("memory/projects/p1.md"), "проект\n", "сервер не тронут")
+        self.assertFalse((r.srv / ".brain-trash").exists())
+        f = r.lpath("memory/MEMORY.md")              # файл без права чтения — то же самое
+        os.chmod(str(f), 0)
+        try:
+            rc, res = r.sync("run")
+            self.assertEqual(rc, 1)
+            self.assertIn("MEMORY.md", res["human"])
+        finally:
+            os.chmod(str(f), 0o644)
+        self.assertTrue(r.spath("memory/MEMORY.md").exists())
+
+    # п.3 — NFD-имена на сервере
+    def test_server_resolves_nfd_names_unit(self):
+        srv = load_server_module()
+        nfd = unicodedata.normalize("NFD", "йод.md")
+        nfc = unicodedata.normalize("NFC", "йод.md")
+        srv._DIR_CACHE.clear()
+        srv._listdir = lambda d: [nfd, "other.md"]          # ФС, которая не нормализует (ext4)
+        self.assertEqual(srv.resolve_component("/x", nfc), nfd)
+        self.assertEqual(srv.resolve_component("/y", "other.md"), "other.md")
+        self.assertEqual(srv.resolve_component("/z", "new.md"), "new.md")
+        srv._DIR_CACHE.clear()
+        srv._listdir = lambda d: [nfd, nfc]                  # оба имени — берём точное NFC
+        self.assertEqual(srv.resolve_component("/w", nfc), nfc)
+
+    def test_server_nfd_file_updated_deleted_and_renamed(self):
+        r = self.r
+        r.base_setup()
+        nfd = unicodedata.normalize("NFD", "заметка_йод.md")
+        nfc = unicodedata.normalize("NFC", "заметка_йод.md")
+        tree_nfc = unicodedata.normalize("NFC", "ёлка.md")
+        (r.srv / "memory" / nfd).write_text("старое\n", encoding="utf-8")
+        (r.srv / "memory" / unicodedata.normalize("NFD", "ёлка.md")).write_text("ёлка\n", encoding="utf-8")
+        st = json.loads((r.cfg / "sync_state.json").read_text(encoding="utf-8"))
+        st["base"]["memory/" + nfc] = bl.sha256_bytes("старое\n".encode())     # как после прошлой синхронизации
+        st["base"]["memory/" + tree_nfc] = bl.sha256_bytes("ёлка\n".encode())
+        (r.cfg / "sync_state.json").write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+        r.lw("memory/" + nfc, "новое\n")
+        res = r.ok("run")
+        self.assertIn("memory/" + nfc, res["uploaded"])
+        self.assertIn("memory/" + tree_nfc, res["deleted"])
+        names = os.listdir(str(r.srv / "memory"))
+        self.assertIn(nfc, names, "после записи имя на сервере — NFC")
+        self.assertNotIn(nfd, names)
+        self.assertEqual((r.srv / "memory" / nfc).read_text(encoding="utf-8"), "новое\n")
+        self.assertFalse(any(unicodedata.normalize("NFC", n) == tree_nfc for n in names), "удаление нашло NFD-файл")
+
+    def test_adopt_normalizes_nfd_names(self):
+        r = self.r
+        d_nfc = unicodedata.normalize("NFC", "проекты_й")
+        f_nfc = unicodedata.normalize("NFC", "план_й.md")
+        p = r.srv / "memory" / unicodedata.normalize("NFD", d_nfc) / unicodedata.normalize("NFD", f_nfc)
+        p.parent.mkdir(parents=True)
+        p.write_text("план\n", encoding="utf-8")
+        res = r.ok("adopt", "--yes")
+        self.assertTrue(res.get("renamed_nfc"))
+        self.assertIn(d_nfc, os.listdir(str(r.srv / "memory")))
+        self.assertIn(f_nfc, os.listdir(str(r.srv / "memory" / d_nfc)))
+        self.assertEqual(r.lr("memory/%s/%s" % (d_nfc, f_nfc)), "план\n")
+
+    # п.4 — init на сервере новой модели; adopt по зонам
+    def test_init_after_divergence_on_new_model_server(self):
+        r = self.r
+        r.base_setup()                                   # сервер получил heartbeat
+        (r.cfg / "sync_state.json").unlink()             # компьютер «забыл» связку
+        r.lw("memory/MEMORY.md", "индекс дома\n")
+        r.sw("memory/MEMORY.md", "индекс сервера\n")
+        r.sw("memory/srv_only.md", "только сервер\n")
+        res = r.ok("init", "--yes")
+        self.assertEqual(res["mode"], "init")
+        self.assertEqual(r.sr("memory/MEMORY.md"), "индекс дома\n", "побеждает компьютер")
+        copies = r.conflicts(r.ws / "memory", "server")
+        self.assertEqual(sorted(c.read_text(encoding="utf-8") for c in copies), ["индекс сервера\n", "только сервер\n"])
+        self.assertFalse(r.lpath("memory/srv_only.md").exists())
+        self.assertEqual(r.ok("run")["uploaded_count"], 0)
+
+    def test_adopt_skills_and_claude_md_computer_wins(self):
+        r = self.r
+        r.sw("CLAUDE.md", "правила сервера\n")
+        r.sw("skills/os/SKILL.md", "скилл сервера\n")
+        r.sw("memory/MEMORY.md", "индекс сервера\n")
+        r.lw("CLAUDE.md", "правила дома\n")
+        r.lw("skills/os/SKILL.md", "скилл дома\n")
+        r.lw("memory/MEMORY.md", "индекс дома\n")
+        res = r.ok("adopt", "--yes")
+        self.assertEqual((r.lr("skills/os/SKILL.md"), r.sr("skills/os/SKILL.md")), ("скилл дома\n", "скилл дома\n"))
+        self.assertEqual((r.lr("CLAUDE.md"), r.sr("CLAUDE.md")), ("правила дома\n", "правила дома\n"))
+        self.assertEqual(r.conflicts(r.skills / "os", "server")[0].read_text(encoding="utf-8"), "скилл сервера\n")
+        self.assertEqual(r.conflicts(r.ws, "server")[0].read_text(encoding="utf-8"), "правила сервера\n")
+        self.assertEqual(r.lr("memory/MEMORY.md"), "индекс сервера\n", "память — серверная")
+        self.assertEqual(res["local_replaced"], ["memory/MEMORY.md"])
+        self.assertIn("заменена серверной", res["human"])
+
+    # п.5 — файл поменялся между обходом и сборкой архива
+    def test_stage_uploads_drops_changed_file(self):
+        r = self.r
+        r.lw("memory/a.md", "a\n")
+        r.lw("memory/b.md", "b\n")
+        loc = brain_sync.Local(r.ws, r.skills)
+        local, _, _, _ = loc.scan({})
+        r.lw("memory/b.md", "b поменялся\n")
+        P = {"uploads": {"memory/a.md": None, "memory/b.md": None}}
+        warnings = []
+        tmp = Path(tempfile.mkdtemp(dir=str(r.tmp)))
+        items, dropped = brain_sync.stage_uploads(P, loc, local, tmp, bl.get_logger("brain-sync-test"), warnings)
+        self.assertEqual(dropped, ["memory/b.md"])
+        self.assertEqual([i[0] for i in items], ["memory/a.md"])
+        self.assertEqual(list(P["uploads"]), ["memory/a.md"])
+        self.assertEqual(len(warnings), 1)
+
+    def test_server_skips_only_bad_sha_file(self):
+        good, bad = b"good", b"bad"
+        tsrv = TestServerSecurity("test_whitelist")
+        tsrv.r = self.r
+        plan = {"uploads": {"memory/g.md": {"sha": bl.sha256_bytes(good), "expected": None},
+                            "memory/b.md": {"sha": "0" * 64, "expected": None}}}
+        data = tsrv.crafted([tsrv.file_member("memory/g.md", good), tsrv.file_member("memory/b.md", bad)], plan)
+        rr = tsrv.server("apply", data)
+        self.assertEqual(rr.returncode, 0, rr.stderr)
+        res = json.loads(rr.stdout)
+        self.assertEqual(res["written"], ["memory/g.md"])
+        self.assertEqual([x["rel"] for x in res["skipped"]], ["memory/b.md"])
+        self.assertFalse(self.r.spath("memory/b.md").exists())
+
+    # п.6 — чужой скилл с сервера домой не едет
+    def test_evil_skill_on_server_not_downloaded(self):
+        r = self.r
+        r.base_setup()
+        r.sw("skills/evil/SKILL.md", "---\nname: evil\n---\nвредные инструкции\n")
+        res = r.ok("run")
+        self.assertFalse((r.skills / "evil").exists())
+        self.assertEqual(res["foreign_skills"], ["skills/evil/SKILL.md"])
+        self.assertTrue(any("evil" in w for w in res["warnings"]))
+        self.assertEqual(r.ok("run")["foreign_skills"], [], "предупреждение — один раз на версию")
+        self.assertFalse(any("evil" in p.name for p in r.skills.rglob("*")))
+
+    # п.7 — симлинки и секретные файлы
+    @unittest.skipIf(os.name != "posix", "симлинки без прав администратора — только POSIX")
+    def test_symlinks_only_followed_in_skills(self):
+        r = self.r
+        outside = r.tmp / "outside"
+        outside.mkdir()
+        (outside / "secret.md").write_text("с диска\n", encoding="utf-8")
+        (outside / "SKILL.md").write_text("скилл из репозитория\n", encoding="utf-8")
+        r.lw("memory/MEMORY.md", "индекс\n")
+        os.symlink(str(outside / "secret.md"), str(r.ws / "memory" / "link.md"))
+        os.symlink(str(outside), str(r.ws / "memory" / "linkdir"))
+        os.symlink(str(outside), str(r.skills / "repo_skill"))
+        res = r.ok("init", "--yes")
+        self.assertIn("skills/repo_skill/SKILL.md", res["uploaded"])
+        self.assertFalse(r.spath("memory/link.md").exists())
+        self.assertFalse(r.spath("memory/linkdir/secret.md").exists())
+        self.assertTrue(any("симлинк" in w for w in res["warnings"]))
+        r.lpath("memory/MEMORY.md").unlink()         # обычный файл стал ссылкой — на сервере не удаляется
+        os.symlink(str(outside / "secret.md"), str(r.lpath("memory/MEMORY.md")))
+        res = r.ok("run")
+        self.assertEqual(res["deleted_count"], 0)
+        self.assertEqual(r.sr("memory/MEMORY.md"), "индекс\n")
+
+    def test_secret_files_excluded(self):
+        r = self.r
+        r.lw("memory/MEMORY.md", "ok\n")
+        names = ["memory/server.pem", "memory/x.key", "memory/id_rsa", "memory/id_ed25519.pub", "memory/id_ecdsa",
+                 "memory/.netrc", "skills/a/.npmrc", "skills/a/.pypirc", "memory/credentials.json",
+                 "memory/client_secret_123.json", "memory/google_token.json", "memory/.aws/config",
+                 "memory/.ssh/known_hosts", "memory/.gnupg/x", "memory/.kube/config", "memory/db.kdbx",
+                 "memory/c.p12", "memory/c.pfx"]
+        for n in names:
+            r.lw(n, "secret\n")
+        res = r.ok("init", "--yes")
+        self.assertEqual(res["uploaded"], ["memory/MEMORY.md"])
+        for n in names:
+            self.assertFalse(r.spath(n).exists(), n)
+        srv = load_server_module()
+        self.assertTrue(srv.excluded("memory/.ssh/id_rsa") and srv.excluded("memory/my_token.json"))
+
+    # п.8 — замок
+    def test_release_lock_removes_only_own(self):
+        lock = brain_sync.p_lock()
+        lock.write_text(json.dumps({"pid": 1, "token": "чужой"}))
+        brain_sync._LOCK_TOKEN = None
+        brain_sync.release_lock()
+        self.assertTrue(lock.exists(), "чужой замок не снимаем")
+        lock.unlink()
+        self.assertTrue(brain_sync.acquire_lock())
+        self.assertFalse(brain_sync.acquire_lock(), "второй прогон не входит")
+        brain_sync.touch_lock()
+        brain_sync.release_lock()
+        self.assertFalse(lock.exists())
+        self.assertGreater(bl.LOCK_STALE_SEC, 180 + 900 + 900)
+
+    # п.9 — inbox не скачивается дважды, если apply упал
+    def test_inbox_not_downloaded_twice_after_failed_apply(self):
+        r = self.r
+        r.base_setup()
+        name = "memory/inbox/2026-10-02_150000_tg.md"
+        r.sw(name, "позвонить\n")
+        rc, res = r.sync("run", extra_env={"BRAIN_TEST_FAIL_APPLY": "1"})
+        self.assertEqual(rc, 4)
+        self.assertEqual(r.lr(name), "позвонить\n")
+        r.lpath(name).unlink()                       # Claude разобрал заметку до следующего прогона
+        res = r.ok("run")
+        self.assertEqual(res["downloaded_count"], 0)
+        self.assertEqual(res["inbox_acked"], 1)
+        self.assertFalse(r.lpath(name).exists(), "заметка не вернулась второй раз")
+        self.assertFalse(r.spath(name).exists())
+
+    # п.10 — перенос в archive/ не массовое удаление
+    def test_move_to_archive_is_not_mass_delete(self):
+        r = self.r
+        for i in range(40):
+            r.lw("memory/notes/n%02d.md" % i, "n%d\n" % i)
+        r.ok("init", "--yes")
+        for i in range(30):
+            dst = r.lpath("memory/archive/notes/n%02d.md" % i)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(str(r.lpath("memory/notes/n%02d.md" % i)), str(dst))
+        res = r.ok("run")
+        self.assertEqual((res["deleted_count"], res["uploaded_count"], res["moved_detected"]), (30, 30, 30))
+        self.assertEqual(r.sr("memory/archive/notes/n00.md"), "n0\n")
+
+    def test_mass_delete_hint_mentions_archive(self):
+        r = self.r
+        for i in range(40):
+            r.lw("memory/notes/n%02d.md" % i, "n%d\n" % i)
+        r.ok("init", "--yes")
+        for i in range(30):
+            r.lpath("memory/notes/n%02d.md" % i).unlink()
+        r.lw("memory/archive/n00.md", "n0\n")        # одна перенесена, остальные стёрты
+        rc, res = r.sync("run")
+        self.assertEqual(rc, 3)
+        self.assertIn("перенос в archive/", res["human"])
+        self.assertEqual(res["moved_detected"], 1)
+
+    def test_detect_moves_unit(self):
+        P = {"uploads": {"memory/archive/a.md": None, "memory/new.md": None, "memory/x.md": "X0"},
+             "deletes": {"memory/a.md": "A", "memory/b.md": "B"}}
+        moved, arch = brain_sync.detect_moves(P, {"memory/archive/a.md": "A", "memory/new.md": "N", "memory/x.md": "X"},
+                                              {"memory/a.md": "A", "memory/b.md": "B", "memory/x.md": "X0"})
+        self.assertEqual((moved, arch), (["memory/a.md"], True))
+
+    # п.11 — target хранится (сверка с другим сервером — test_failures_counted_and_notified, код 4)
+    def test_state_keeps_target(self):
+        r = self.r
+        r.base_setup()
+        st = json.loads((r.cfg / "sync_state.json").read_text(encoding="utf-8"))
+        self.assertEqual(st["target"], "local:%s" % r.srv.resolve())
+        self.assertTrue(st["target_shown"])
 
 
 if __name__ == "__main__":

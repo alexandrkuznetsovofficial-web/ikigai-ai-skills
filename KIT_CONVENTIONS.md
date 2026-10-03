@@ -43,6 +43,8 @@
 | `ikigai-preflight` на Windows | 🧪 прогнан в эмуляции Git Bash и парсером PowerShell, на живой Windows не проверялся |
 | `auto-commit-backup`, `SETUP_MORNING_BRIEF`, `second-brain-os` — ветки Windows | 🧪 по документации |
 | `mail-calendar-kit` — ветка Windows | 🧪 по документации |
+| `brain-link` (kit 2.1) на Mac | 🧪 103 юнит-теста, живого прогона на VPS ещё не было (02.10) |
+| `brain-link` на Windows | 🧪 парсер PowerShell и тесты, живой Windows не проверялся |
 
 Пока стоит 🧪 — предупреждай человека до начала: «твой случай мы ещё не проходили живьём, идём медленнее
 и после каждого шага сверяемся». Прошли живьём — меняй метку здесь и в карточке на полке.
@@ -61,7 +63,9 @@
 
 `os_branch`, `os_version`, `arch`, `home`, `claude_cli`, `claude_signed_in`, `vscode`, `vscode_ext_claude`,
 `git`, `node`, `python_cmd`, `python`, `handy`, `handy_model`, `workspace`, `workspace_has_claude_md`,
-`workspace_latin`, `skills_dir`, `skills_count`, `ffmpeg`, `whisper_cli`, `brew`, `checked_at`.
+`workspace_latin`, `skills_dir`, `skills_count`, `ffmpeg`, `whisper_cli`, `brew`, `checked_at`,
+`ssh` (версия OpenSSH; на Windows из System32\OpenSSH), `ssh_keygen`, `ssh_key` (есть ли `~/.ssh/id_ed25519`),
+`python_version`; справочно `rsync`, `wsl`, `tailscale` (kit 2.1, пробник v1.1).
 Секретов в профиле нет и быть не должно.
 
 ## 7. Контракт памяти (kit 2.0; 2.1 — + §8) — единый для всех скиллов
@@ -157,7 +161,9 @@
 | `memory/dialogues/` | бот | сервер → компьютер | только дописывается; правка на компьютере → `.conflict-local` |
 
 **Исключено в обе стороны:** `personal/ private/ secret*/ sessions/ .secrets/ .git/ .config/ node_modules/ .venv/ __pycache__/`,
-файлы `.env *.env *.session *.bak* *.conflict-* .DS_Store`, любой файл больше 20 МБ. Список живёт в одном месте —
+файлы `.env *.env *.session *.bak* *.conflict-* .DS_Store`, любой файл больше 20 МБ;
+ключи и учётки — `.aws/ .ssh/ .gnupg/ .kube/ *.pem *.key id_rsa* id_ed25519* id_ecdsa* .netrc .npmrc .pypirc credentials*.json client_secret*.json *token*.json *.kdbx *.p12 *.pfx`
+(`*.key` заодно не пропускает презентации Keynote — держи их вне `memory/`). Список живёт в одном месте —
 `brain-link/scripts/brainlib.py` (`EXCLUDES`); `tools/check_kit.py` сверяет его с этой таблицей.
 
 **Правила синка.** Решения по sha содержимого, не по времени (сдвиг часов не портит данные; расхождение > 120 с —
@@ -165,6 +171,12 @@
 Больше 25 удалений или больше 10 % зоны за прогон — стоп до `brain-sync run --allow-mass-delete`.
 Пути приводятся к NFC. Права на сервере ставит сервер (brain, 0640/0750) — права компьютера не переносятся.
 Синк идёт **не через git**, поэтому замок pre-push из `auto-commit-backup` ему не мешает.
+
+**Защиты синка (kit 2.1):** нечитаемый файл — стоп прогона, а не «удалён» (на Mac — полный доступ к диску для python3).
+Новый файл, появившийся на сервере в зоне компьютера: `skills/**` домой **не скачивается никогда** (только предупреждение), `CLAUDE.md` и `memory/**` — в карантин копией `.conflict-server-…`.
+По симлинкам синк идёт только в `skills/`. В `adopt` для `skills/` и `CLAUDE.md` побеждает компьютер, для `memory/` — сервер (локальное → `.conflict-local`).
+Если на сервере уже есть heartbeat новой модели, `init` не уводит в `adopt`: побеждает компьютер. Перенос (те же файлы по новым путям) в порог массового удаления не считается.
+`sync_state.json` помнит сервер; файл доступа указывает на другой — синк отказывает (код 4), совет `brain-link init`.
 
 **Служебные файлы — вне рабочей папки**, в `~/.config/brain/` (Windows `%USERPROFILE%\.config\brain\`):
 `server_access` (файл доступа), `known_hosts` (ключ сервера закреплён, `StrictHostKeyChecking=yes`),

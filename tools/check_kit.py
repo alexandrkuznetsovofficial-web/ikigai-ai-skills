@@ -61,6 +61,7 @@ KIT2_FILES = [
     "agents/checker.md",
     "agents/secops.md",
     "agents/researcher.md",
+    "brain-link/SKILL.md",  # kit_version: 2.1
 ]
 
 # Однофайловые скиллы лежат в этих папках: у каждого .md должна быть шапка.
@@ -458,6 +459,8 @@ def ip_is_harmless(parts):
     if any(x > 255 for x in parts):
         return True
     if a in (0, 10, 127) or a >= 224:
+        return True
+    if a == 169 and b == 254:  # link-local, адрес метаданных облака
         return True
     if a == 192 and b == 168:
         return True

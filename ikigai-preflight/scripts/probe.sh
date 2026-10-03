@@ -3,9 +3,9 @@
 # Запускается из Claude Code (Mac: zsh/bash; Windows: Git Bash, который Claude Code использует для команд).
 # Ничего не устанавливает и не меняет, кроме записи профиля в ~/.claude/ikigai_env.json.
 # Вывод: таблица для человека + одна строка JSON (или только JSON с флагом --json).
-# Версия 1.0 · 2026-09-17
+# Версия 1.1 · 2026-10-02 (kit 2.1: пробы ssh, ssh-keygen, ключ ed25519, Python ≥ 3.9 для brain-link)
 
-PROBE_VERSION="1.0"
+PROBE_VERSION="1.1"
 ONLY_JSON=0
 [ "${1:-}" = "--json" ] && ONLY_JSON=1
 
@@ -89,6 +89,29 @@ else
   if have python3; then PY_V="$(ver_of python3 --version)"; PY_CMD="python3"; fi
 fi
 
+# ---------- ssh и связка с сервером (brain-link, kit 2.1) ----------
+# Windows: brain-link берёт встроенный OpenSSH (System32\OpenSSH), а не ssh из Git Bash — смотрим его первым.
+SSH_BIN=""; KEYGEN_BIN=""
+if [ "$OS_BRANCH" = "windows" ]; then
+  for d in /c/Windows/Sysnative/OpenSSH /c/Windows/System32/OpenSSH; do
+    [ -z "$SSH_BIN" ] && [ -f "$d/ssh.exe" ] && SSH_BIN="$d/ssh.exe"
+    [ -z "$KEYGEN_BIN" ] && [ -f "$d/ssh-keygen.exe" ] && KEYGEN_BIN="$d/ssh-keygen.exe"
+  done
+fi
+[ -z "$SSH_BIN" ] && have ssh && SSH_BIN="ssh"
+[ -z "$KEYGEN_BIN" ] && have ssh-keygen && KEYGEN_BIN="ssh-keygen"
+SSH_V=""; [ -n "$SSH_BIN" ] && SSH_V="$("$SSH_BIN" -V 2>&1 < /dev/null | head -1 | tr -d '\r' | cut -d, -f1 | cut -c1-40)"
+[ -n "$SSH_BIN" ] && [ -z "$SSH_V" ] && SSH_V="yes"
+SSH_KEYGEN="no"; [ -n "$KEYGEN_BIN" ] && SSH_KEYGEN="yes"
+SSH_KEY="no"; [ -f "$HOME_DIR/.ssh/id_ed25519" ] && SSH_KEY="yes"
+PY_VERSION="$(printf '%s' "$PY_V" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+PY_OK="no"
+case "$PY_VERSION" in 3.9*|3.[1-9][0-9]*|[4-9].*) PY_OK="yes";; esac
+RSYNC="no"; have rsync && RSYNC="yes"
+WSL="no"; [ "$OS_BRANCH" = "windows" ] && [ -f /c/Windows/System32/wsl.exe ] && WSL="yes"
+TAILSCALE="no"
+if have tailscale || [ -d "/Applications/Tailscale.app" ] || [ -f "/c/Program Files/Tailscale/tailscale.exe" ]; then TAILSCALE="yes"; fi
+
 # ---------- Handy ----------
 HANDY="no"; HANDY_MODEL="unknown"; HANDY_SETTINGS=""
 if [ "$OS_BRANCH" = "mac" ]; then
@@ -146,11 +169,12 @@ if [ "$OS_BRANCH" = "windows" ] && command -v cygpath >/dev/null 2>&1; then
   WS_WIN="$(cygpath -w "$WS" 2>/dev/null || printf '%s' "$WS")"
 fi
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
-JSON=$(printf '{"probe_version":"%s","checked_at":"%s","os":"%s","os_branch":"%s","os_version":"%s","arch":"%s","home":"%s","home_win":"%s","workspace_win":"%s","claude_cli":"%s","claude_signed_in":"%s","vscode":"%s","vscode_ext_claude":"%s","git":"%s","node":"%s","python_cmd":"%s","python":"%s","handy":"%s","handy_model":"%s","workspace":"%s","workspace_has_claude_md":"%s","workspace_latin":"%s","skills_dir":"%s","skills_count":%s,"ffmpeg":"%s","whisper_cli":"%s","brew":"%s","home_latin":"%s"}' \
+JSON=$(printf '{"probe_version":"%s","checked_at":"%s","os":"%s","os_branch":"%s","os_version":"%s","arch":"%s","home":"%s","home_win":"%s","workspace_win":"%s","claude_cli":"%s","claude_signed_in":"%s","vscode":"%s","vscode_ext_claude":"%s","git":"%s","node":"%s","python_cmd":"%s","python":"%s","handy":"%s","handy_model":"%s","workspace":"%s","workspace_has_claude_md":"%s","workspace_latin":"%s","skills_dir":"%s","skills_count":%s,"ffmpeg":"%s","whisper_cli":"%s","brew":"%s","home_latin":"%s","ssh":"%s","ssh_keygen":"%s","ssh_key":"%s","python_version":"%s","rsync":"%s","wsl":"%s","tailscale":"%s"}' \
   "$PROBE_VERSION" "$CHECKED_AT" "$(esc "$UNAME")" "$OS_BRANCH" "$(esc "$OS_VERSION")" "$(esc "$ARCH")" "$(esc "$HOME_DIR")" "$(esc "$HOME_WIN")" "$(esc "$WS_WIN")" \
   "$(esc "$CLAUDE_CLI")" "$CLAUDE_SIGNED" "$(esc "$VSCODE")" "$VSCODE_EXT_CLAUDE" "$(esc "$GIT_V")" "$(esc "$NODE_V")" \
   "$(esc "$PY_CMD")" "$(esc "$PY_V")" "$HANDY" "$(esc "$HANDY_MODEL")" "$(esc "$WS")" "$WS_HAS_CLAUDE_MD" "$WS_LATIN" \
-  "$(esc "$SKILLS_DIR")" "${SKILLS_COUNT:-0}" "$FFMPEG" "$WHISPER" "$BREW" "$HOME_LATIN")
+  "$(esc "$SKILLS_DIR")" "${SKILLS_COUNT:-0}" "$FFMPEG" "$WHISPER" "$BREW" "$HOME_LATIN" \
+  "$(esc "$SSH_V")" "$SSH_KEYGEN" "$SSH_KEY" "$(esc "$PY_VERSION")" "$RSYNC" "$WSL" "$TAILSCALE")
 PROFILE_PATH="$HOME_DIR/.claude/ikigai_env.json"
 PROFILE_OK="no"
 mkdir -p "$HOME_DIR/.claude" 2>/dev/null
@@ -181,6 +205,10 @@ if [ -n "$GIT_V" ]; then ok "git $GIT_V"; else
   if [ "$OS_BRANCH" = "windows" ]; then bad "git не найден → PowerShell: winget install --id Git.Git -e --source winget, затем перезапустить VS Code"; else bad "git не найден → xcode-select --install"; fi; fi
 if [ -n "$PY_CMD" ]; then ok "Python: $PY_V (команда: $PY_CMD)"; else
   if [ "$OS_BRANCH" = "windows" ]; then warn "Python не найден (нужен только для паков вроде почты и календаря) → Microsoft Store: «Python 3»"; else warn "Python не найден → python.org или brew install python3"; fi; fi
+if [ -n "$SSH_V" ] && [ "$SSH_KEYGEN" = "yes" ]; then ok "ssh и ssh-keygen есть ($SSH_V) — сервер подключим"; else
+  if [ "$OS_BRANCH" = "windows" ]; then bad "нет встроенного OpenSSH → Параметры → Приложения → Дополнительные компоненты → «Клиент OpenSSH» → Добавить"; else bad "ssh не найден — на Mac он встроен, проверь PATH"; fi; fi
+if [ -n "$PY_CMD" ] && [ "$PY_OK" = "no" ]; then bad "Python $PY_VERSION — для связки с сервером нужен 3.9 или новее"; fi
+if [ "$SSH_KEY" = "yes" ]; then ok "ключ ~/.ssh/id_ed25519 есть"; else warn "ключа ~/.ssh/id_ed25519 нет (создаст шаг brain-link keys)"; fi
 if [ -n "$NODE_V" ]; then ok "Node.js $NODE_V"; else warn "Node.js нет (для нашей сборки не обязателен)"; fi
 if [ "$HANDY" = "yes" ]; then
   case "$HANDY_MODEL" in

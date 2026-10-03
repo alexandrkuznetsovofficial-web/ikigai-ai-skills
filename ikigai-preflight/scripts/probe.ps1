@@ -2,7 +2,7 @@
 # Когда нужен: если Claude Code не может выполнить probe.sh (нет Git Bash). Запуск руками из PowerShell:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ikigai-preflight\scripts\probe.ps1"
 # Ничего не устанавливает и не меняет, кроме записи профиля в %USERPROFILE%\.claude\ikigai_env.json.
-# Версия 1.0 · 2026-09-17
+# Версия 1.1 · 2026-10-02 (kit 2.1: пробы ssh, ssh-keygen, ключ ed25519, Python >= 3.9 для brain-link)
 param([switch]$Json)
 $ErrorActionPreference = 'SilentlyContinue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -40,6 +40,30 @@ $pyCmd = ''; $pyV = ''
 if (Has 'py') { $pyV = Ver 'py' '-3 --version'; if ($pyV) { $pyCmd = 'py -3' } }
 if (-not $pyCmd -and (Has 'python')) { $v = Ver 'python' '--version'; if ($v -like 'Python*') { $pyV = $v; $pyCmd = 'python' } }
 
+# ssh и связка с сервером (brain-link, kit 2.1): встроенный OpenSSH Windows, не ssh из Git Bash
+$sysRoot = if ($env:SystemRoot) { $env:SystemRoot } else { 'C:\Windows' }
+$sshExe = ''; $keygenExe = ''
+foreach ($d in @("$sysRoot\Sysnative\OpenSSH", "$sysRoot\System32\OpenSSH")) {
+  if (-not $sshExe -and (Test-Path "$d\ssh.exe")) { $sshExe = "$d\ssh.exe" }
+  if (-not $keygenExe -and (Test-Path "$d\ssh-keygen.exe")) { $keygenExe = "$d\ssh-keygen.exe" }
+}
+if (-not $sshExe -and (Has 'ssh')) { $sshExe = (Get-Command ssh).Source }
+if (-not $keygenExe -and (Has 'ssh-keygen')) { $keygenExe = (Get-Command ssh-keygen).Source }
+$sshV = ''
+if ($sshExe) {
+  try { $sshV = ([string](@(& cmd /c "`"$sshExe`" -V 2>&1")[0])).Trim().Split(',')[0] } catch { $sshV = '' }
+  if (-not $sshV) { $sshV = 'yes' }
+  if ($sshV.Length -gt 40) { $sshV = $sshV.Substring(0, 40) }
+}
+$sshKeygen = if ($keygenExe) { 'yes' } else { 'no' }
+$sshKey = if (Test-Path (Join-Path $home_ '.ssh\id_ed25519')) { 'yes' } else { 'no' }
+$pyVersion = ''; if ($pyV -match '(\d+\.\d+(\.\d+)?)') { $pyVersion = $Matches[1] }
+$pyOk = $false
+if ($pyVersion) { try { $pyOk = ([version]($pyVersion + '.0' * (3 - $pyVersion.Split('.').Count))) -ge [version]'3.9.0' } catch { $pyOk = $false } }
+$rsync = if (Has 'rsync') { 'yes' } else { 'no' }
+$wsl = if (Test-Path "$sysRoot\System32\wsl.exe") { 'yes' } else { 'no' }
+$tailscale = if ((Has 'tailscale') -or (Test-Path "$pf\Tailscale\tailscale.exe")) { 'yes' } else { 'no' }
+
 $handy = 'no'; $handyModel = 'unknown'; $handySettings = ''
 foreach ($p in @("$local\Programs\Handy\Handy.exe", "$local\Programs\handy\Handy.exe", "$pf\Handy\Handy.exe",
                  "${env:ProgramFiles(x86)}\Handy\Handy.exe", "$local\Handy\Handy.exe")) { if (Test-Path $p) { $handy = 'yes'; break } }
@@ -65,7 +89,7 @@ $skillsDir = Join-Path $home_ '.claude\skills'
 $skillsCount = 0; if (Test-Path $skillsDir) { $skillsCount = (Get-ChildItem $skillsDir -Directory | Measure-Object).Count }
 
 $envProfile = [ordered]@{
-  probe_version = '1.0'; checked_at = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
+  probe_version = '1.1'; checked_at = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
   os = "Windows"; os_branch = 'windows'; os_version = $osCaption; arch = $env:PROCESSOR_ARCHITECTURE
   home = $home_; home_win = $home_; workspace_win = $ws
   claude_cli = $claudeCli; claude_signed_in = $signed; vscode = $vscode; vscode_ext_claude = $ext
@@ -77,6 +101,8 @@ $envProfile = [ordered]@{
   whisper_cli = $(if (Has 'whisper-cli') { 'yes' } else { 'no' })
   brew = 'no'
   home_latin = $homeLatin
+  ssh = $sshV; ssh_keygen = $sshKeygen; ssh_key = $sshKey; python_version = $pyVersion
+  rsync = $rsync; wsl = $wsl; tailscale = $tailscale
 }
 $jsonText = ($envProfile | ConvertTo-Json -Compress)
 $profilePath = Join-Path $home_ '.claude\ikigai_env.json'
@@ -98,6 +124,9 @@ if ($signed -eq 'yes') { OK "вход в Claude выполнен" } else { BAD "
 if ($claudeCli) { OK "Claude Code CLI: $claudeCli" } else { WARN "Claude Code CLI в PATH нет (для расширения VS Code не обязателен)" }
 if ($gitV) { OK "git $gitV" } else { BAD "git не найден → PowerShell: winget install --id Git.Git -e --source winget, затем перезапустить VS Code" }
 if ($pyCmd) { OK "Python: $pyV (команда: $pyCmd)" } else { WARN "Python не найден (нужен только паку почты и календаря) → Microsoft Store: «Python 3»" }
+if ($sshV -and $sshKeygen -eq 'yes') { OK "ssh и ssh-keygen есть ($sshV) — сервер подключим" } else { BAD "нет встроенного OpenSSH → Параметры → Приложения → Дополнительные компоненты → «Клиент OpenSSH» → Добавить" }
+if ($pyCmd -and -not $pyOk) { BAD "Python $pyVersion — для связки с сервером нужен 3.9 или новее" }
+if ($sshKey -eq 'yes') { OK "ключ .ssh\id_ed25519 есть" } else { WARN "ключа .ssh\id_ed25519 нет (создаст шаг brain-link keys)" }
 if ($nodeV) { OK "Node.js $nodeV" } else { WARN "Node.js нет (для нашей сборки не обязателен)" }
 if ($handy -eq 'yes') {
   if ($handyModel -match '\.en|_en|distil') { BAD "Handy стоит, но модель $handyModel — англоязычная → Handy → Модели → скачать Whisper (многоязычная) или Parakeet V3 → выбрать" }
