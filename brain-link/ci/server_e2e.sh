@@ -151,6 +151,15 @@ cred_perm="$(RSSH root 'stat -c "%a %U" /etc/brain-bot/credentials 2>/dev/null')
 [ "$cred_perm" = "700 root" ] && ok "/etc/brain-bot/credentials 0700 root" || bad "credentials: $cred_perm"
 mem_perm="$(RSSH root 'stat -c "%a" /home/brain/memory 2>/dev/null')"
 [ "$mem_perm" = "750" ] && ok "/home/brain/memory 0750" || bad "memory: $mem_perm"
+# RT-11: бот — системный пользователь brainbot (nologin, группа brain), его состояние — /var/lib/brain-bot 0700
+bb_info="$(RSSH root 'getent passwd brainbot | cut -d: -f7; id -nG brainbot; stat -c "%a %U" /var/lib/brain-bot /var/lib/brain-bot/claude-config; stat -c "%a %G" /home/brain/memory/inbox /home/brain/memory/dialogues' | tr '\n' '|')"
+say "brainbot: $bb_info"
+case "$bb_info" in
+  /usr/sbin/nologin\|*brain*\|"700 brainbot|700 brainbot|2770 brain|2770 brain|") ok "brainbot: nologin, в группе brain, /var/lib/brain-bot 0700, inbox/dialogues 2770" ;;
+  *) bad "brainbot/права не те: $bb_info" ;;
+esac
+in_grp="$(RSSH root 'id -nG brain' | tr ' ' '\n' | grep -cx brainbot)"
+[ "${in_grp:-0}" = 0 ] && ok "brain не в группе brainbot" || bad "brain в группе brainbot"
 ufw_added="$(RSSH root 'ufw show added 2>/dev/null | tr "\n" " "')"
 echo "$ufw_added" | grep -q "$PORT" && ok "ufw-правило на $PORT задано (enable пропущен)" || bad "ufw-правило не задано: $ufw_added"
 # ключ синка ставит сам harden в /home/brain/.ssh/authorized_keys (restrict,command=…) — проверяем его строку
@@ -163,8 +172,7 @@ sync_id="$(ssh -i "$HOME/.ssh/brain_sync_ed25519" -o BatchMode=yes -o StrictHost
 # ---------------------------------------------------------------- 5. claude (заглушка в PATH brain)
 RSSH root "install -d -m0750 -o brain -g brain /home/brain/.local/bin"
 cat "$HERE/fake_claude.py" | RSSH root "cat > /home/brain/.local/bin/claude && chmod 755 /home/brain/.local/bin/claude && chown brain:brain /home/brain/.local/bin/claude"
-RSSH root "mkdir -p /home/brain/.local/state/brain-bot && chown -R brain:brain /home/brain/.local/state"
-# прокинем журнал fake_claude туда, где его потом прочитает security_checks (через FAKE_CLAUDE_LOG по умолчанию — state бота)
+# журнал fake_claude по умолчанию — рядом с CLAUDE_CONFIG_DIR бота, т.е. в /var/lib/brain-bot (0700 brainbot)
 LINK -- claude; assert_rc 0 $? "claude (заглушка) принят"
 
 # ---------------------------------------------------------------- 6. put-token claude|bot (через GETPASS-инъекцию)
@@ -194,18 +202,26 @@ printf '%s\n' \
   '[Service]' 'IPAddressAllow=127.0.0.1/32' 'Environment=TELEGRAM_API_BASE=http://127.0.0.1:18081' \
   | RSSH root "cat > /etc/systemd/system/brain-bot.service.d/zz-lab.conf"
 RSSH root "systemctl daemon-reload 2>/dev/null || true"
+# миграция ранней установки (бот был под brain, состояние в ~/.local/state/brain-bot): шаг bot переносит
+# состояние в /var/lib/brain-bot и убирает старую папку. Безвредный файл — watch_state.json.
+printf '{"lab": 1}\n' | RSSH root "runuser -u brain -- sh -c 'mkdir -p /home/brain/.local/state/brain-bot/claude-config && cat > /home/brain/.local/state/brain-bot/watch_state.json'"
 LINK -- bot --yes; rc=$?
 say "bot rc=$rc"
 # сценарию бота нужны те же токены (сравнивает по sha256, сами значения не печатает)
 mkdir -p "$WORK/secforbot"; cp "$WORK/tok_bot" "$WORK/secforbot/bot_token"; cp "$WORK/tok_claude" "$WORK/secforbot/claude_token"
 # фейковый Telegram слушает на раннере (хост), сервер=тот же хост — localhost достижим.
-# Журнал fake claude бот пишет в свой state (0700 brain) — сценарий читаем от root (sudo).
-CLOG=/home/brain/.local/state/brain-bot/fake_claude.jsonl
+# Журнал fake claude бот пишет в свой state (0700 brainbot) — сценарий читаем от root (sudo).
+CLOG=/var/lib/brain-bot/fake_claude.jsonl
 if [ "$rc" != 0 ]; then
   bad "шаг bot не прошёл (rc=$rc) — сценарий бота пропущен (без бота он 10 минут ждёт таймауты)"
   RSSH root "systemctl status brain-bot --no-pager -l 2>&1 | tail -20; journalctl -u brain-bot -n 30 --no-pager 2>&1" | tee -a "$LOG"
   bot_rc=skip
 else
+mig="$(RSSH root 'cat /var/lib/brain-bot/watch_state.json 2>/dev/null; test -e /home/brain/.local/state/brain-bot && echo LEGACY_LEFT || echo LEGACY_GONE')"
+case "$mig" in *'"lab": 1'*LEGACY_GONE*) ok "миграция: состояние ранней установки перенесено в /var/lib/brain-bot, старая папка убрана" ;;
+  *) bad "миграция состояния не сработала: $(echo "$mig" | tr '\n' ' ')" ;; esac
+bu="$(RSSH root 'systemctl show -p User --value brain-bot.service; ps -o user= -p "$(systemctl show -p MainPID --value brain-bot.service)"' | tr '\n' ' ')"
+[ "$bu" = "brainbot brainbot " ] && ok "бот работает под brainbot (юнит и процесс)" || bad "бот не под brainbot: $bu"
 sudo "$PY" "$HERE/bot_scenario.py" full --tg http://127.0.0.1:18081 --owner 111111111 \
   --secrets "$WORK/secforbot" --claude-log "$CLOG" \
   --brain-home /home/brain --report "$WORK/bot_report.json" 2>&1 | tee -a "$LOG"
@@ -231,6 +247,16 @@ d=json.loads(sys.stdin.read() or "{}")
 for k,c in sorted((d.get("checks") or {}).items()):
     print("   %s %s — %s: %s" % ("✅" if c.get("status")=="ok" else "❌", k, c.get("title"), str(c.get("detail"))[:200]))' 2>/dev/null | tee -a "$LOG"
 assert_rc 0 "$vrc" "verify зелёный (расписание эмулировано циклом brain_sync, «запомни» через фейковый TG)"
+if [ "$vrc" != 0 ]; then
+  say "диагностика самопроверки (stderr brain-admin, без секретов):"
+  RSSH root "journalctl -n 40 --no-pager -o cat _SYSTEMD_UNIT='brain-selfcheck-*' 2>/dev/null; journalctl -u brain-watch -n 15 --no-pager -o cat 2>/dev/null" \
+    | sed -E 's/sk-ant-[A-Za-z0-9_-]+/<скрыто>/g; s/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<скрыто>/g' | tail -40 | sed 's/^/   /' | tee -a "$LOG"
+fi
+# RT-11: бот (brainbot) пишет inbox, синк (brain) читает и переносит его заметку в .synced (rename по group-write)
+syn="$(RSSH root 'find /home/brain/memory/inbox/.synced -name "*_tg*.md" -user brainbot 2>/dev/null | head -3 | wc -l; find /home/brain/memory/inbox -maxdepth 1 -name "*_tg*.md" 2>/dev/null | wc -l')"
+set -- $syn
+[ "${1:-0}" -ge 1 ] && ok "синк (brain) перенёс заметку бота (владелец brainbot) из inbox в .synced" \
+  || bad "в inbox/.synced нет заметок бота (владелец brainbot): $syn"
 
 # ---------------------------------------------------------------- 10. lockdown: откат на испорченном ключе
 # Проверка «brain по ключу» идёт с чужим (настоящим, но не авторизованным) ключом → обязана провалиться → откат.

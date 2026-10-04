@@ -10,8 +10,14 @@ StartLimitBurst=20
 
 [Service]
 Type=simple
-User=brain
+# kit 2.1 (RT-11): отдельный системный пользователь бота. LoadCredential отдаёт /run/credentials/<юнит>/
+# во владение пользователю юнита — под brain их читал бы любой процесс brain (ssh-вход). brainbot — без
+# входа (nologin), в группе brain (читает память 0640/0750), пишет только inbox/dialogues (2770) и своё
+# состояние /var/lib/brain-bot (0700 brainbot: конфиг claude, безопасный режим, итоги самопроверки).
+User=brainbot
 Group=brain
+StateDirectory=brain-bot
+StateDirectoryMode=0700
 WorkingDirectory=/home/brain
 # VOICE=1: ExecStart меняется на /home/brain/.venv-voice/bin/python3 и MemoryMax=2500M (делает brain-link bot --voice)
 ExecStart=/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py run
@@ -20,6 +26,8 @@ Environment=VOICE=0
 Environment=DIALOGUES=1
 Environment=BOT_TZ=Europe/Moscow
 Environment=LANG=C.UTF-8
+Environment=BRAIN_STATE_DIR=/var/lib/brain-bot
+Environment=XDG_CACHE_HOME=/var/lib/brain-bot/cache
 Environment=PYTHONUNBUFFERED=1
 Environment=PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin
 LoadCredential=bot_token:/etc/brain-bot/credentials/bot_token
@@ -27,16 +35,15 @@ LoadCredential=claude_token:/etc/brain-bot/credentials/claude_token
 # приманки самопроверки (фальшивые CANARY-значения, кладёт harden / brain-admin canary-init): бот прячет
 # ответ, если модель их вывела; brain-admin selfcheck-security берёт отсюда же все свойства песочницы
 LoadCredential=canary_list:/etc/brain-bot/canary.list
-UMask=0027
+UMask=0007
 Restart=always
 RestartSec=10
 
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-# CLAUDE_CONFIG_DIR бота — внутри .local/state/brain-bot; ~/.claude (скиллы) и ~/.brain-sync — только чтение
-ReadWritePaths=/home/brain/memory/inbox /home/brain/memory/dialogues /home/brain/.cache /home/brain/.local/state/brain-bot
-ReadWritePaths=-/home/brain/.local/state/claude -/home/brain/.local/share/claude
+# CLAUDE_CONFIG_DIR бота — /var/lib/brain-bot/claude-config (StateDirectory); /home/brain — только чтение
+ReadWritePaths=/home/brain/memory/inbox /home/brain/memory/dialogues
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

@@ -9,7 +9,7 @@ claude уже стоит, и только проверяет `--version`). Эм�
   Telegram; sha256 токена подписки (сам токен — никогда); cwd; длину промпта и есть ли в нём метка памяти.
 
 Журнал (JSON Lines): $FAKE_CLAUDE_LOG, иначе <родитель CLAUDE_CONFIG_DIR>/fake_claude.jsonl
-(у бота это ~/.local/state/brain-bot — единственное место, куда юнит пускает запись).
+(у бота это /var/lib/brain-bot — StateDirectory юнита, 0700 brainbot).
 
 Особые промпты (проверка фильтра секретов в боте):
   LAB_LEAK_TOKEN    — печатает полученный токен подписки (бот обязан скрыть ответ: known-secret)
@@ -36,6 +36,15 @@ def log_path():
     if cfg:
         return os.path.join(os.path.dirname(cfg.rstrip("/")), "fake_claude.jsonl")
     return os.path.join(os.environ.get("HOME") or "/tmp", ".cache", "fake_claude.jsonl")
+
+
+def run_user():
+    """Имя пользователя процесса (RT-11: бот и его claude — brainbot, не brain)."""
+    try:
+        import pwd
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except Exception:
+        return None
 
 
 def opt(argv, name):
@@ -74,6 +83,7 @@ def main():
         "oauth_prefix_ok": token.startswith("sk-ant-oat"),
         "oauth_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest() if token else None,
         "cwd": os.getcwd(),
+        "user": run_user(),
         "home": os.environ.get("HOME"),
         "claude_config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
         "prompt_len": len(prompt),

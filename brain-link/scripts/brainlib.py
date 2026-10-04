@@ -569,6 +569,10 @@ def write_tar(fileobj, items):
 # ---------- запись файлов ----------
 def atomic_write_bytes(path, data):
     path = Path(path)
+    if IS_WINDOWS and windows_name_problem(path.name):
+        # на NTFS «a:b.md» молча стал бы файлом «a» с потоком «b.md» (ADS): такое имя не пишем никогда.
+        # Синк отсекает их раньше (write_local, конфликты, личное) — это последний рубеж.
+        raise ValueError("имя «%s» нельзя создать на Windows" % path.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name("." + path.name + "." + str(os.getpid()) + TMP_SUFFIX)
     with open(tmp, "wb") as f:

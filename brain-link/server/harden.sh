@@ -25,7 +25,10 @@ BH=/home/brain
 PORT=${SERVER_PORT:-22}
 TZ_NAME=${BOT_TZ:-Europe/Moscow}
 BAK_DIR=/var/backups/brain-link
-CLAUDE_CFG=$BH/.local/state/brain-bot/claude-config
+# kit 2.1 (RT-11): бот — системный пользователь brainbot (группа brain, nologin), состояние — /var/lib/brain-bot
+BOT=brainbot
+BOT_STATE=/var/lib/brain-bot
+CLAUDE_CFG=$BOT_STATE/claude-config
 FAIL=0
 
 ok()   { echo "✅ $*"; }
@@ -140,15 +143,15 @@ done
 # 8. Папки brain
 install -d -m 0750 -o "$BRAIN" -g "$BRAIN" "$BH"
 chmod 0750 "$BH"
-for d in memory memory/inbox memory/dialogues .claude .claude/skills .cache .local .local/bin .local/share \
-         .local/share/brain-link .local/state .local/state/brain-bot .brain-sync .config; do
+for d in memory .claude .claude/skills .cache .local .local/bin .local/share \
+         .local/share/brain-link .local/state .brain-sync .config; do
   install -d -m 0750 -o "$BRAIN" -g "$BRAIN" "$BH/$d"
 done
-install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$BH/.local/state/brain-bot"
-# Конфиг Claude Code бота (CLAUDE_CONFIG_DIR): .claude.json, история, кэш — здесь, а не в ~/.claude.
-# В ~/.claude остаются только скиллы. Вход Claude у бота — только токен из LoadCredential.
-install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$CLAUDE_CFG"
-ok "папки /home/brain (0750) готовы, конфиг claude бота: $CLAUDE_CFG (0700)"
+# inbox и dialogues пишет бот (brainbot, группа brain), читает и переносит в .synced синк (brain): 2770, setgid
+for d in memory/inbox memory/dialogues; do install -d -m 2770 -o "$BRAIN" -g "$BRAIN" "$BH/$d"; done
+ok "папки /home/brain (0750, inbox и dialogues 2770) готовы"
+# Пользователь бота, его состояние (/var/lib/brain-bot 0700 brainbot: конфиг Claude Code бота — CLAUDE_CONFIG_DIR,
+# безопасный режим, итоги самопроверки), права памяти и перенос с ранних установок — шаг 11б (brain-admin bot-user).
 
 # 9. SSH-ключи brain: ключ админа + ключ синка с ограничением command=
 install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$BH/.ssh"
@@ -182,6 +185,11 @@ if visudo -cf "$HERE/sudoers-brain" >/dev/null; then
   visudo -c >/dev/null && ok "sudoers: brain → только brain-admin" || bad "visudo -c ругается — проверь /etc/sudoers.d/brain"
 else bad "sudoers-brain не прошёл visudo -cf — не установлен"; fi
 
+# 11б. Пользователь бота brainbot: токены LoadCredential и состояние бота недоступны brain (RT-11)
+if /usr/local/sbin/brain-admin bot-user >/tmp/brain-botuser.$$ 2>&1; then ok "пользователь бота $BOT, $BOT_STATE (0700), права памяти"
+else bad "пользователь бота: $(grep -E '❌|🟡' /tmp/brain-botuser.$$ | head -2 | tr '\n' ' ')"; fi
+rm -f /tmp/brain-botuser.$$
+
 # 12. Код бота, настройки claude, юниты (бот не включаем: ещё нет токенов — это шаг `brain-link bot`)
 install -d -m 0755 -o root -g root /usr/local/lib/brain-bot "$BH/.config/brain-bot"
 chown root:root "$BH/.config/brain-bot"
@@ -197,6 +205,11 @@ for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.ser
   put "$TMPU" "/etc/systemd/system/$u" 0644 root:root; rm -f "$TMPU"
 done
 systemctl daemon-reload
+# повторный harden на ранней установке: работающий бот ещё под brain — перезапуск переводит его на brainbot
+if systemctl is-active --quiet brain-bot.service 2>/dev/null; then
+  systemctl restart brain-bot.service >/dev/null 2>&1 && ok "бот перезапущен под $(systemctl show -p User --value brain-bot.service)" \
+    || bad "бот не перезапустился: journalctl -u brain-bot -n 50"
+fi
 if command -v systemd-analyze >/dev/null 2>&1; then
   systemd-analyze calendar "*-*-* 08:00:00 $TZ_NAME" >/dev/null 2>&1 && ok "брифинг в 08:00 по $TZ_NAME" \
     || bad "systemd не понимает OnCalendar с поясом $TZ_NAME (нужен systemd ≥ 235)"

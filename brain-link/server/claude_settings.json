@@ -55,6 +55,7 @@
       "Read(//var/tmp/**)",
       "Read(//var/backups/**)",
       "Read(//usr/local/lib/brain-bot/**)",
+      "Read(//var/lib/brain-bot/**)",
       "Read(//home/brain/.claude/.claude.json)",
       "Read(//home/brain/.claude/history.jsonl)",
       "Read(//home/brain/.claude/file-history/**)",

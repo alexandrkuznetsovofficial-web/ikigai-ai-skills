@@ -2,6 +2,7 @@
 # security_checks.sh — защитные регресс-проверки связки brain-link (RT-6…RT-16).
 # Каждая проверка УТВЕРЖДАЕТ, что защита сработала: отказ, ничего не записано, ничего не утекло.
 # Запускается ПОСЛЕ server_e2e.sh в том же job (сервер brain уже поднят на 127.0.0.1:2222).
+# RT-11 (kit 2.1): бот — brainbot; brain не читает /run/credentials/brain-bot.service и /etc/brain-bot/credentials.
 # Только локальное тестовое окружение раннера. Для TOCTOU — временная приманка в $RUNNER_TEMP,
 # НИКОГДА реальные системные пути (/etc/shadow и т.п.) как цели.
 set -uo pipefail
@@ -113,11 +114,39 @@ rt10() {
   RBRAIN 'rm -f /home/brain/memory/rt10_good.md /home/brain/memory/rt10_control.md' >/dev/null 2>&1 || true
 }
 
-# RT-11 — /run/credentials/brain-bot.service/* не читается от brain вне юнита
+# RT-11 — токены бота не читаются от brain вне юнита (ssh-вход brain — основной вход после lockdown).
+# LoadCredential отдаёт /run/credentials/<юнит>/ во владение пользователю юнита: бот обязан быть brainbot.
 rt11() {
-  local r; r="$(RBRAIN 'cat /run/credentials/brain-bot.service/claude_token 2>&1 | head -c 20; echo')"
-  echo "$r" | grep -qiE 'sk-ant|[0-9]{8}:' && bad "RT-11 brain прочитал credentials вне юнита: ${r:0:12}…" \
-    || ok "RT-11 /run/credentials недоступен brain вне юнита"
+  local f out leaked=0 checked=0
+  for f in /run/credentials/brain-bot.service/claude_token /run/credentials/brain-bot.service/bot_token \
+           /etc/brain-bot/credentials/claude_token /etc/brain-bot/credentials/bot_token; do
+    out="$(RBRAIN "cat $f 2>&1 | head -c 40; echo; echo RC=\${PIPESTATUS[0]}")"
+    checked=$((checked+1))
+    if echo "$out" | grep -qiE 'sk-ant|[0-9]{8}:' || ! echo "$out" | grep -qiE 'Permission denied|No such file'; then
+      bad "RT-11 brain прочитал (или не получил отказ) $f: $(echo "$out" | head -1 | cut -c1-12)…"; leaked=1
+    fi
+  done
+  # выданные юниту секреты существуют (бот жив) — иначе отказ «нет файла» ничего не доказывает
+  local present; present="$(RROOT 'ls /run/credentials/brain-bot.service/ 2>/dev/null | tr "\n" " "')"
+  echo "$present" | grep -q claude_token || { bad "RT-11 не проверено: у работающего brain-bot нет /run/credentials (бот не запущен?)"; leaked=1; }
+  local denied; denied="$(RBRAIN 'cat /run/credentials/brain-bot.service/claude_token 2>&1 >/dev/null')"
+  echo "$denied" | grep -q 'Permission denied' || { bad "RT-11 нет явного отказа ОС на /run/credentials: $denied"; leaked=1; }
+  local st; st="$(RBRAIN 'ls /var/lib/brain-bot 2>&1 >/dev/null | grep -c "Permission denied"')"
+  [ "${st:-0}" -ge 1 ] || { bad "RT-11 brain видит состояние бота /var/lib/brain-bot"; leaked=1; }
+  local u; u="$(RROOT 'systemctl show -p User --value brain-bot.service')"
+  [ "$u" = brainbot ] || { bad "RT-11 brain-bot.service под «$u», не brainbot"; leaked=1; }
+  [ "$leaked" = 0 ] && ok "RT-11 brain не читает токены бота ($checked путей: /run/credentials и /etc, отказ ОС), состояние бота закрыто, юнит под brainbot"
+  # приманки: в /home/brain (0600 brain) brainbot не читает правами ОС; в своём состоянии — читает (её держит слой claude)
+  local c1 c2
+  c1="$(RROOT 'runuser -u brainbot -- cat /home/brain/.config/brain-canary >/dev/null 2>&1 && echo read || echo denied')"
+  c2="$(RROOT 'runuser -u brainbot -- cat /var/lib/brain-bot/canary-bait 2>/dev/null | grep -c CANARY-')"
+  { [ "$c1" = denied ] && [ "${c2:-0}" -ge 1 ]; } \
+    && ok "RT-11 приманки: ~brain/.config закрыта для brainbot правами ОС; приманка в состоянии бота ему читаема (проверка слоя claude честная)" \
+    || bad "RT-11 приманки: brainbot→~brain/.config=$c1, brainbot→canary-bait=$c2"
+  # бот под brainbot читает память (группа brain) и пишет inbox (2770)
+  local mem; mem="$(RROOT 'runuser -u brainbot -- head -c 200 /home/brain/memory/MEMORY.md 2>/dev/null | grep -c LAB-MEMORY-MARKER; runuser -u brainbot -- sh -c "umask 007; f=/home/brain/memory/inbox/.rt11-probe.brain-tmp; echo x > \$f && rm -f \$f" && echo W_OK || echo W_FAIL')"
+  case "$(echo "$mem" | tr '\n' ' ')" in "1 W_OK ") ok "RT-11 brainbot читает память и пишет inbox" ;;
+    *) bad "RT-11 brainbot: память/inbox — $(echo "$mem" | tr '\n' ' ')" ;; esac
 }
 
 # RT-12 — токен не в /proc/*/cmdline во время verify/audit (сторож на хосте, от root)

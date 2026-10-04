@@ -392,6 +392,34 @@ def private_files():
 
 
 # ---------- файлы и права ----------
+# Права на сервере (kit 2.1, RT-11): синк работает под brain с umask 027 — файлы 0640, папки 0750, группа brain.
+# Бот — отдельный пользователь brainbot в группе brain: память читает, пишет только в memory/inbox и
+# memory/dialogues. Эти две папки — 2770 (setgid: файлы бота остаются в группе brain, он создаёт их 0660),
+# поэтому синк (brain) читает заметки бота и переносит inbox → inbox/.synced: rename разрешён правом записи
+# группы на папку, владелец файла (brainbot) значения не имеет.
+BOT_DIRS = ("inbox", "dialogues")
+BOT_DIR_MODE = 0o2770
+
+
+def ensure_bot_dirs():
+    mem = os.path.join(root_dir(), "memory")
+    if not os.path.isdir(mem) or os.path.islink(mem):
+        return
+    for sub in BOT_DIRS:
+        p = os.path.join(mem, sub)
+        try:
+            if os.path.islink(p):
+                continue
+            if not os.path.isdir(p):
+                os.mkdir(p, 0o770)
+                _forget(mem)
+            st = os.lstat(p)
+            if st.st_uid == os.geteuid() and (st.st_mode & 0o7777) != BOT_DIR_MODE:
+                os.chmod(p, BOT_DIR_MODE)
+        except OSError:
+            pass   # не наша папка или ФС без setgid — бот скажет в selftest
+
+
 def ensure_dir(path):
     if not os.path.isdir(path):
         _forget(os.path.dirname(path))
@@ -677,6 +705,7 @@ def cmd_apply():
             res["acked"].append(rel)
             prune_empty(src, inbox_root)
         cleanup_old()
+        ensure_bot_dirs()   # первая выгрузка (init) только что создала memory/ — папки бота сразу 2770
         if plan.get("heartbeat"):
             hb = os.path.join(sd, "heartbeat")
             tmp = hb + "." + str(os.getpid()) + TMP_SUFFIX
@@ -738,6 +767,7 @@ def main():
         _write(sys.stderr, "brain_sync_server: команда не разрешена\n")
         return 1
     ensure_dir(state_dir())
+    ensure_bot_dirs()
     lock_f = open(os.path.join(state_dir(), "server.lock"), "a")
     try:
         if fcntl is not None and cmd in ("manifest", "fetch", "apply"):

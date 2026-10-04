@@ -132,9 +132,10 @@ def check_isolation(tag, rec, mode, claude_sha, settings):
     check("%s: окружение claude — только белый список" % tag, not extra, ("лишние: %s" % extra) if extra else "")
     check("%s: токен подписки = тот, что положил put-token" % tag,
           rec["oauth_present"] and rec["oauth_prefix_ok"] and rec["oauth_sha256"] == claude_sha)
-    check("%s: CLAUDE_CONFIG_DIR — state бота, не ~/.claude" % tag,
-          (rec["claude_config_dir"] or "").endswith("/.local/state/brain-bot/claude-config"),
-          str(rec["claude_config_dir"]))
+    check("%s: CLAUDE_CONFIG_DIR — состояние бота /var/lib/brain-bot, не ~/.claude" % tag,
+          (rec["claude_config_dir"] or "") == "/var/lib/brain-bot/claude-config", str(rec["claude_config_dir"]))
+    # RT-11: claude бота работает под brainbot (группа brain) — память читает, токены brain не видны
+    check("%s: claude запущен под brainbot, не brain" % tag, rec.get("user") == "brainbot", str(rec.get("user")))
 
 
 def full(a):

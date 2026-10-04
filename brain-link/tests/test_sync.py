@@ -19,6 +19,7 @@ import time
 import unicodedata
 import unittest
 from pathlib import Path, PureWindowsPath
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 KIT = HERE.parent
@@ -354,6 +355,36 @@ class TestDeletes(SyncCase):
 
 
 # ---------------------------------------------------------------- исключения, имена, часы
+class TestBotDirsRT11(SyncCase):
+    """kit 2.1 (RT-11): бот — brainbot (группа brain). Синк (brain) держит inbox/dialogues 2770 и переносит
+    заметки бота (0660, чужой владелец) в .synced — rename по праву записи группы на папку."""
+
+    @unittest.skipUnless(os.name == "posix", "права и setgid — на Linux-сервере")
+    def test_inbox_dialogues_group_writable_and_ack_of_0660_note(self):
+        r = self.r
+        r.lw("memory/MEMORY.md", "индекс\n")
+        r.ok("init", "--yes")
+        for sub in ("inbox", "dialogues"):
+            mode = (r.srv / "memory" / sub).stat().st_mode
+            self.assertEqual(mode & 0o770, 0o770, sub)            # группа brain пишет (бот)
+            self.assertEqual(mode & 0o007, 0, sub)                # остальным — ничего
+            if sys.platform.startswith("linux"):
+                self.assertTrue(mode & 0o2000, "%s без setgid" % sub)
+        note = r.sw("memory/inbox/2026-10-04_120000_tg.md", "заметка бота\n")
+        os.chmod(str(note), 0o660)
+        res = r.ok("run")
+        self.assertIn("memory/inbox/2026-10-04_120000_tg.md", res["downloaded"])
+        res = r.ok("run")
+        self.assertFalse(note.exists(), "подтверждённая заметка ушла из inbox")
+        moved = list((r.srv / "memory" / "inbox" / ".synced").rglob("2026-10-04_120000_tg.md"))
+        self.assertEqual(len(moved), 1)
+
+    def test_server_mode_constant(self):
+        srv = load_server_module()
+        self.assertEqual(srv.BOT_DIR_MODE, 0o2770)
+        self.assertEqual(srv.BOT_DIRS, ("inbox", "dialogues"))
+
+
 class TestExcludesAndNames(SyncCase):
     def test_excludes_both_directions(self):
         r = self.r
@@ -452,6 +483,8 @@ class TestExcludesAndNames(SyncCase):
         self.assertEqual(res["uploaded"], ["memory/MEMORY.md"])
         self.assertEqual(r.sr("memory/MEMORY.md"), "индекс в прошлом\n")
 
+    @unittest.skipIf(os.name == "nt", "эмулятор сервера на NTFS не хранит такие имена: «a:b.md» → файл «a» + поток "
+                                      "(ADS), «aux.md» — устройство; на Linux-сервере они настоящие")
     def test_windows_names_skipped(self):
         r = self.r
         r.base_setup()
@@ -466,6 +499,19 @@ class TestExcludesAndNames(SyncCase):
 
 
 class TestWindowsPaths(unittest.TestCase):
+    def test_atomic_write_refuses_windows_bad_name_on_windows(self):
+        # последний рубеж на Windows: «a:b.md» не превращается в ADS, «aux.md» не пишется в устройство
+        d = Path(tempfile.mkdtemp())
+        try:
+            with mock.patch.object(bl, "IS_WINDOWS", True):
+                for name in ("a:b.md", "aux.md", "x?.md"):
+                    with self.assertRaises(ValueError):
+                        bl.atomic_write_bytes(d / "memory" / name, b"x")
+                bl.atomic_write_bytes(d / "memory" / "норм.md", b"x")
+            self.assertEqual(sorted(p.name for p in (d / "memory").iterdir()), ["норм.md"])
+        finally:
+            shutil.rmtree(str(d), ignore_errors=True)
+
     def test_problems(self):
         self.assertIsNone(bl.windows_name_problem("memory/заметки/план 2026.md"))
         self.assertIsNotNone(bl.windows_name_problem("memory/a:b.md"))

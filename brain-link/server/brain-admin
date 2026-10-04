@@ -17,6 +17,13 @@ CONF_DIR=/etc/brain-bot   # настройки claude меняет только 
 SRC_DIR=$BRAIN_HOME/.local/share/brain-link/server
 BAK_DIR=/var/backups/brain-link
 UNITS="brain-bot.service brain-brief.timer brain-watch.timer"
+# kit 2.1 (RT-11): бот — отдельный системный пользователь brainbot (группа brain, без входа). Его состояние
+# (конфиг claude, безопасный режим, итоги самопроверки) — /var/lib/brain-bot (0700 brainbot): brain туда не видит.
+BOT_USER=brainbot
+BOT_STATE=/var/lib/brain-bot
+LEGACY_STATE=$BRAIN_HOME/.local/state/brain-bot
+# что переносим из состояния ранних установок (бот под brain): только эти обычные файлы
+LEGACY_FILES="safe_mode selfcheck.json selfcheck_runs.json watch_state.json calls.json"
 
 die() { echo "❌ $*" >&2; exit 1; }
 ok() { echo "✅ $*"; }
@@ -28,6 +35,8 @@ usage() {
   cat <<'USAGE'
 sudo brain-admin <команда>
   restart-bot              перезапустить бота
+  bot-user                 пользователь бота brainbot, права памяти, /var/lib/brain-bot, перенос с ранних установок
+  bot-state                итог самопроверки и безопасный режим (для brain-link report)
   status                   состояние бота, таймеров, диска, часов
   logs [N]                 последние N строк журнала бота (по умолчанию 100, максимум 2000)
   set-token bot|claude     принять токен со стандартного ввода (ввод скрыт), записать 0600 root, рестарт
@@ -62,11 +71,15 @@ safe_install() { # src dst mode owner:group
 # >>> claude-flags — одна логика: здесь, в CAPS_SH установщика (brain_link.py) и в claude_capabilities() бота.
 # Флаг принят, если `claude <флаг> [значение] --version` завершается с кодом 0 (оба написания
 # --allowedTools/--allowed-tools). --help — только для отчёта и как запасной путь, если claude «принимает»
-# даже несуществующий флаг. claude запускается С ПРАВАМИ brain и с конфигом бота, root его не запускает.
+# даже несуществующий флаг. claude запускается С ПРАВАМИ brainbot и с конфигом бота (до шага bot — от brain),
+# root его не запускает.
 cl_run() {
-  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=/home/brain/.local/state/brain-bot/claude-config"
-  if [ "$(id -u)" = 0 ]; then timeout 30 runuser -u brain -- $CE /home/brain/.local/bin/claude "$@"
-  else timeout 30 $CE /home/brain/.local/bin/claude "$@"; fi
+  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1"
+  if [ "$(id -u)" = 0 ] && id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot ]; then
+    timeout 30 runuser -u brainbot -- $CE CLAUDE_CONFIG_DIR=/var/lib/brain-bot/claude-config /home/brain/.local/bin/claude "$@"
+  elif [ "$(id -u)" = 0 ]; then   # до шага bot (brainbot ещё нет): от brain, конфиг-черновик в его кэше
+    timeout 30 runuser -u brain -- $CE CLAUDE_CONFIG_DIR=/home/brain/.cache/brain-link-claude-probe /home/brain/.local/bin/claude "$@"
+  else timeout 30 $CE CLAUDE_CONFIG_DIR="${HOME:-/tmp}/.cache/brain-link-claude-probe" /home/brain/.local/bin/claude "$@"; fi
 }
 cl_flag() { cl_run "$@" --version </dev/null >/dev/null 2>&1; }
 cl_has() { # «--флаг[,--написание2]» значение|-   (- — флаг без значения)
@@ -106,6 +119,68 @@ case "$cmd" in
     systemctl is-active --quiet brain-bot.service && ok "бот перезапущен" || die "бот не поднялся: sudo brain-admin logs 50"
     ;;
 
+  bot-user)
+    # kit 2.1 (RT-11). Идемпотентно; вызывают harden.sh и шаг bot (до lockdown), можно и вручную.
+    # 1) системный пользователь brainbot: без входа и пароля, в группе brain, без sudo;
+    # 2) /var/lib/brain-bot 0700 brainbot (StateDirectory юнитов) + claude-config и cache внутри;
+    # 3) права памяти: файлы 0640, папки 0750, inbox/dialogues 2770 — всё ОТ brain (его файлы, симлинки не страшны);
+    # 4) перенос состояния ранней установки (бот под brain): brain читает свои файлы, brainbot пишет в свою папку.
+    id brain >/dev/null 2>&1 || die "нет пользователя brain — сначала harden"
+    if id "$BOT_USER" >/dev/null 2>&1; then ok "пользователь $BOT_USER уже есть"
+    else
+      useradd --system --user-group --no-create-home --home-dir "$BOT_STATE" --shell /usr/sbin/nologin "$BOT_USER" \
+        || die "useradd $BOT_USER не прошёл"
+      ok "системный пользователь $BOT_USER создан (nologin, без домашней папки в /home)"
+    fi
+    usermod -aG brain "$BOT_USER" || die "не добавил $BOT_USER в группу brain"
+    usermod -s /usr/sbin/nologin "$BOT_USER" >/dev/null 2>&1 || true
+    passwd -l "$BOT_USER" >/dev/null 2>&1 || true
+    for g in sudo admin wheel; do gpasswd -d "$BOT_USER" "$g" >/dev/null 2>&1 || true; done
+    # brain НЕ должен состоять в группе brainbot (иначе видел бы его файлы)
+    gpasswd -d brain "$BOT_USER" >/dev/null 2>&1 || true
+    ok "$BOT_USER: группы $(id -nG "$BOT_USER" | tr ' ' ',')"
+    [ -L "$BOT_STATE" ] && die "$BOT_STATE — симлинк, не трогаю"
+    install -d -m 0700 -o "$BOT_USER" -g brain "$BOT_STATE"
+    chown "$BOT_USER:brain" "$BOT_STATE"; chmod 0700 "$BOT_STATE"
+    for d in claude-config cache; do
+      runuser -u "$BOT_USER" -- sh -c 'umask 077; [ -L "$1" ] && exit 3; mkdir -p "$1" && chmod 0700 "$1"' sh "$BOT_STATE/$d" \
+        || die "не создал $BOT_STATE/$d"
+    done
+    ok "состояние бота: $BOT_STATE (0700 $BOT_USER), конфиг claude: $BOT_STATE/claude-config"
+    # права памяти — от brain: его папка, его файлы. brainbot читает (группа brain), пишет только inbox/dialogues.
+    runuser -u brain -- sh -c '
+      cd /home/brain || exit 1
+      chmod 0750 /home/brain
+      for d in memory .claude .claude/skills .local .local/bin .local/share .local/state .config .brain-sync; do
+        [ -d "$d" ] && [ ! -L "$d" ] && chmod 0750 "$d"
+      done
+      [ -L memory ] && exit 3
+      mkdir -p memory/inbox memory/dialogues && chmod 0750 memory
+      for d in memory/inbox memory/dialogues; do [ -L "$d" ] && exit 3; chmod 2770 "$d" || exit 4; done
+      if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then chmod u+rw,g+r,g-w,o-rwx CLAUDE.md; fi
+      find -P memory .claude/skills -xdev \( -path memory/inbox -o -path memory/dialogues \) -prune -o -user brain \
+        \( -type d -exec chmod u+rwx,g+rx,g-w,o-rwx {} + -o -type f -exec chmod u+rw,g+r,g-w,o-rwx {} + \) 2>/dev/null
+      find -P memory/inbox memory/dialogues -xdev -mindepth 1 -user brain \
+        \( -type d -exec chmod 2770 {} + -o -type f -exec chmod u+rw,g+rw,o-rwx {} + \) 2>/dev/null
+      exit 0' && ok "права памяти: файлы 0640, папки 0750, inbox и dialogues 2770 (группа brain)" \
+      || die "права памяти не выставились (memory, inbox или dialogues — симлинк?)"
+    # перенос состояния ранней установки (бот был под brain): только обычные файлы из белого списка
+    if [ -d "$LEGACY_STATE" ] && [ ! -L "$LEGACY_STATE" ] && [ ! -e "$BOT_STATE/.migrated-from-brain" ]; then
+      n=0
+      for f in $LEGACY_FILES; do
+        runuser -u brain -- test -f "$LEGACY_STATE/$f" -a ! -L "$LEGACY_STATE/$f" 2>/dev/null || continue
+        if runuser -u brain -- head -c 1048576 -- "$LEGACY_STATE/$f" \
+           | runuser -u "$BOT_USER" -- sh -c 'umask 077; [ -L "$1" ] && exit 3; t="$1.tmp.$$"; cat > "$t" && mv -f "$t" "$1"' sh "$BOT_STATE/$f"; then
+          n=$((n+1))
+        else warn "не перенёс $f из $LEGACY_STATE"; fi
+      done
+      runuser -u "$BOT_USER" -- sh -c 'date +%s > "$1"' sh "$BOT_STATE/.migrated-from-brain"
+      # старое состояние (в т.ч. прежний конфиг claude бота) убираем — от brain, это его папка
+      runuser -u brain -- rm -rf --one-file-system -- "$LEGACY_STATE" 2>/dev/null || warn "не удалил $LEGACY_STATE"
+      ok "перенесено состояние ранней установки: $n файл(ов) из $LEGACY_STATE (безопасный режим сохранён)"
+    fi
+    ;;
+
   status)
     for u in $UNITS; do printf '%-22s %s\n' "$u" "$(systemctl is-active "$u" 2>/dev/null || true)"; done
     # строка «ufw: active|inactive|none» — её читает audit (sudo -n brain-admin status), формат не менять
@@ -119,10 +194,17 @@ case "$cmd" in
     echo "--- таймеры"; systemctl list-timers 'brain-*' --no-pager 2>/dev/null | head -5 || true
     echo "--- fail2ban"; fail2ban-client status sshd 2>/dev/null | grep -E 'Currently banned|Total banned' | sed 's/^[^A-Za-z]*//' || echo "fail2ban: нет"
     # файлы из папки brain root читает С ПРАВАМИ brain: подложенный симлинк на /etc/shadow ничего не даст
-    st=$BRAIN_HOME/.local/state/brain-bot
-    if runuser -u brain -- test -e "$st/safe_mode"; then echo "safe_mode: on"; runuser -u brain -- head -c 2000 "$st/safe_mode"; echo
+    echo "bot-user: $(systemctl show -p User --value brain-bot.service 2>/dev/null)"
+    st=$BOT_STATE
+    if runuser -u "$BOT_USER" -- test -e "$st/safe_mode" 2>/dev/null; then echo "safe_mode: on"; runuser -u "$BOT_USER" -- head -c 2000 "$st/safe_mode"; echo
     else echo "safe_mode: off"; fi
-    runuser -u brain -- sed -n 's/^ "status": "\([a-z]*\)".*/selfcheck: \1/p' "$st/selfcheck.json" 2>/dev/null | head -1 || true
+    runuser -u "$BOT_USER" -- sed -n 's/^ "status": "\([a-z]*\)".*/selfcheck: \1/p' "$st/selfcheck.json" 2>/dev/null | head -1 || true
+    ;;
+
+  bot-state)
+    # для brain-link report: состояние бота читает brainbot (root файлы из папки бота не открывает)
+    echo "=== selfcheck.json"; runuser -u "$BOT_USER" -- head -c 20000 "$BOT_STATE/selfcheck.json" 2>/dev/null || echo "нет (самопроверка ещё не запускалась)"
+    echo; echo "=== safe_mode"; runuser -u "$BOT_USER" -- head -c 4000 "$BOT_STATE/safe_mode" 2>/dev/null || echo "нет — обычный режим"
     ;;
 
   logs)
@@ -198,21 +280,37 @@ PY
       if [ -f "$f" ] && [ "$(stat -c '%a %U' "$f")" = "600 root" ]; then ok "секрет $n: 0600 root"; else echo "❌ секрет $n: нет или права не 0600 root"; rc=1; fi
     done
     [ "$(stat -c '%a %U' "$CRED_DIR" 2>/dev/null)" = "700 root" ] && ok "$CRED_DIR: 0700 root" || { echo "❌ $CRED_DIR не 0700 root"; rc=1; }
-    cc=$BRAIN_HOME/.local/state/brain-bot/claude-config
-    [ -d "$cc" ] && [ ! -L "$cc" ] && [ "$(stat -c '%a %U' "$cc")" = "700 brain" ] && ok "конфиг claude бота: $cc (0700 brain)" \
-      || { echo "❌ нет $cc 0700 brain (CLAUDE_CONFIG_DIR бота) — повтори harden"; rc=1; }
+    cc=$BOT_STATE/claude-config
+    [ -d "$cc" ] && [ ! -L "$cc" ] && [ "$(stat -c '%a %U' "$cc")" = "700 $BOT_USER" ] && [ "$(stat -c '%a %U' "$BOT_STATE")" = "700 $BOT_USER" ] \
+      && ok "состояние и конфиг claude бота: $BOT_STATE (0700 $BOT_USER)" \
+      || { echo "❌ нет $cc / $BOT_STATE 0700 $BOT_USER (CLAUDE_CONFIG_DIR бота) — sudo brain-admin bot-user"; rc=1; }
+    # RT-11: секреты и состояние бота не читаются от brain — ни исходные, ни выданные юниту
+    leak=""
+    for f in "$CRED_DIR/bot_token" "$CRED_DIR/claude_token" /run/credentials/brain-bot.service/bot_token \
+             /run/credentials/brain-bot.service/claude_token "$BOT_STATE/selfcheck.json" "$BOT_STATE/canary-bait"; do
+      runuser -u brain -- cat -- "$f" >/dev/null 2>&1 && leak="$leak $f"
+    done
+    runuser -u brain -- ls -- "$BOT_STATE" >/dev/null 2>&1 && leak="$leak $BOT_STATE/"
+    [ -z "$leak" ] && ok "brain не читает секреты бота (/etc и /run/credentials) и его состояние" \
+      || { echo "❌ brain читает:$leak — бот должен работать под $BOT_USER (brain-link bot до lockdown)"; rc=1; }
     for f in "$BRAIN_HOME"/.claude/settings.json "$BRAIN_HOME"/.claude/settings.local.json; do
       [ -e "$f" ] && warn "$f есть — бот его НЕ читает (--setting-sources пустой), но лучше убрать"
     done
     oid=$(owner_id || true)
     [[ "$oid" =~ ^[0-9]+$ ]] && ok "OWNER_ID задан в юните" || { echo "❌ OWNER_ID в юните не задан (fail-closed)"; rc=1; }
-    systemctl show -p User --value brain-bot.service | grep -qx brain && ok "бот запускается под brain" || { echo "❌ бот не под brain"; rc=1; }
+    bu=$(systemctl show -p User --value brain-bot.service 2>/dev/null || true)
+    if [ "$bu" = "$BOT_USER" ]; then ok "бот запускается под $BOT_USER (не brain)"
+    else echo "❌ бот под «${bu:-?}», а не $BOT_USER — повтори шаг bot до lockdown (переведёт)"; rc=1; fi
+    id -nG "$BOT_USER" 2>/dev/null | tr ' ' '\n' | grep -qx brain && ok "$BOT_USER в группе brain (читает память)" \
+      || { echo "❌ $BOT_USER не в группе brain — sudo brain-admin bot-user"; rc=1; }
+    [ "$(stat -c '%a %G' "$BRAIN_HOME/memory/inbox" 2>/dev/null)" = "2770 brain" ] && ok "memory/inbox 2770 brain" \
+      || { echo "❌ memory/inbox не 2770 brain — sudo brain-admin bot-user"; rc=1; }
     if grep -rqs 'ANTHROPIC_API_KEY' /etc/environment /etc/systemd/system/brain-*.service "$BRAIN_HOME/.profile" "$BRAIN_HOME/.bashrc"; then
       echo "❌ где-то задан ANTHROPIC_API_KEY — убрать"; rc=1
     else ok "ANTHROPIC_API_KEY нигде не задан"; fi
     if [ -f "$CONF_DIR/canary.list" ] && [ "$(stat -c '%a %U' "$CONF_DIR/canary.list")" = "600 root" ]; then ok "приманки самопроверки: $CONF_DIR/canary.list (0600 root)"
     else echo "❌ нет приманок самопроверки ($CONF_DIR/canary.list 0600 root) — sudo brain-admin canary-init"; rc=1; fi
-    runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" \
+    runuser -u brainbot -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BRAIN_STATE_DIR="$BOT_STATE" \
       PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
       /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selftest || rc=1
     exit $rc
@@ -224,10 +322,13 @@ PY
     install -d -m 0755 -o root -g root "$CONF_DIR"
     LIST=$CONF_DIR/canary.list
     gen() { printf 'CANARY-%s' "$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
-    if [ -f "$LIST" ] && [ ! -L "$LIST" ] && [ "$(grep -c '^CANARY-[0-9a-f]\{16,\}$' "$LIST")" -ge 3 ]; then
-      mapfile -t V < <(grep '^CANARY-' "$LIST" | head -3); ok "приманки уже есть — значения прежние"
+    # 4 значения: /etc (root), ~/.config и ~/.claude (brain), состояние бота (brainbot — её бот ЧИТАЕТ, держит слой claude).
+    # Прежние значения сохраняем, недостающие (установки с тремя приманками) — дописываем.
+    V=()
+    if [ -f "$LIST" ] && [ ! -L "$LIST" ]; then mapfile -t V < <(grep '^CANARY-[0-9a-f]\{16,\}$' "$LIST" | head -4); fi
+    if [ "${#V[@]}" -ge 4 ]; then ok "приманки уже есть — значения прежние"
     else
-      V=("$(gen)" "$(gen)" "$(gen)")
+      while [ "${#V[@]}" -lt 4 ]; do V+=("$(gen)"); done
       tmp=$(mktemp "$CONF_DIR/.tmp.XXXXXX"); printf '%s\n' "${V[@]}" > "$tmp"
       chmod 0600 "$tmp"; chown root:root "$tmp"; mv -f "$tmp" "$LIST"
       ok "приманки сгенерированы: $LIST (0600 root)"
@@ -246,6 +347,14 @@ PY
     put_brain "$BRAIN_HOME/.claude/.canary-credentials.json" \
       "{\"claudeAiOauth\": {\"accessToken\": \"${V[2]}\", \"note\": \"brain-link canary, fake\"}}" \
       && ok "приманка ~/.claude/.canary-credentials.json (0600 brain)" || warn "не положил ~/.claude/.canary-credentials.json"
+    # Приманки в /home/brain (0600 brain) бот (brainbot) не прочтёт уже правами ОС. Эту — прочтёт: она в его
+    # состоянии, вне белого списка claude. Пишет brainbot в свою папку (не root).
+    if id "$BOT_USER" >/dev/null 2>&1 && [ -d "$BOT_STATE" ] && [ ! -L "$BOT_STATE" ]; then
+      printf '%s\n' "brain-link canary: FAKE secret (bot state) ${V[3]}" | runuser -u "$BOT_USER" -- sh -c 'umask 077
+        [ -L "$1" ] && exit 3; t="$1.tmp.$$"; cat > "$t" && chmod 600 "$t" && mv -f "$t" "$1"' sh "$BOT_STATE/canary-bait" \
+        && ok "приманка $BOT_STATE/canary-bait (0600 $BOT_USER — бот её читает, отказать обязан слой claude)" \
+        || warn "не положил $BOT_STATE/canary-bait"
+    else warn "нет $BOT_USER или $BOT_STATE — приманку состояния бота положит sudo brain-admin bot-user, затем canary-init"; fi
     ;;
 
   selfcheck-security)
@@ -264,7 +373,7 @@ PY
     fi
     [ -f "$CONF_DIR/canary.list" ] || "$0" canary-init
     # RuntimeMaxSec > SELFCHECK_BUDGET бота (≈1700 с); brain_link.py ждёт ssh дольше (SELFCHECK_TIMEOUT)
-    props=(-p User=brain -p Group=brain -p "WorkingDirectory=$BRAIN_HOME" -p RuntimeMaxSec=1800)
+    props=(-p User=brainbot -p Group=brain -p "WorkingDirectory=$BRAIN_HOME" -p RuntimeMaxSec=1800)
     while IFS= read -r line; do
       case "$line" in ''|'#'*|'['*) continue ;; esac
       case "${line%%=*}" in
@@ -274,17 +383,20 @@ PY
       props+=(-p "$line")
     done < <(sed -n '/^\[Service\]/,/^\[/p' <<<"$UNIT_TXT")
     grep -q '^LoadCredential=canary_list:' <<<"$UNIT_TXT" || props+=(-p "LoadCredential=canary_list:$CONF_DIR/canary.list")
+    grep -q '^Environment=BRAIN_STATE_DIR=' <<<"$UNIT_TXT" || props+=(-p "Environment=BRAIN_STATE_DIR=$BOT_STATE")
+    # журнал ошибок без секретов: шаблоны токенов вырезаются (на случай трассировки с аргументами)
+    errtail() { sed -E 's/sk-ant-[A-Za-z0-9_-]+/<скрыто>/g; s/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<скрыто>/g' "$1" | grep -vE '^INFO ' | tail -8 >&2 || true; }
     out=$(mktemp); err=$(mktemp); rc=0; mode=systemd; CD=""
     trap 'rm -f "$out" "$err"' EXIT HUP INT TERM
     if command -v systemd-run >/dev/null 2>&1; then
-      systemd-run --quiet --wait --pipe --collect --unit="brain-selfcheck-$$" "${props[@]}" -p User=brain /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
+      systemd-run --quiet --wait --pipe --collect --unit="brain-selfcheck-$$" "${props[@]}" -p User=brainbot /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
       if ! grep -q '^SELFCHECK=' "$out"; then
         if grep -qE 'Unknown assignment|Failed to start transient' "$err"; then
           warn "systemd-run не принял свойства юнита ($(grep -m1 -E 'Unknown assignment|Failed to start transient' "$err" | head -c 200)) — запускаю с тем же окружением без песочницы"
           mode=fallback
         else
           cat "$out"
-          grep -E '^(ERROR|CRITICAL)' "$err" | tail -5 >&2 || true
+          errtail "$err"
           echo "🟡 не проверено: самопроверка в песочнице запустилась, но завершилась без итога (код $rc) — sudo brain-admin logs 100"
           echo "SELFCHECK=unverified"
           echo "SELFCHECK_CACHED=0"
@@ -302,30 +414,31 @@ PY
       trap 'rm -rf "$CD"; rm -f "$out" "$err"' EXIT HUP INT TERM   # копии токенов не переживут обрыв
       for n in bot_token claude_token; do if [ -f "$CRED_DIR/$n" ]; then cp "$CRED_DIR/$n" "$CD/$n"; fi; done
       cp "$CONF_DIR/canary.list" "$CD/canary_list"
-      chown -R brain:brain "$CD"; chmod 0700 "$CD"; chmod 0600 "$CD"/*
+      chown -R "$BOT_USER:$BOT_USER" "$CD"; chmod 0700 "$CD"; chmod 0600 "$CD"/*
       oid=$(owner_id || true)
       tz=$(systemctl show -p Environment --value brain-bot.service 2>/dev/null | tr ' ' '\n' | sed -n 's/^BOT_TZ=//p' | head -1)
-      runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BOT_TZ="${tz:-Europe/Moscow}" \
+      runuser -u brainbot -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BOT_TZ="${tz:-Europe/Moscow}" \
+        BRAIN_STATE_DIR="$BOT_STATE" XDG_CACHE_HOME="$BOT_STATE/cache" \
         PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" CREDENTIALS_DIRECTORY="$CD" BRAIN_SELFCHECK_SANDBOX=fallback \
         /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
       rm -rf "$CD"
     fi
     cat "$out"
-    grep -E '^(ERROR|CRITICAL)' "$err" | tail -5 >&2 || true
+    if grep -q '^SELFCHECK=' "$out"; then grep -E '^(ERROR|CRITICAL)' "$err" | tail -5 >&2 || true; else errtail "$err"; fi
     exit "$rc"
     ;;
 
   clear-canary-hit)
     # Причина canary-hit: в ЖИВОМ ответе модели оказалась приманка. Самопроверка её не снимает — только
-    # человек, после разбора с куратором (brain-link report). Файл состояния пишет brain (runuser), не root.
-    st=$BRAIN_HOME/.local/state/brain-bot
-    if ! runuser -u brain -- grep -qs '"canary-hit"' "$st/safe_mode"; then ok "причины canary-hit нет"; exit 0; fi
+    # человек, после разбора с куратором (brain-link report). Файл состояния пишет brainbot (runuser), не root.
+    st=$BOT_STATE
+    if ! runuser -u brainbot -- grep -qs '"canary-hit"' "$st/safe_mode"; then ok "причины canary-hit нет"; exit 0; fi
     warn "снимаешь безопасный режим после срабатывания приманки. Делай это только после разбора с куратором."
     answer=""
     read -r -t 60 -p "Напиши YES в течение 60 секунд, чтобы снять canary-hit: " answer || die "время вышло или ввода нет — отменено"
     [ "$answer" = "YES" ] || die "отменено"
     oid=$(owner_id || true)
-    runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" \
+    runuser -u brainbot -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BRAIN_STATE_DIR="$BOT_STATE" \
       PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
       /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" clear-canary-hit
     ;;

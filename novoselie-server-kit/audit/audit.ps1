@@ -305,6 +305,14 @@ else
   echo "LK_CREDS=$P"
 fi
 [ -f /etc/ssh/sshd_config.d/00-brain.conf ] && echo "LK_LOCKDOWN=yes" || echo "LK_LOCKDOWN=no"
+# RT-11: токены бота (исходные и выданные юниту в /run/credentials) от brain не читаются
+if [ "$(id -u)" = 0 ]; then LKAS="runuser -u brain --"; else LKAS=""; fi
+LKR=no
+for f in /etc/brain-bot/credentials/claude_token /etc/brain-bot/credentials/bot_token \
+         /run/credentials/brain-bot.service/claude_token /run/credentials/brain-bot.service/bot_token; do
+  $LKAS cat "$f" >/dev/null 2>&1 && LKR=yes
+done
+echo "LK_CREDREAD=$LKR"
 echo "LK_DISK=$(df --output=pcent /home 2>/dev/null | tail -1 | tr -dc 0-9)"
 '@
 
@@ -389,9 +397,12 @@ CL=/home/brain/.local/bin/claude; [ -x "$CL" ] || CL=claude
 if [ "$(id -u)" != 0 ]; then echo "NOT_ROOT"; exit 0; fi
 if [ -s /etc/brain-bot/credentials/claude_token ]; then
   # токен не в argv: файл открывает root как stdin, sh -c читает его в переменную и отдаёт claude окружением
-  CCD=/home/brain/.local/state/brain-bot/claude-config; [ -d "$CCD" ] || CCD=/home/brain/.claude
+  # kit 2.1 (RT-11): бот — brainbot, конфиг claude в /var/lib/brain-bot; ранние установки — brain и ~/.local/state
+  RU=brain; CCD=/home/brain/.local/state/brain-bot/claude-config
+  if id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot/claude-config ]; then RU=brainbot; CCD=/var/lib/brain-bot/claude-config; fi
+  [ -d "$CCD" ] || CCD=/home/brain/.claude
   ST=/etc/brain-bot/claude_settings.json; [ -f "$ST" ] || ST=
-  cd /tmp && runuser -u brain -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin \
+  cd /tmp && runuser -u "$RU" -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin \
     CLAUDE_CONFIG_DIR="$CCD" sh -c 'IFS= read -r CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CODE_OAUTH_TOKEN
       if [ -n "$2" ]; then exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" --settings "$2" </dev/null
       else exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" </dev/null; fi' sh "$CL" "$ST" \
@@ -772,7 +783,7 @@ foreach ($t in @(Get-ScheduledTask -ErrorAction SilentlyContinue)) {
 if ($lkHits.Count -eq 0) { LK 'есть' "Вход без пароля в скриптах" "пароль через $patPass и выключенная проверка ключа сервера не найдены" }
 else { LK 'нет' "Вход без пароля в скриптах" ("найдено в: " + ($lkHits -join ', ')) "заменить на вход по ключу и закреплённый known_hosts (brain-link keys); пароль из файлов убрать" }
 
-# 8.6–8.14 — сервер
+# 8.6–8.15 — сервер
 if ($SrvOk) {
   $lkPriv = (G 'LK_PRIVATE')
   if (-not $lkPriv) { LK 'есть' "Личного на сервере нет" "personal/ private/ secret/ sessions/ не найдены" }
@@ -785,9 +796,16 @@ if ($SrvOk) {
             else { LK 'частично' "Вход только по ключам" "пароль ещё принимается — до lockdown так и должно быть" "brain-link lockdown после зелёного verify" } }
     default { LK 'частично' "Вход только по ключам" "не смог проверить" "brain-link verify" }
   }
-  if ((G 'UNIT') -eq 'brain-bot.service' -and (G 'UNITACTIVE') -eq 'yes' -and (G 'UNITUSER') -eq 'brain') { LK 'есть' "Бот под brain" "brain-bot active, User=brain" }
-  elseif ((G 'UNIT') -eq 'brain-bot.service') { LK 'нет' "Бот под brain" ("brain-bot: active=" + (G 'UNITACTIVE') + ", User=" + (G 'UNITUSER')) "brain-link bot" }
-  else { LK 'нет' "Бот под brain" "стандартного brain-bot нет" "brain-link bot" }
+  # kit 2.1 (RT-11): бот — отдельный пользователь brainbot; под brain токены LoadCredential читает любой процесс brain
+  if ((G 'UNIT') -eq 'brain-bot.service' -and (G 'UNITACTIVE') -eq 'yes' -and (G 'UNITUSER') -eq 'brainbot') { LK 'есть' "Бот под brainbot" "brain-bot active, User=brainbot" }
+  elseif ((G 'UNIT') -eq 'brain-bot.service' -and (G 'UNITUSER') -eq 'brain') { LK 'нет' "Бот под brainbot" "brain-bot под brain (ранняя установка): его токены читает любой процесс brain" "brain-link bot до lockdown — переведёт на brainbot (после lockdown — VNC-консоль, root: brain-link bot)" }
+  elseif ((G 'UNIT') -eq 'brain-bot.service') { LK 'нет' "Бот под brainbot" ("brain-bot: active=" + (G 'UNITACTIVE') + ", User=" + (G 'UNITUSER')) "brain-link bot" }
+  else { LK 'нет' "Бот под brainbot" "стандартного brain-bot нет" "brain-link bot" }
+  switch (G 'LK_CREDREAD') {
+    'no'  { LK 'есть' "brain не читает токены бота" "/etc/brain-bot/credentials и /run/credentials/brain-bot.service закрыты для brain" }
+    'yes' { LK 'нет' "brain не читает токены бота" "brain читает токен бота — RT-11" "brain-link bot до lockdown (бот уйдёт под brainbot)" }
+    default { LK 'частично' "brain не читает токены бота" "не смог проверить" "brain-link verify, пункт (ж)" }
+  }
   $lkCreds = @(((G 'LK_CREDS') -split ';') | Where-Object { $_.Trim() })
   if ($lkCreds.Count -eq 0) { LK 'нет' "Секреты бота 0600 root" "секретов в /etc/brain-bot/credentials нет (или не видно)" "brain-link put-token claude и put-token bot" }
   elseif (@($lkCreds | Where-Object { $_.Trim() -notmatch '^(600|-rw-------) root$' }).Count -gt 0) { LK 'нет' "Секреты бота 0600 root" ("права: " + ($lkCreds -join '; ')) "sudo brain-admin set-token … заново (ставит 0600 root)" }

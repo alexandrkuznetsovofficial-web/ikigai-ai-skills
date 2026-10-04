@@ -485,7 +485,8 @@ class TestOldBots(Base):
         self.assertEqual(res["old_bots"], ["tg-bridge.service"])
         self.assertNotIn("postgresql", res["human"])
 
-    @unittest.skipUnless(shutil.which("bash"), "нужен bash")
+    @unittest.skipUnless(shutil.which("bash") and os.name != "nt",
+                         "shell-скан исполняется на Linux-сервере (на Windows bash раннера — WSL/MSYS без PATH-подмены)")
     def test_shell_scan_with_fake_systemctl(self):
         import subprocess
         fake = self.tmp / "bin"
@@ -759,7 +760,7 @@ class TestBotTz(KeysMixin, Base):
 
 
 class TestVerifySelfcheck(KeysMixin, Base):
-    def _verify(self, selfcheck_out):
+    def _verify(self, selfcheck_out, extra=None):
         import hashlib
         import time as _t
         self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
@@ -771,8 +772,11 @@ class TestVerifySelfcheck(KeysMixin, Base):
         (skills / "demo").mkdir(parents=True, exist_ok=True)
         (skills / "demo" / "SKILL.md").write_text("x", encoding="utf-8")
         sha = hashlib.sha256(b"x").hexdigest()
-        vs = ("NOW=%d\nNTP=yes\nPRIVATE=\nSKILL_SHA=%s\nBOT_USER=brain\nBOT_ACTIVE=active\nSELFTEST=ok\n"
-              "CRED_READ=no\nCRED_READ2=no\nSUDO_LINES=0\nLOG_TOKENS=0\n" % (int(_t.time()), sha))
+        kv = {"NOW": str(int(_t.time())), "NTP": "yes", "PRIVATE": "", "SKILL_SHA": sha, "BOT_USER": "brainbot",
+              "BOT_ACTIVE": "active", "SELFTEST": "ok", "CRED_READ": "no", "CRED_READ2": "no", "CRED_RUN": "no",
+              "CRED_RUN2": "no", "STATE_READ": "no", "SUDO_LINES": "0", "LOG_TOKENS": "0"}
+        kv.update(extra or {})
+        vs = "".join("%s=%s\n" % i for i in kv.items())
         self.runner.rules = [("grep -q verify-", (0, b"SYNCED=1\n", b"")),
                              ("selfcheck-security", selfcheck_out),
                              ("bash -s", (0, vs.encode(), b""))]
@@ -780,6 +784,36 @@ class TestVerifySelfcheck(KeysMixin, Base):
 
     def _state(self):
         return json.loads((self.cfg / "link_state.json").read_text(encoding="utf-8"))
+
+    PASS_OUT = (0, "✅ утечки нет\nSELFCHECK=pass\nSELFCHECK_CACHED=0\nSELFCHECK_SANDBOX=systemd\n".encode(), b"")
+
+    def test_rt11_brain_reads_unit_credentials_is_red(self):
+        # RT-11: юнит под brain → /run/credentials/brain-bot.service/* читает любой процесс brain
+        code, res, _ = self._verify(self.PASS_OUT, {"CRED_RUN": "yes"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(res["checks"]["ж"]["status"], "fail")
+        self.assertIn("/run/credentials/brain-bot.service: False", res["checks"]["ж"]["detail"])
+
+    def test_rt11_bot_under_brain_is_red_with_migration_hint(self):
+        code, res, _ = self._verify(self.PASS_OUT, {"BOT_USER": "brain"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(res["checks"]["е"]["status"], "fail")
+        self.assertEqual(res["checks"]["ж"]["status"], "fail")
+        self.assertIn("повтори шаг bot до lockdown", res["checks"]["е"]["detail"])
+
+    def test_rt11_state_readable_or_unknown_is_red(self):
+        for extra in ({"STATE_READ": "yes"}, {"CRED_RUN2": ""}, {"STATE_READ": ""}):
+            code, res, _ = self._verify(self.PASS_OUT, extra)
+            self.assertEqual(res["checks"]["ж"]["status"], "fail", extra)   # нет ответа ≠ «закрыто»
+
+    def test_verify_sh_checks_unit_credentials_as_brain(self):
+        self.assertIn("/run/credentials/brain-bot.service", bk.VERIFY_SH)
+        self.assertIn('AS="runuser -u brain --"', bk.VERIFY_SH)
+        self.assertIn("ls /var/lib/brain-bot", bk.VERIFY_SH)
+        self.assertIn("brain-admin bot-user", bk.BOT_ROOT_SH)
+        self.assertLess(bk.BOT_ROOT_SH.index("brain-admin bot-user"), bk.BOT_ROOT_SH.index("systemctl restart brain-bot"))
+        self.assertEqual(bk.BOT_CLAUDE_CONFIG, "/var/lib/brain-bot/claude-config")
+        self.assertIn("bot-state", bk.REPORT_SH)
 
     def test_pass_is_green(self):
         out = "✅ утечки нет\nSELFCHECK=pass\nSELFCHECK_CACHED=0\nSELFCHECK_SANDBOX=systemd\n"

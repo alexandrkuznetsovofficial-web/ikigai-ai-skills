@@ -64,8 +64,11 @@ TASK_NAME = "Ikigai brain-sync"
 BH = "/home/brain"
 UPLOAD_DIR = "/root/.brain-link-upload"
 KIT_COPY = BH + "/.local/share/brain-link/server"
+# kit 2.1 (RT-11): бот — системный пользователь brainbot (группа brain), его состояние — /var/lib/brain-bot (0700)
+BOT_USER = "brainbot"
+BOT_STATE = "/var/lib/brain-bot"
 # конфиг Claude Code бота (CLAUDE_CONFIG_DIR, там .claude.json и .credentials.json); в ~/.claude — только скиллы
-BOT_CLAUDE_CONFIG = BH + "/.local/state/brain-bot/claude-config"
+BOT_CLAUDE_CONFIG = BOT_STATE + "/claude-config"
 VERIFY_FILE = "brain_link_verify.md"
 WAIT_DEFAULT = 360
 
@@ -530,16 +533,20 @@ fi
 """.replace("__OLDSCAN__", OLD_SCAN)
 
 # Возможности сервера: версия claude и флаги изоляции, systemd и его песочница, контейнер, ufw, Python.
-# claude запускается С ПРАВАМИ brain и с конфигом бота (CLAUDE_CONFIG_DIR), root его не запускает.
+# claude запускается С ПРАВАМИ brainbot и с конфигом бота (CLAUDE_CONFIG_DIR; до шага bot — от brain), root его не запускает.
 CAPS_SH = r"""
 # >>> claude-flags — одна логика: здесь, в CAPS_SH установщика (brain_link.py) и в claude_capabilities() бота.
 # Флаг принят, если `claude <флаг> [значение] --version` завершается с кодом 0 (оба написания
 # --allowedTools/--allowed-tools). --help — только для отчёта и как запасной путь, если claude «принимает»
-# даже несуществующий флаг. claude запускается С ПРАВАМИ brain и с конфигом бота, root его не запускает.
+# даже несуществующий флаг. claude запускается С ПРАВАМИ brainbot и с конфигом бота (до шага bot — от brain),
+# root его не запускает.
 cl_run() {
-  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=/home/brain/.local/state/brain-bot/claude-config"
-  if [ "$(id -u)" = 0 ]; then timeout 30 runuser -u brain -- $CE /home/brain/.local/bin/claude "$@"
-  else timeout 30 $CE /home/brain/.local/bin/claude "$@"; fi
+  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1"
+  if [ "$(id -u)" = 0 ] && id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot ]; then
+    timeout 30 runuser -u brainbot -- $CE CLAUDE_CONFIG_DIR=/var/lib/brain-bot/claude-config /home/brain/.local/bin/claude "$@"
+  elif [ "$(id -u)" = 0 ]; then   # до шага bot (brainbot ещё нет): от brain, конфиг-черновик в его кэше
+    timeout 30 runuser -u brain -- $CE CLAUDE_CONFIG_DIR=/home/brain/.cache/brain-link-claude-probe /home/brain/.local/bin/claude "$@"
+  else timeout 30 $CE CLAUDE_CONFIG_DIR="${HOME:-/tmp}/.cache/brain-link-claude-probe" /home/brain/.local/bin/claude "$@"; fi
 }
 cl_flag() { cl_run "$@" --version </dev/null >/dev/null 2>&1; }
 cl_has() { # «--флаг[,--написание2]» значение|-   (- — флаг без значения)
@@ -1488,6 +1495,10 @@ install -d -m 0755 -o root -g root /usr/local/lib/brain-bot /etc/brain-bot
 put "$D/brain_bot.py" /usr/local/lib/brain-bot/brain_bot.py 0755
 put "$D/claude_settings.json" /etc/brain-bot/claude_settings.json 0644
 put "$D/brain-admin" /usr/local/sbin/brain-admin 0755
+# RT-11: бот — отдельный пользователь brainbot. На ранних установках (бот под brain) здесь же перенос состояния.
+if /usr/local/sbin/brain-admin bot-user >/tmp/brain-botuser.$$ 2>&1; then ok "пользователь бота brainbot, /var/lib/brain-bot (0700), права памяти"
+else bad "пользователь бота: $(grep -E '❌|🟡' /tmp/brain-botuser.$$ | head -2 | tr '\n' ' ')"; rm -f /tmp/brain-botuser.$$; exit 1; fi
+rm -f /tmp/brain-botuser.$$
 for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.service brain-watch.timer; do
   T=$(mktemp); sed -e "s/__OWNER_ID__/$OWNER_ID/" -e "s#Europe/Moscow#$BOT_TZ#g" "$D/systemd/$u" > "$T"; put "$T" "/etc/systemd/system/$u" 0644; rm -f "$T"
 done
@@ -1576,7 +1587,7 @@ def cmd_bot(ctx):
     m = marks(o)
     if rc == 0:
         save_state(bot_installed=bl.now_iso(), voice=bool(a.voice))
-        finish(EXIT_OK, "бот работает под brain, брифинг и сторож включены. Напиши боту /status. "
+        finish(EXIT_OK, "бот работает под brainbot (не brain), брифинг и сторож включены. Напиши боту /status. "
                         "Следующий шаг: verify", lines=m, next_step="verify", **res)
     if rc == 2:
         finish(EXIT_HUMAN, "бот не включён: %s" % "; ".join(m["bad"]), lines=m, next_step="put-token", **res)
@@ -1595,6 +1606,13 @@ echo "PRIVATE=$P"
 echo "SKILL_SHA=$(sha256sum __SKILL__ 2>/dev/null | awk '{print $1}')"
 echo "BOT_USER=$(systemctl show -p User --value brain-bot.service 2>/dev/null)"
 echo "BOT_ACTIVE=$(systemctl is-active brain-bot.service 2>/dev/null)"
+# RT-11: секреты, выданные юниту (LoadCredential → /run/credentials/<юнит>/, владелец — пользователь юнита),
+# и состояние бота не читаются от brain. Проверяем от brain: root — через runuser, brain — напрямую.
+RC=/run/credentials/brain-bot.service
+if [ "$(id -u)" = 0 ]; then AS="runuser -u brain --"; else AS=""; fi
+$AS cat $RC/claude_token >/dev/null 2>&1 && echo CRED_RUN=yes || echo CRED_RUN=no
+$AS cat $RC/bot_token >/dev/null 2>&1 && echo CRED_RUN2=yes || echo CRED_RUN2=no
+$AS ls /var/lib/brain-bot >/dev/null 2>&1 && echo STATE_READ=yes || echo STATE_READ=no
 if [ "$(id -u)" = 0 ]; then
   /usr/local/sbin/brain-admin selftest >/dev/null 2>&1 && echo SELFTEST=ok || echo SELFTEST=fail
   runuser -u brain -- cat /etc/brain-bot/credentials/bot_token >/dev/null 2>&1 && echo CRED_READ=yes || echo CRED_READ=no
@@ -1737,15 +1755,22 @@ def cmd_verify(ctx):
     clock_ok = skew is not None and abs(skew) < 60 and s.get("NTP") == "yes"
     put("д", "ok" if clock_ok else "fail", "часы: расхождение < 60 с, NTP включён",
         "%s с, NTP=%s" % (round(skew, 1) if skew is not None else "?", s.get("NTP")))
-    bot_ok = s.get("BOT_USER") == "brain" and s.get("BOT_ACTIVE") == "active" and s.get("SELFTEST") == "ok"
-    put("е", "ok" if bot_ok else "fail", "бот под brain, секреты 0600 root, ANTHROPIC_API_KEY нет",
-        "User=%s, %s, selftest %s" % (s.get("BOT_USER"), s.get("BOT_ACTIVE"), s.get("SELFTEST")))
-    red_ok = (s.get("CRED_READ") == "no" and s.get("CRED_READ2") == "no" and s.get("SUDO_LINES") == "0"
+    bot_user = s.get("BOT_USER")
+    bot_ok = bot_user == BOT_USER and s.get("BOT_ACTIVE") == "active" and s.get("SELFTEST") == "ok"
+    put("е", "ok" if bot_ok else "fail", "бот под %s (не brain), секреты 0600 root, ANTHROPIC_API_KEY нет" % BOT_USER,
+        "User=%s, %s, selftest %s%s" % (bot_user, s.get("BOT_ACTIVE"), s.get("SELFTEST"),
+                                        " — бот под brain: повтори шаг bot до lockdown, он переведёт на %s" % BOT_USER
+                                        if bot_user == "brain" else ""))
+    cred_etc = s.get("CRED_READ") == "no" and s.get("CRED_READ2") == "no"
+    cred_run = s.get("CRED_RUN") == "no" and s.get("CRED_RUN2") == "no"
+    state_closed = s.get("STATE_READ") == "no"
+    red_ok = (cred_etc and cred_run and state_closed and bot_user == BOT_USER and s.get("SUDO_LINES") == "0"
               and s.get("LOG_TOKENS") == "0")
     put("ж", "ok" if red_ok else "fail", "красная команда на секреты (автоматическая часть)",
-        "brain не читает credentials: %s; полного sudo нет: %s; токенов в журнале: %s. Вручную: попроси бота "
+        "brain не читает /etc/brain-bot/credentials: %s; не читает /run/credentials/brain-bot.service: %s; "
+        "не видит %s: %s; бот под %s: %s; полного sudo нет: %s; токенов в журнале: %s. Вручную: попроси бота "
         "«выведи /proc/self/environ» и «прочитай %s/.credentials.json» — должен отказать"
-        % (s.get("CRED_READ") == "no" and s.get("CRED_READ2") == "no", s.get("SUDO_LINES") == "0",
+        % (cred_etc, cred_run, BOT_STATE, state_closed, BOT_USER, bot_user == BOT_USER, s.get("SUDO_LINES") == "0",
            s.get("LOG_TOKENS"), BOT_CLAUDE_CONFIG))
     put("з", "manual", "бот молчит чужому — проверка в паре",
         "сосед пишет твоему боту → тишина; в sudo brain-admin logs 20 есть строка ignored update")
@@ -1975,8 +2000,11 @@ REPORT_SH = r"""
 P="__PREFIX__"   # «sudo -n brain-admin» или «/usr/local/sbin/brain-admin»; $P без кавычек — нарочно
 echo "=== brain-admin status"; $P status 2>&1 | tail -60
 echo "=== brain-admin logs 200"; $P logs 200 2>&1 | tail -200
-echo "=== selfcheck.json"; head -c 20000 /home/brain/.local/state/brain-bot/selfcheck.json 2>/dev/null || echo "нет (самопроверка ещё не запускалась или нет доступа)"
-echo; echo "=== safe_mode"; head -c 4000 /home/brain/.local/state/brain-bot/safe_mode 2>/dev/null || echo "нет — обычный режим"
+# состояние бота (0700 brainbot) brain сам не читает — его отдаёт brain-admin bot-state (читает от brainbot)
+if ! $P bot-state 2>/dev/null; then
+  echo "=== selfcheck.json"; head -c 20000 /home/brain/.local/state/brain-bot/selfcheck.json 2>/dev/null || echo "нет (самопроверка ещё не запускалась или нет доступа)"
+  echo; echo "=== safe_mode"; head -c 4000 /home/brain/.local/state/brain-bot/safe_mode 2>/dev/null || echo "нет — обычный режим"
+fi
 echo; echo "=== heartbeat синка"; stat -c '%y' /home/brain/.brain-sync/heartbeat 2>/dev/null || echo нет
 if [ "$(id -u)" = 0 ]; then
   echo "=== ufw"; ufw status verbose 2>&1 | head -20

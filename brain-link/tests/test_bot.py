@@ -637,8 +637,13 @@ class TestServerScripts(unittest.TestCase):
         self.assertIn("ADMIN_PUBKEY и SYNC_PUBKEY — один и тот же ключ", src)
         self.assertIn("BAK_DIR=/var/backups/brain-link", src)
         self.assertNotIn('"$dst.bak.', src)
-        self.assertIn('install -d -m 0700 -o "$BRAIN" -g "$BRAIN" "$CLAUDE_CFG"', src)
-        self.assertIn("CLAUDE_CFG=$BH/.local/state/brain-bot/claude-config", src)
+        # RT-11: состояние и конфиг claude бота — у brainbot, не в /home/brain; создаёт brain-admin bot-user
+        self.assertIn("CLAUDE_CFG=$BOT_STATE/claude-config", src)
+        self.assertIn("BOT_STATE=/var/lib/brain-bot", src)
+        self.assertIn("/usr/local/sbin/brain-admin bot-user", src)
+        self.assertLess(src.index("brain-admin bot-user"), src.index("brain-admin canary-init"))
+        self.assertIn('install -d -m 2770 -o "$BRAIN" -g "$BRAIN" "$BH/$d"', src)
+        self.assertNotIn(".local/state/brain-bot", src)
         self.assertIn('s#Europe/Moscow#$TZ_NAME#g', src)
         for line in src.splitlines():
             code = line.strip()
@@ -828,6 +833,7 @@ class TestSelfcheck(SelfcheckBase):
         self.assertEqual(rc, 0)
         self.assertIn("SELFCHECK=pass", buf.getvalue())
 
+    @NEEDS_FCNTL
     def test_watch_runs_weekly_selfcheck_only_with_canaries(self):
         with mock.patch.object(bb, "ntp_synced", return_value="yes"), \
                 mock.patch.object(bb, "bot_active", return_value="active"), \
@@ -1181,7 +1187,11 @@ class TestSelfcheckRunsAndLocks(SelfcheckBase):
 
     def test_cached_result_reports_sandbox(self):
         import io
-        bb.selfcheck(self.bot)
+        # раннер GitHub Actions сам работает под systemd (INVOCATION_ID в окружении) — «вне юнита» эмулируем явно
+        with mock.patch.dict(os.environ):
+            os.environ.pop("INVOCATION_ID", None)
+            os.environ.pop("BRAIN_SELFCHECK_SANDBOX", None)
+            bb.selfcheck(self.bot)
         buf = io.StringIO()
         with mock.patch("sys.stdout", buf):
             rc = bb.selfcheck_cli(self.cfg)
@@ -1215,6 +1225,110 @@ class TestLogHygiene(Base):
         self.assertIn("ignored update", joined)
         self.assertNotIn(str(STRANGER), joined)
         self.assertIn("99…77", joined)
+
+
+class TestBotUserRT11(unittest.TestCase):
+    """kit 2.1 (RT-11): LoadCredential отдаёт /run/credentials/<юнит>/ во владение пользователю юнита. Под brain
+    токены читал бы любой процесс brain (ssh-вход). Бот — отдельный системный пользователь brainbot."""
+
+    def _src(self, *parts):
+        return _read(os.path.join(SERVER, *parts))
+
+    def test_units_run_as_brainbot_with_own_state(self):
+        for unit in ("brain-bot.service", "brain-brief.service", "brain-watch.service"):
+            src = self._src("systemd", unit)
+            lines = src.splitlines()
+            for d in ("User=brainbot", "Group=brain", "UMask=0007", "StateDirectory=brain-bot",
+                      "StateDirectoryMode=0700", "Environment=BRAIN_STATE_DIR=/var/lib/brain-bot"):
+                self.assertIn(d, lines, "%s: нет %s" % (unit, d))
+            self.assertNotIn("User=brain", lines)
+            self.assertNotIn(".local/state", " ".join(l for l in lines if not l.startswith("#")))
+            rw = [l for l in lines if l.startswith("ReadWritePaths=")]
+            if unit == "brain-bot.service":
+                self.assertEqual(rw, ["ReadWritePaths=/home/brain/memory/inbox /home/brain/memory/dialogues"])
+            else:
+                self.assertEqual(rw, [])   # брифинг и сторож пишут только в своё состояние
+
+    def test_brain_admin_bot_user(self):
+        src = self._src("brain-admin")
+        block = src[src.index("  bot-user)"):src.index("  status)")]
+        self.assertIn("useradd --system --user-group --no-create-home", block)
+        self.assertIn("--shell /usr/sbin/nologin", block)
+        self.assertIn('usermod -aG brain "$BOT_USER"', block)
+        self.assertIn('gpasswd -d brain "$BOT_USER"', block)          # brain не в группе brainbot
+        self.assertIn('install -d -m 0700 -o "$BOT_USER" -g brain "$BOT_STATE"', block)
+        self.assertIn("chmod 2770", block)
+        # файлы в папке brain трогает только brain; перенос: читает brain, пишет brainbot — root файлов не открывает
+        self.assertIn("runuser -u brain -- sh -c", block)
+        self.assertIn('runuser -u brain -- head -c 1048576 -- "$LEGACY_STATE/$f"', block)
+        self.assertIn('runuser -u "$BOT_USER" -- sh -c', block)
+        self.assertNotRegex(block, r"(?m)^\s*(chmod|chown|cp|mv|rm)\b[^\n]*\$BRAIN_HOME")
+        self.assertIn("safe_mode", src[src.index("LEGACY_FILES="):src.index("LEGACY_FILES=") + 120])
+        self.assertIn("BOT_STATE=/var/lib/brain-bot", src)
+
+    def test_brain_admin_runs_bot_code_as_brainbot(self):
+        src = self._src("brain-admin")
+        for cmd, nxt in (("  selftest)", "  canary-init)"), ("  clear-canary-hit)", "  update-claude)")):
+            block = src[src.index(cmd):src.index(nxt)]
+            self.assertIn("runuser -u brainbot -- env -i", block)
+            self.assertIn('BRAIN_STATE_DIR="$BOT_STATE"', block)
+        sc = src[src.index("  selfcheck-security)"):src.index("  clear-canary-hit)")]
+        self.assertIn("-p User=brainbot -p Group=brain", sc)
+        self.assertIn('runuser -u brainbot -- env -i', sc)
+        self.assertNotIn("User=brain ", sc.replace("User=brainbot", ""))
+        st = src[src.index("  selftest)"):src.index("  canary-init)")]
+        self.assertIn("/run/credentials/brain-bot.service/claude_token", st)   # RT-11 в selftest
+        self.assertIn('runuser -u brain -- cat -- "$f"', st)
+        self.assertIn('"700 $BOT_USER"', st)
+        self.assertIn('"2770 brain"', st)
+
+    def test_canary_bait_readable_by_bot_only(self):
+        src = self._src("brain-admin")
+        block = src[src.index("  canary-init)"):src.index("  selfcheck-security)")]
+        self.assertIn('"$BOT_STATE/canary-bait"', block)
+        self.assertIn('runuser -u "$BOT_USER" -- sh -c', block)
+        self.assertIn('-lt 4', block)                                   # 4 приманки, прежние сохраняются
+        self.assertIn("/var/lib/brain-bot", self._src("claude_settings.json"))   # deny слоя claude
+
+    def test_harden_creates_bot_user_before_units(self):
+        src = self._src("harden.sh")
+        self.assertLess(src.index("brain-admin bot-user"), src.index("# 12. Код бота"))
+        self.assertIn('install -d -m 2770 -o "$BRAIN" -g "$BRAIN" "$BH/$d"', src)
+
+    def test_default_state_dir(self):
+        env = {"OWNER_ID": "1"}
+        with mock.patch.object(bb, "STATE_DIR_SYSTEM", "/nonexistent/brain-bot"):
+            self.assertEqual(bb.default_state_dir(env, "/home/brain"), "/home/brain/.local/state/brain-bot")
+            self.assertEqual(bb.default_state_dir(dict(env, STATE_DIRECTORY="/var/lib/brain-bot:/x"), "/h"),
+                             "/var/lib/brain-bot")
+            self.assertEqual(bb.default_state_dir(dict(env, BRAIN_STATE_DIR="/s", STATE_DIRECTORY="/x"), "/h"), "/s")
+        d = tempfile.mkdtemp()
+        try:
+            with mock.patch.object(bb, "STATE_DIR_SYSTEM", d):
+                self.assertEqual(bb.default_state_dir(env, "/home/brain"), d)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_probes_include_state_canary_for_claude_layer(self):
+        cfg = bb.Config({"OWNER_ID": "1", "BRAIN_HOME": "/home/brain", "BRAIN_STATE_DIR": "/var/lib/brain-bot"})
+        probes = {p[0]: p[3] for p in bb.selfcheck_probes(cfg)}
+        self.assertIn("/var/lib/brain-bot/canary-bait", probes["claude-dir-canary"])
+        self.assertIn("../../../var/lib/brain-bot/canary-bait", probes["traversal-canary"])
+        self.assertLessEqual(len(probes), bb.SELFCHECK_MAX_CALLS)
+
+
+@NEEDS_FCNTL
+class TestBotFileModesRT11(Base):
+    def test_inbox_and_dialogue_files_group_writable(self):
+        old = os.umask(0o007)                                           # UMask юнита
+        try:
+            p = bb.write_inbox(self.cfg, "заметка", dt.datetime(2026, 10, 4, 12, 0, 0))
+            bb.append_dialogue(self.cfg, dt.datetime(2026, 10, 4, 12, 0, 0), "в", "о", "m")
+        finally:
+            os.umask(old)
+        self.assertEqual(os.stat(p).st_mode & 0o777, 0o660)
+        d = os.path.join(self.home, "memory", "dialogues", "2026-10-04.md")
+        self.assertEqual(os.stat(d).st_mode & 0o777, 0o660)
 
 
 class TestSelfcheckServerScripts(unittest.TestCase):
