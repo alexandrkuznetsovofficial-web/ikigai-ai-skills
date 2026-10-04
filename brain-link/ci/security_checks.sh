@@ -27,6 +27,12 @@ RROOT()  { ssh -i "$ADMINKEY" $KH "root@127.0.0.1" "$1" 2>>"$LOG"; }
 # вход ограниченным ключом синка: shell недоступен, работает только brain_sync_server.py
 RSYNC()  { ssh -i "$SYNCKEY" $KH "brain@127.0.0.1" "$@" 2>>"$LOG"; }
 
+# предусловие: e2e поднял сервер (sshd:2222 + пользователь brain + admin-ключ); иначе проверять нечего
+if ! RROOT 'id brain' >/dev/null 2>&1; then
+  bad "предусловие: нет входа root по ключу на 127.0.0.1:$PORT или нет пользователя brain — e2e не дошёл до harden"
+  echo "security_checks: $PASS PASS, $FAIL FAIL" | tee -a "$LOG"; exit 1
+fi
+
 # RT-6 — brain → root через update-bot с подложенным json.py/ast.py в cwd
 rt6() {
   RBRAIN 'printf "import os\nopen(os.path.expanduser(\"~/rt6_pwned\"),\"w\").write(\"x\")\n" > /home/brain/.local/share/brain-link/server/json.py; cp /home/brain/.local/share/brain-link/server/json.py /home/brain/.local/share/brain-link/server/ast.py'

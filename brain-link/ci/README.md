@@ -15,13 +15,13 @@
 | `fake_telegram.py` | локальный Bot API на `127.0.0.1`: `getUpdates`/`sendMessage`/`getMe` + управление `/_ctl/update`, `/_ctl/sent`. Токен нигде не пишет, только его sha256. |
 | `bot_scenario.py` | сценарий «владелец и чужой пишут боту»: молчание чужому и группе, режимы файлы/веб с полной проверкой argv и окружения, модель sonnet/opus, фильтр секретов, «запомни»→inbox, ни одного токена в исходящих. |
 | `drive_link.py` | запускает `brain_link.py` с подменой внедряемых зависимостей: `--getpass-file` (put-token без терминала), `--sync-shim` (расписание через local-транспорт), `--lockdown-bad-key` (проверка автоотката lockdown). |
-| `sync_shim.py` | настоящий `brain_sync.main`, но транспорт берёт из `~/.config/brain/ci_transport.txt` (`local:<папка-сервер>`). Нужен, пока у `schedule` нет сквозной передачи транспорта. |
+| `sync_shim.py` | запасной вариант: настоящий `brain_sync.main` с транспортом из `BRAIN_SYNC_TRANSPORT` или `~/.config/brain/ci_transport.txt`. Интеграционные сценарии его больше не используют — `schedule` сам передаёт транспорт (см. ниже). |
 | `smoke_json.py` | смоук «один JSON в UTF-8 и ожидаемый код», в т.ч. под `PYTHONIOENCODING=cp1251` и в фейковом HOME с пробелом и кириллицей. |
 | `cmdline_watch.py` | сторож RT-12: токен не появляется в `/proc/*/cmdline` во время audit/verify (пишет только pid/comm/метку). |
 | `hostile_tar.py` | враждебные архивы для RT-10 (симлинк, hardlink, `..`, абсолютный путь, вне зоны, >20 МБ, gzip-бомба, план-бомба) + честный контроль. |
 | `server_e2e.sh` | поднимает sshd на `127.0.0.1:2222` и прогоняет шаги установщика по «серверу ученика» на самом раннере. |
 | `security_checks.sh` | защитные регресс-проверки RT-6…RT-16: каждая утверждает, что защита сработала (отказ, нет записи, нет утечки). Цели — только временные приманки в `$RUNNER_TEMP`, НИКОГДА реальные системные пути. |
-| `mac_integration.sh` / `win_integration.ps1` | расписание (launchd / Планировщик задач) на реальных шаблонах, транспорт local. |
+| `mac_integration.sh` / `win_integration.ps1` | расписание (launchd / Планировщик задач) настоящим `brain_link.py schedule` и настоящим `brain_sync.py`, транспорт local через `BRAIN_SYNC_TRANSPORT`. Фоновая задача не наследует окружение скрипта, поэтому служебные файлы — в штатных местах под (фейковым на Mac / настоящим одноразовым на Windows) домашним каталогом. `.ps1` здесь — UTF-8 с BOM (CRLF даёт `.gitattributes`). |
 
 ## Lab-only drop-in для бота (ослабление — только для лаборатории)
 
@@ -41,7 +41,7 @@ drop-in нет: `brain-link bot` его не создаёт, кладёт его
 
 ## Зависимости от кода других агентов (хуки тестируемости)
 
-- **`BRAIN_SYNC_TRANSPORT`** — `schedule` должен пробрасывать транспорт в фоновую задачу (иначе — `sync_shim.py`).
+- **`BRAIN_SYNC_TRANSPORT`** — `schedule` пробрасывает транспорт в фоновую задачу (plist: EnvironmentVariables + `--transport`; Windows: `install_task.ps1 -Transport`).
 - **`BRAIN_LAB_SKIP_UFW_ENABLE=1`** — `harden` пропускает `ufw --force enable`, но правила всё равно задаёт
   (проверяются через `ufw show added`), чтобы `ufw enable` не рвал сеть раннера.
 

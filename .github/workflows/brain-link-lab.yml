@@ -104,6 +104,8 @@ jobs:
       - name: e2e установщика против локального sshd:2222
         run: bash brain-link/ci/server_e2e.sh
       - name: защитные регресс-проверки (RT-6…RT-16)
+        # идут и при частичном провале e2e: каждая RT-проверка самостоятельна (без сервера — ранний выход)
+        if: ${{ !cancelled() }}
         run: bash brain-link/ci/security_checks.sh
       - name: очистка артефактов от секретов
         if: always()

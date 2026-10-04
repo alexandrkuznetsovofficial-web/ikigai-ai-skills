@@ -19,6 +19,8 @@ import brain_sync  # noqa: E402
 
 def main():
     argv = sys.argv[1:]
+    if "--transport" not in argv and os.environ.get("BRAIN_SYNC_TRANSPORT"):
+        argv += ["--transport", os.environ["BRAIN_SYNC_TRANSPORT"]]
     if "--transport" not in argv:
         f = bl.config_dir() / "ci_transport.txt"
         try:

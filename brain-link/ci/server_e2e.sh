@@ -57,26 +57,41 @@ fi
 HOSTKEY="$WORK/ssh_host_ed25519_key"
 [ -f "$HOSTKEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOSTKEY"
 SSHD_CONF="$WORK/sshd_lab.conf"
+# Корневой AuthorizedKeysFile: штатный ~/.ssh/authorized_keys (туда harden кладёт ключи brain, в т.ч. ключ
+# синка с restrict,command= — проверяем НАСТОЯЩУЮ строку продукта) + файл root лаборатории (эмуляция ssh-copy-id).
+# UsePAM yes — как на реальном сервере (иначе sshd без PAM отказывает «заблокированным» root/brain без пароля).
 cat > "$SSHD_CONF" <<CONF
 Port $PORT
 ListenAddress 127.0.0.1
-Protocol 2
 HostKey $HOSTKEY
 PidFile $WORK/sshd.pid
 PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 PasswordAuthentication no
-AuthorizedKeysFile $WORK/authorized_root $WORK/authorized_brain_PLACEHOLDER
-UsePAM no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile .ssh/authorized_keys $WORK/authorized_root
+UsePAM yes
 StrictModes no
+LogLevel VERBOSE
+Subsystem sftp internal-sftp
 CONF
 : > "$WORK/authorized_root"
 chmod 600 "$WORK/authorized_root" "$HOSTKEY"
 
+# privilege separation dir: на раннере sshd как сервис не запущен, /run/sshd нет → «Missing privilege separation directory»
+sudo mkdir -p /run/sshd && sudo chmod 0755 /run/sshd
+sudo "$SSHD" -t -f "$SSHD_CONF" 2>&1 | tee -a "$LOG"
 # запускаем sshd как root (раннер даёт passwd-sudo); он эмулирует «root-сервер ученика»
 sudo "$SSHD" -f "$SSHD_CONF" -E "$WORK/sshd.log"
-sleep 2
-if sudo test -f "$WORK/sshd.pid"; then ok "sshd на 127.0.0.1:$PORT поднят"; else bad "sshd не поднялся"; sudo cat "$WORK/sshd.log" || true; fi
+up=no
+for _ in $(seq 1 20); do
+  if sudo test -f "$WORK/sshd.pid" && (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then up=yes; break; fi
+  sleep 0.5
+done
+if [ "$up" = yes ]; then ok "sshd на 127.0.0.1:$PORT поднят"; else
+  bad "sshd не поднялся"; sudo cat "$WORK/sshd.log" 2>/dev/null | tail -20 | tee -a "$LOG"
+  echo "ИТОГ: $PASS PASS, $FAIL FAIL (дальше без sshd смысла нет)"; exit 1
+fi
 
 # фейковый Telegram (для шага bot)
 "$PY" "$HERE/fake_telegram.py" --port 18081 >"$WORK/tg.log" 2>&1 &
@@ -114,9 +129,13 @@ if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
 else
   bad "keys не создал admin-ключ"
 fi
-LINK -- keys --fingerprint "$FP"; assert_rc 0 $? "keys: вход по ключу работает"
+LINK -- keys --fingerprint "$FP"; rc=$?; assert_rc 0 $rc "keys: вход по ключу работает"
+if [ "$rc" != 0 ]; then
+  say "без входа по ключу остальные шаги бессмысленны — хвост sshd.log:"; sudo tail -15 "$WORK/sshd.log" | tee -a "$LOG"
+  echo "ИТОГ: $PASS PASS, $FAIL FAIL"; exit 1
+fi
 
-# sync-ключ сервера brain создаст harden; authorized_brain укажем после создания brain.
+# sync-ключ на сервер ставит harden (в /home/brain/.ssh/authorized_keys).
 # detect
 LINK -- detect; assert_rc 0 $? "detect отвечает"
 say "ветка/next: $(jget branch) / $(jget next_step)"
@@ -135,19 +154,12 @@ mem_perm="$(RSSH root 'stat -c "%a" /home/brain/memory 2>/dev/null')"
 [ "$mem_perm" = "750" ] && ok "/home/brain/memory 0750" || bad "memory: $mem_perm"
 ufw_added="$(RSSH root 'ufw show added 2>/dev/null | tr "\n" " "')"
 echo "$ufw_added" | grep -q "$PORT" && ok "ufw-правило на $PORT задано (enable пропущен)" || bad "ufw-правило не задано: $ufw_added"
-# sync-ключ brain → authorized_brain (его слушает sshd как второй AuthorizedKeysFile)
-sed -i "s#$WORK/authorized_brain_PLACEHOLDER#$WORK/authorized_brain#" "$SSHD_CONF"
-: > "$WORK/authorized_brain"; chmod 600 "$WORK/authorized_brain"
-if [ -f "$HOME/.ssh/brain_sync_ed25519.pub" ]; then
-  # ограничение command= как в harden.sh (ключ синка пускает только brain_sync_server.py)
-  printf 'restrict,command="%s/.local/bin/brain_sync_server.py" %s\n' \
-    "$(RSSH root 'echo /home/brain')" "$(cat "$HOME/.ssh/brain_sync_ed25519.pub")" \
-    | sudo tee "$WORK/authorized_brain" >/dev/null
-  sudo "$SSHD" -t -f "$SSHD_CONF" && sudo kill -HUP "$(sudo cat "$WORK/sshd.pid")" && ok "sync-ключ brain подключён"
-fi
-# admin-ключ brain тоже (для put-token/bot до lockdown идём root; brain нужен для verify красной команды)
-cat "$HOME/.ssh/id_ed25519.pub" | sudo tee -a "$WORK/authorized_brain" >/dev/null
-sudo kill -HUP "$(sudo cat "$WORK/sshd.pid")" 2>/dev/null || true
+# ключ синка ставит сам harden в /home/brain/.ssh/authorized_keys (restrict,command=…) — проверяем его строку
+ak_sync="$(RSSH root "grep -c 'restrict,command=\"/home/brain/.local/bin/brain_sync_server.py\"' /home/brain/.ssh/authorized_keys 2>/dev/null")"
+[ "${ak_sync:-0}" -ge 1 ] && ok "harden поставил ключ синка brain с restrict,command=" || bad "ключа синка с restrict,command= у brain нет"
+sync_id="$(ssh -i "$HOME/.ssh/brain_sync_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+           -p "$PORT" brain@127.0.0.1 id 2>/dev/null)"
+[ -z "$sync_id" ] && ok "ключ синка не даёт shell (id пуст)" || bad "ключ синка дал shell: $sync_id"
 
 # ---------------------------------------------------------------- 5. claude (заглушка в PATH brain)
 RSSH root "install -d -m0750 -o brain -g brain /home/brain/.local/bin"
@@ -191,11 +203,17 @@ mkdir -p "$WORK/secforbot"; cp "$WORK/tok_bot" "$WORK/secforbot/bot_token"; cp "
 # фейковый Telegram слушает на раннере (хост), сервер=тот же хост — localhost достижим.
 # Журнал fake claude бот пишет в свой state (0700 brain) — сценарий читаем от root (sudo).
 CLOG=/home/brain/.local/state/brain-bot/fake_claude.jsonl
+if [ "$rc" != 0 ]; then
+  bad "шаг bot не прошёл (rc=$rc) — сценарий бота пропущен (без бота он 10 минут ждёт таймауты)"
+  RSSH root "systemctl status brain-bot --no-pager -l 2>&1 | tail -20; journalctl -u brain-bot -n 30 --no-pager 2>&1" | tee -a "$LOG"
+  bot_rc=skip
+else
 sudo "$PY" "$HERE/bot_scenario.py" full --tg http://127.0.0.1:18081 --owner 111111111 \
   --secrets "$WORK/secforbot" --claude-log "$CLOG" \
   --brain-home /home/brain --report "$WORK/bot_report.json" 2>&1 | tee -a "$LOG"
 bot_rc=${PIPESTATUS[0]}
 assert_rc 0 "$bot_rc" "сценарий бота (чужой молчит, режимы, фильтр, inbox)"
+fi
 
 # ---------------------------------------------------------------- 9. verify (что доступно без второго окна)
 LINK -- verify --wait 60; rc=$?
