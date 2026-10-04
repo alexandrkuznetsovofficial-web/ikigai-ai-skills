@@ -387,6 +387,15 @@ PY
         Type|Restart|RestartSec|ExecStart|ExecStartPre|ExecStartPost|ExecReload|ExecStop|TimeoutStartSec|\
         StartLimitIntervalSec|StartLimitBurst|WorkingDirectory|User|Group|RuntimeMaxSec) continue ;;
       esac
+      # systemd-run (транзиентный юнит) не понимает символьные имена в IPAddressDeny/Allow, которые понимает
+      # файл юнита («Failed to parse IP address prefix: link-local»): раскрываем их в префиксы
+      case "$line" in
+        IPAddressDeny=*|IPAddressAllow=*)
+          k=${line%%=*}; v=" ${line#*=} "
+          v=${v// link-local / 169.254.0.0/16 fe80::/64 }; v=${v// localhost / 127.0.0.0/8 ::1/128 }
+          v=${v// multicast / 224.0.0.0/4 ff00::/8 }; v=${v// any / 0.0.0.0/0 ::/0 }
+          v=$(echo $v); line="$k=$v" ;;
+      esac
       props+=(-p "$line")
     done < <(sed -n '/^\[Service\]/,/^\[/p' <<<"$UNIT_TXT")
     grep -q '^LoadCredential=canary_list:' <<<"$UNIT_TXT" || props+=(-p "LoadCredential=canary_list:$CONF_DIR/canary.list")

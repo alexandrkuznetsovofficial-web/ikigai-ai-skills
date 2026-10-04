@@ -17,6 +17,12 @@ import tempfile
 
 
 def main():
+    # консоль раннера Windows — cp1252: печать кириллицы в отчёт не должна ронять сам смоук
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError):
+            pass
     argv = sys.argv[1:]
     if "--" not in argv:
         print("FAIL usage: нужен -- перед командой")
