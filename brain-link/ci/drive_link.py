@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""drive_link.py — запуск brain_link.py в лаборатории с подменой внедряемых зависимостей (не для учеников).
+"""drive_link.py — запуск brain_link.py в лаборатории с подменой внедряемых зависимостей (не для участников).
 
   drive_link.py [--getpass-file F] [--sync-shim] [--lockdown-bad-key KEY] -- <шаг brain_link> [флаги]
 

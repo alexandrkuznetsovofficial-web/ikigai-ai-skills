@@ -163,7 +163,7 @@ if [ -z "$BRAIN_DIR" ]; then
   bad "Папку второго мозга не нашёл (искал CLAUDE.md и memory/)"
   [ -n "$WS_ENV" ] && info "В профиле ikigai_env.json записана папка, но в ней нет ни CLAUDE.md, ни memory/"
   info "Укажи папку явно: bash <путь>/audit.sh <папка мозга>  — или запусти скилл ikigai-preflight, он запишет её в профиль"
-  manual "Собери папку мозга — это Модуль 1, урок 1"
+  manual "Собери папку мозга — это Модуль 1, шаг 1"
 else
   ok "Папка мозга: $BRAIN_DIR ($BRAIN_FROM)"
   [ -n "$FIND_DEPTH" ] && info "Мозг лежит прямо в домашней папке — вглубь смотрю только на 4 уровня"

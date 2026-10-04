@@ -1353,7 +1353,7 @@ LAB_TRANSPORT_RE = re.compile(r"^(ssh|local:.+)$")
 
 def lab_transport(a):
     """ТОЛЬКО ДЛЯ ТЕСТОВ (лаборатория CI): BRAIN_SYNC_TRANSPORT=local:<папка> — расписание и пробный запуск
-    синкают в локальную папку вместо сервера. Ученику эта переменная не нужна никогда."""
+    синкают в локальную папку вместо сервера. Участнику эта переменная не нужна никогда."""
     tr = os.environ.get("BRAIN_SYNC_TRANSPORT") or getattr(a, "transport", None)
     if tr and not LAB_TRANSPORT_RE.match(tr):
         raise LinkExit(EXIT_CONFIG, "BRAIN_SYNC_TRANSPORT / --transport: ssh или local:<папка>")
@@ -1722,7 +1722,7 @@ def cmd_verify(ctx):
         SLEEP(15)
     put("а", "ok" if a_ok else "fail", "правка с компьютера доехала на сервер по расписанию (≤6 мин)",
         "за %d с" % int(time.time() - started) if a_ok else "не доехала — brain_link.py status, затем schedule")
-    # проверочный файл в памяти ученика не оставляем: удаляем здесь, следующий синк уберёт его и с сервера
+    # проверочный файл в памяти участника не оставляем: удаляем здесь, следующий синк уберёт его и с сервера
     # (там он уйдёт в корзину сервера, как любое удаление)
     try:
         probe.unlink()
@@ -1774,7 +1774,7 @@ def cmd_verify(ctx):
            s.get("LOG_TOKENS"), BOT_CLAUDE_CONFIG))
     put("з", "manual", "бот молчит чужому — проверка в паре",
         "сосед пишет твоему боту → тишина; в sudo brain-admin logs 20 есть строка ignored update")
-    # (и) самопроверка безопасности на живом claude ученика, в песочнице юнита бота
+    # (и) самопроверка безопасности на живом claude участника, в песочнице юнита бота
     sc, sc_detail = run_selfcheck(ctx)
     put("и", {"pass": "ok", "fail": "fail"}.get(sc, "warn"),
         "самопроверка безопасности: приманки, секреты, SSRF на живом claude (PASS обязателен для lockdown)",

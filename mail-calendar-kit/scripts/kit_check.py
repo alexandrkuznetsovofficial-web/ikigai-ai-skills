@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-kit_check.py — аудит: что уже стоит у ученика и в каком состоянии файл доступов.
+kit_check.py — аудит: что уже стоит у участника и в каком состоянии файл доступов.
 
 Команды:
   system                      ОС, python, venv пака, claude, VS Code CLI, git, ssh (опц. --ssh-host/--ssh-port)
   env [--path P]              проверка файла доступов: ключи есть/нет, значения замаскированы
-  bot-detect [--dir D ...]    какой бот у ученика: A (python-telegram-bot + Anthropic API) / B (бридж на Claude Code) / none
+  bot-detect [--dir D ...]    какой бот у участника: A (python-telegram-bot + Anthropic API) / B (бридж на Claude Code) / none
   all                         всё разом
 
 Вывод — один JSON с полем "human". Секреты не печатаются.
@@ -73,7 +73,7 @@ def cmd_system(args) -> dict:
         port = str(args.ssh_port or 22)
         rc, outp = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-p", port, args.ssh_host, "true"], timeout=15)
         info["ssh_server_ok"] = (rc == 0)
-        info["ssh_server_note"] = None if rc == 0 else "без пароля не пускает: нужен ssh-ключ (урок «Новоселье») или Remote-SSH в VS Code"
+        info["ssh_server_note"] = None if rc == 0 else "без пароля не пускает: нужен ssh-ключ (встреча «Новоселье») или Remote-SSH в VS Code"
     parts = [{"windows": "Windows", "mac": "Mac", "linux": "Linux"}[info["os_branch"]] + f" · python {info['python']}",
              "venv пака есть" if info["venv_ready"] else "venv пака ещё нет (запусти setup_venv.sh)",
              f"claude: {info['claude'] or 'не найден'}",
@@ -105,7 +105,7 @@ def cmd_env(args) -> dict:
     except Exception:
         res["mode_ok"] = None
     env = kitlib.load_env(required=False)
-    # Маскируем всё, кроме явного белого списка: в файле доступов ученика может лежать что угодно,
+    # Маскируем всё, кроме явного белого списка: в файле доступов участника может лежать что угодно,
     # включая ключи от других сервисов. Показывать «всё, где нет слова PASSWORD» — это утечка.
     SAFE = {"MAIL_PROVIDER", "CAL_PROVIDER", "TZ", "WORK_HOUR_FROM", "WORK_HOUR_TO",
             "MCK_SEND_ALLOWED", "GCAL_CALENDAR_ID", "CALDAV_CALENDAR", "SMTP_MODE",
@@ -230,7 +230,7 @@ def cmd_bot_detect(args) -> dict:
     elif primary["stack"] == "B":
         res["human"] = f"бот стека B (бридж на Claude Code) в {primary['dir']} — код править не нужно"
     else:
-        res["human"] = "личный бот не найден в стандартных папках (это нормально, если урок про бота ещё впереди)"
+        res["human"] = "личный бот не найден в стандартных папках (это нормально, если встреча про бота ещё впереди)"
     if services:
         res["human"] += f" · systemd: {', '.join(services)}"
     res["ok"] = True

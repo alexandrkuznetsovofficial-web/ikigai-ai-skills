@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 bot_tools_patch.py — подключает инструменты почты/календаря к личному боту стека A
-(python-telegram-bot + Anthropic API, учебный шаблон с функцией ask_claude).
+(python-telegram-bot + Anthropic API, базовый шаблон с функцией ask_claude).
 
   --bot-file PATH --dry-run          показать, что изменится (diff), ничего не трогать
   --bot-file PATH --apply            бэкап → скопировать kit_tools.py рядом → заменить ask_claude → проверить компиляцию
@@ -87,7 +87,7 @@ def compile_ok(path: Path) -> tuple[bool, str]:
 def build_patched(src: str) -> tuple[str, dict]:
     m1 = ANCHOR_START.search(src)
     if not m1:
-        kitlib.fail(kitlib.EXIT_PROVIDER, "в файле бота нет функции `def ask_claude(...)` — это не учебный шаблон, патч не применяю. Подключай инструменты вручную по reference/bot_connect.md")
+        kitlib.fail(kitlib.EXIT_PROVIDER, "в файле бота нет функции `def ask_claude(...)` — это не базовый шаблон, патч не применяю. Подключай инструменты вручную по reference/bot_connect.md")
     m2 = ANCHOR_END.search(src, m1.end())
     if not m2:
         kitlib.fail(kitlib.EXIT_PROVIDER, "не нашёл строку `return response.content[0].text` после ask_claude — функция уже изменена, патч не применяю")
@@ -121,8 +121,8 @@ def build_patched(src: str) -> tuple[str, dict]:
 
 def ensure_env(bot_env: Path) -> list[str]:
     added = []
-    # Имена свои, не общие: у пака про Telegram свои TPK_*, и общий KIT_DIR ученик,
-    # прошедший оба урока, получил бы от того пака, который настроил первым.
+    # Имена свои, не общие: у пака про Telegram свои TPK_*, и общий KIT_DIR участник,
+    # прошедший обе встречи, получил бы от того пака, который настроил первым.
     defaults = {
         "MCK_PYTHON": str(Path.home() / ".venvs" / "mck" /
                           ("Scripts/python.exe" if os.name == "nt" else "bin/python")),

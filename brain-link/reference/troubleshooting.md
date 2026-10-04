@@ -1,6 +1,6 @@
 # Протокол сбоя brain-link (kit 2.1)
 
-Таблица для Claude ученика. Читается после **каждого** шага `brain_link.py` и каждого `brain_sync.py`.
+Таблица для Claude участника. Читается после **каждого** шага `brain_link.py` и каждого `brain_sync.py`.
 
 **Алгоритм (обязателен):**
 1. Прочитай JSON шага: `exit_code`, `human`, `next_step`, `warnings`, `checks`.

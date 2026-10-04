@@ -7,7 +7,7 @@
 #
 # Важно: launchd не наследует окружение этого скрипта, у фоновой задачи есть только HOME из plist.
 # Поэтому BRAIN_CONFIG_DIR / BRAIN_IKIGAI_ENV НЕ переопределяем — всё живёт в штатных местах под
-# фейковым HOME ($HOME/.config/brain, $HOME/.claude/ikigai_env.json), как у ученика.
+# фейковым HOME ($HOME/.config/brain, $HOME/.claude/ikigai_env.json), как у участника.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

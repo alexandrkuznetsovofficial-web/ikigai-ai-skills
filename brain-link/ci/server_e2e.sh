@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# server_e2e.sh — e2e связки brain-link против «сервера ученика», эмулированного на самом раннере.
+# server_e2e.sh — e2e связки brain-link против «сервера участника», эмулированного на самом раннере.
 # Отдельный sshd на 127.0.0.1:2222 (root по ключу), затем шаги установщика по шагам.
 # Только для GitHub Actions (ubuntu, sudo). Ничего наружу не ходит, секретов репо не трогает.
 #
@@ -38,7 +38,7 @@ print("  next:", d.get("next_step"))' 2>/dev/null | tee -a "$LOG" || echo "$out"
   LAST_JSON="$out"
   return $rc
 }
-# команда на «сервере» по admin-ключу (HOME = «компьютер» ученика, задаётся ниже)
+# команда на «сервере» по admin-ключу (HOME = «компьютер» участника, задаётся ниже)
 RSSH() { ssh -i "$HOME/.ssh/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -p "$PORT" "$1@127.0.0.1" "$2" 2>>"$LOG"; }
 jget() { echo "$LAST_JSON" | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('$1',''))" 2>/dev/null; }
@@ -47,7 +47,7 @@ PY="$(command -v python3)"
 say "python: $("$PY" --version 2>&1), repo: $REPO"
 
 # ---------------------------------------------------------------- 1. sshd сервера на 127.0.0.1:2222
-# «Сервер ученика» = сам раннер. Поднимаем ШТАТНЫЙ ssh.service с лабораторным drop-in, а не отдельный sshd:
+# «Сервер участника» = сам раннер. Поднимаем ШТАТНЫЙ ssh.service с лабораторным drop-in, а не отдельный sshd:
 # так harden видит порт через `sshd -T`, lockdown кладёт 00-brain.conf в тот же sshd_config.d и делает
 # настоящий `systemctl reload ssh`, ключи читаются из штатных ~/.ssh/authorized_keys (root и brain).
 SSHD="$(command -v sshd || echo /usr/sbin/sshd)"
@@ -60,7 +60,7 @@ sudo ssh-keygen -A >/dev/null 2>&1 || true
 HOSTKEY=/etc/ssh/ssh_host_ed25519_key
 # 10- : после 00-brain.conf (lockdown должен перебивать лабораторию), до 50-cloud-init.conf раннера
 LABCONF=/etc/ssh/sshd_config.d/10-brain-lab.conf
-printf '%s\n' '# ТОЛЬКО лаборатория (ci/server_e2e.sh): «сервер ученика» на 127.0.0.1:2222. В прод не едет.' \
+printf '%s\n' '# ТОЛЬКО лаборатория (ci/server_e2e.sh): «сервер участника» на 127.0.0.1:2222. В прод не едет.' \
   "Port $PORT" 'ListenAddress 127.0.0.1' 'PermitRootLogin prohibit-password' 'PubkeyAuthentication yes' \
   'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'LogLevel VERBOSE' | sudo tee "$LABCONF" >/dev/null
 grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config || say "ВНИМАНИЕ: sshd_config без Include sshd_config.d"
@@ -91,7 +91,7 @@ sleep 1
 # ---------------------------------------------------------------- 2. файл доступа и окружение brain-link
 export BRAIN_CONFIG_DIR="$WORK/cfg-brain"
 export BRAIN_IKIGAI_ENV="$WORK/ikigai_env.json"
-export HOME="$WORK/laphome"           # «компьютер ученика»
+export HOME="$WORK/laphome"           # «компьютер участника»
 mkdir -p "$HOME/.ssh" "$BRAIN_CONFIG_DIR"
 # рабочая папка «компьютера» — память + CLAUDE.md + скилл
 WS="$WORK/workspace"
@@ -131,7 +131,7 @@ LINK -- detect; assert_rc 0 $? "detect отвечает"
 say "ветка/next: $(jget branch) / $(jget next_step)"
 
 # ---------------------------------------------------------------- 4. harden (brain, swap, ufw-правила без enable, brain-admin)
-# Нормализация раннера (не «сервера ученика»): у образа GitHub /etc/sudoers.d/runner с режимом 0644 —
+# Нормализация раннера (не «сервера участника»): у образа GitHub /etc/sudoers.d/runner с режимом 0644 —
 # из-за этого `visudo -c` в harden ругается на чужой файл. На чистом VPS такого файла нет.
 # (/etc/sudoers.d — 0750 root, глобом от runner не читается — ищем через sudo find)
 sudo find /etc/sudoers.d -maxdepth 1 -type f ! -perm 0440 -printf '%p\n' 2>/dev/null | while read -r f; do

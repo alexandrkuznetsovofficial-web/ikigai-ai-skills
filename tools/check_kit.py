@@ -21,6 +21,10 @@
   9. Бинарные файлы, кроме pdf / png / jpg / zip, — предупреждение.
  10. Каждый *.ps1 начинается с UTF-8 BOM — иначе Windows PowerShell 5.1 читает его в ANSI
      и портит кириллицу (ошибка).
+ 11. Лицензионные слова: в текстах нет слов, которые подводят продукт под образовательную
+     лицензию (стоп-лист — LICENSE_WORDS ниже). Совпадение = ошибка, кроме LICENSE_ALLOW_MASKS
+     и строк из ALLOWLIST с id "license". Замены: участник, поток, месяц-практикум, встреча,
+     проводник, практика / шаг недели.
 
 Какие файлы проверяются: если это git-репозиторий — ровно те, что уйдут в публикацию
 (git ls-files: в индексе + новые, не попавшие в .gitignore); иначе — обход папки.
@@ -150,13 +154,20 @@ SENSITIVE_PATTERNS += _load_local_patterns()
 # Явные исключения: (id паттерна, маска пути, подстрока в строке, причина).
 ALLOWLIST = [
     ("infra", "novoselie-server-kit/*", "/home/brain",
-     "учебная конвенция: ученик сам создаёт на СВОЁМ сервере пользователя brain"),
+     "конвенция кита: участник сам создаёт на СВОЁМ сервере пользователя brain"),
     ("infra", "brain-link/*", "/home/brain",
-     "учебная конвенция kit 2.1: пользователь brain на сервере ученика"),
+     "конвенция kit 2.1: пользователь brain на сервере участника"),
     ("infra", "KIT_CONVENTIONS.md", "/home/brain",
-     "контракт связки §8: путь на сервере ученика"),
+     "контракт связки §8: путь на сервере участника"),
     ("personal", "*", "memory/personal/secret",
      "упоминание пути как запрета (не в облако), без содержимого"),
+    # Лицензионный стоп-лист: чужие названия и цитаты не переписываем.
+    ("license", "mentors/oscar-hartmann/reference/real_quotes.md", "forbes.ru/svoi-biznes/558907",
+     "название чужой статьи Forbes — цитата источника"),
+    ("license", "mentors/oscar-hartmann/reference/real_quotes.md", "4brain.ru/blog/10-urokov",
+     "название чужой статьи 4brain — цитата источника"),
+    ("license", "mentors/oscar-hartmann/SKILL.md", "Быть мастером.",
+     "цитата Оскара Хартманна (решение за Александром)"),
 ]
 
 # Локальные исключения (строки «allow<TAB>id<TAB>маска<TAB>подстрока<TAB>причина» в sensitive_local.txt).
@@ -171,6 +182,39 @@ def _load_local_allow():
                 out.append(tuple(parts[1:]))
     return out
 ALLOWLIST += _load_local_allow()
+
+# --- Лицензионные слова -----------------------------------------------------
+# Продукты Академии — не образовательная деятельность. Слова собраны из кусков, чтобы
+# этот файл не ловил сам себя при поиске по репозиторию. Границы слова — (?<!\w)…(?!\w):
+# «курсор», «ресурс», «дипломат», «домашняя папка» не совпадают.
+def _j(*parts):
+    return "".join(parts)
+
+_ENDS = r"(?:ы|а|у|ом|е|и|ов|ам|ами|ах)?"
+LICENSE_WORDS = [
+    _j("об", "уч") + r"\w*",                          # об-уч-ение, об-уч-ающий
+    _j("ку", "рс") + _ENDS,                            # ку-рс (не «курсор»)
+    _j("ур", "ок") + _ENDS,                            # ур-ок
+    _j("уче", "ни") + r"(?:к|ц)\w*",                  # уче-ник, уче-ница
+    _j("сту", "дент") + r"\w*",
+    _j("препо", "дава") + r"\w*",
+    _j("дом", "ашк") + r"\w*",
+    _j("дом", "ашн") + r"\w*[\s_]+" + _j("зад", "ан") + r"\w*",  # …нее зад-ание, #…нее_зад-ание
+    _j("шк", "ол") + r"\w*",
+    _j("серти", "фикат") + r"\w*",
+    _j("дип", "лом") + _ENDS,
+    _j("дип", "ломн") + r"\w*",
+]
+LICENSE_RX = re.compile(r"(?i)(?<!\w)(?:" + "|".join(LICENSE_WORDS) + r")(?!\w)")
+# Аббревиатура «Д-З» — только заглавными, иначе ловит «дз» в чужих словах.
+LICENSE_RX_CS = re.compile(r"(?<!\w)" + _j("Д", "З") + r"(?!\w)")
+# HTTPS / SSL / корневые серти-фикаты — техника, не документ об окончании.
+LICENSE_TECH_CERT = re.compile(r"(?i)https|ssl|tls|x\.?509|certbot|certifi|let.?s encrypt|"
+                               r"корнев|dns|замоч")
+LICENSE_CERT_ROOT = _j("серти", "фикат")
+# Где стоп-лист не действует: конструктор LMS (участники строят СВОЮ платформу для СВОИХ
+# программ — решение за Александром), сам скрипт и локальный файл паттернов.
+LICENSE_ALLOW_MASKS = ["lms-constructor-kit/*", "tools/check_kit.py", "tools/sensitive_local.txt"]
 
 # Файлы, которые не публикуются по самому имени (содержимое не важно).
 SENSITIVE_FILENAMES = [
@@ -509,6 +553,24 @@ def check_sensitive(rep, root, files):
                              "реальный сервер, замени на <IP>" % (f, n, m.group(0)))
 
 
+# --- 11. Лицензионные слова ---------------------------------------------------
+def check_license_words(rep, root, files):
+    for f in files:
+        if any(fnmatch.fnmatch(f, m) for m in LICENSE_ALLOW_MASKS) or not is_text(f):
+            continue
+        text = read_text(root, f)
+        for n, line in enumerate(text.splitlines(), start=1):
+            if allowed("license", f, line):
+                continue
+            hits = [m.group(0) for m in LICENSE_RX.finditer(line)]
+            hits += [m.group(0) for m in LICENSE_RX_CS.finditer(line)]
+            if LICENSE_TECH_CERT.search(line):
+                hits = [h for h in hits if not h.lower().startswith(LICENSE_CERT_ROOT)]
+            for h in hits:
+                rep.err("лицензия", "%s:%d: «%s» — слово из лицензионного стоп-листа; замени "
+                        "(участник, поток, встреча, практика, проводник)" % (f, n, h))
+
+
 # --- 7. Близнецы --------------------------------------------------------------
 def check_ps1_bom(rep, root, files):
     """*.ps1 без UTF-8 BOM: PowerShell 5.1 читает файл в кодировке ANSI — кириллица превращается в мусор."""
@@ -601,6 +663,7 @@ def run(root, quiet=False):
     check_twins(rep, root)
     check_duplicate_names(rep, root, files)
     check_ps1_bom(rep, root, files)
+    check_license_words(rep, root, files)
 
     print("check_kit · kit 2.0 · %s" % root)
     print("Файлов: %d · скиллов с шапкой: %d" % (len(files), len(targets)))

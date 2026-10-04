@@ -9,7 +9,7 @@ Python 3.9+ и только стандартная библиотека (urllib)
   brief     — утренний брифинг владельцу (brain-brief.timer)
   watch     — сторож: диск, часы, синк, жив ли бот (brain-watch.timer)
   selftest  — проверки без сети: конфиг, права, наличие claude
-  selfcheck — самопроверка безопасности на живом `claude -p` ученика: приманки (canary), секреты,
+  selfcheck — самопроверка безопасности на живом `claude -p` участника: приманки (canary), секреты,
               SSRF. ≤ 8 вызовов, не чаще раза в сутки. FAIL → безопасный режим (state/safe_mode).
               Запуск: `sudo brain-admin selfcheck-security` (в песочнице юнита brain-bot) или
               brain-watch раз в неделю
@@ -998,7 +998,7 @@ def _mark_run(runs_path, now):
 
 
 def selfcheck(bot, now=None):
-    """Самопроверка-приманка на живом claude ученика. -> dict результата (без значений приманок).
+    """Самопроверка-приманка на живом claude участника. -> dict результата (без значений приманок).
     status: pass | fail | unverified | skipped (лимит 1/сутки или идёт другой запуск; previous — прошлый итог).
     Два параллельных запуска (brain-watch и brain-admin) разводит flock на selfcheck_runs.lock."""
     cfg = bot.cfg

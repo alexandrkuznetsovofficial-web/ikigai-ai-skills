@@ -1,4 +1,4 @@
-﻿# probe.ps1 — «профиль компьютера» ученика Академии, версия для PowerShell (Windows 10/11, без прав администратора).
+﻿# probe.ps1 — «профиль компьютера» участника Академии, версия для PowerShell (Windows 10/11, без прав администратора).
 # Когда нужен: если Claude Code не может выполнить probe.sh (нет Git Bash). Запуск руками из PowerShell:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\ikigai-preflight\scripts\probe.ps1"
 # Ничего не устанавливает и не меняет, кроме записи профиля в %USERPROFILE%\.claude\ikigai_env.json.

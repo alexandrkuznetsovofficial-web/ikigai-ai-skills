@@ -31,7 +31,7 @@
 ## 3. После каждого шага — проверка с признаком
 
 Шаг заканчивается не словом «готово», а признаком, который человек видит сам: «если на экране X — шаг
-сделан; если нет — вот следующий ход». Признаки, проверенные на живых учениках: Claude подключён к VS Code —
+сделан; если нет — вот следующий ход». Признаки, проверенные на живых участниках: Claude подключён к VS Code —
 чат в панели с оранжевым логотипом ответил (не «расширение установлено» и не «Enabled»); Handy работает —
 русский текст появился после диктовки; папка памяти открыта — её имя в заголовке окна VS Code.
 
@@ -56,7 +56,7 @@
 
 ## 5. Файлы и архивы
 
-Имена файлов и папок — только латиница, цифры, `_` и `-`. Архивы для студентов собираются на сервере
+Имена файлов и папок — только латиница, цифры, `_` и `-`. Архивы для участников собираются на сервере
 (`python3 -m zipfile`), не в Finder: иначе кириллица в именах превращается в кракозябры на Windows.
 
 ## 6. Что пробник кладёт в профиль
@@ -94,7 +94,7 @@
 | `memory/user_profile.md` | Master Prompt 1 000–2 000 слов (`para: area`, `stage: evergreen`) + факты о человеке по разделам: «Кто я», «Бизнес», «История решений», «Куда иду» | founder-context-extractor | CLAUDE.md (импорт), все |
 | `memory/strategy/personal_strategy.md` | личная стратегия основателя. Файл один: следующий скилл **дополняет** его по разделам, не перезаписывает | homework-1/ai-strategist, orchestrator | ai-strategist, orchestrator, audit |
 | `memory/reference_*.md`, `memory/playbook_*.md` | справочники и плейбуки (вечнозелёные) | weekly-distill, os | по делу |
-| `memory/goals.md`, `memory/identity.md`, `memory/company.md`, `memory/history.md` | **наследие kit 1.x**. Есть у ученика — читаются как запасной путь (факты — после `user_profile.md`, цели — после `PROJECTS.md`); founder-context-extractor их больше не создаёт, факты пишет в `user_profile.md`, цели — в `PROJECTS.md` | — (новые не создаются) | morning-brief, extractor, os |
+| `memory/goals.md`, `memory/identity.md`, `memory/company.md`, `memory/history.md` | **наследие kit 1.x**. Есть у участника — читаются как запасной путь (факты — после `user_profile.md`, цели — после `PROJECTS.md`); founder-context-extractor их больше не создаёт, факты пишет в `user_profile.md`, цели — в `PROJECTS.md` | — (новые не создаются) | morning-brief, extractor, os |
 | `memory/areas/`, `memory/projects/`, `memory/resources/` | раскладка коуча-проводника папками (PARA папками). Не двигаем: метки `para:` ставятся поверх | coach | все |
 | `memory/private/`, `memory/sessions/`, `memory/wiki/` | наследие / опция: private и sessions никогда не в облако; wiki — справочник `para: resource` | os | по делу |
 
@@ -113,7 +113,7 @@
 - карта команды — только `~/.claude/skills/<папка оркестратора>/TEAM.md`, **единственное место**. Специалисты-скиллы —
   в основной таблице, субагенты из `~/.claude/agents/*.md` — в разделе «Агенты» того же файла. Старый
   `memory/ai-team.md` — наследие: читается, новых не создаём (team-architect пишет план в `TEAM.md` или ссылку на него);
-- главный агент (ассистент с именем, которое дал ученик) — `~/.claude/skills/<имя-латиницей>/SKILL.md`,
+- главный агент (ассистент с именем, которое дал участник) — `~/.claude/skills/<имя-латиницей>/SKILL.md`,
   собирается по **одному** шаблону `templates/main_agent.md`. Extractor, os и orchestrator своих шаблонов не держат —
   ссылаются на этот. Брифинг главный агент делегирует скиллу `morning-brief` и триггеров брифинга сам не держит;
 - снимок перед миграцией memory-upgrade — `~/.claude/backups/`;
@@ -141,9 +141,9 @@
 - `.gitignore` мозга исключает **только секреты и мусор**: `.secrets/`, `.env`, `*.session`, `rag_db/`, `brain-rag/`, `*.bak*`.
   `memory/personal/`, `memory/private/`, `sessions/` в `.gitignore` не пишутся.
 
-Пароли и коды подтверждения у ученика модель не просит.
+Пароли и коды подтверждения у участника модель не просит.
 
-**Версии:** в шапке каждого скилла есть `kit_version: 2.0`. Аудит показывает версию, которая стоит у ученика.
+**Версии:** в шапке каждого скилла есть `kit_version: 2.0`. Аудит показывает версию, которая стоит у участника.
 
 ## 8. Контракт связки «компьютер — мастерская, сервер — база» (kit 2.1)
 
@@ -185,7 +185,7 @@
 
 **Файл доступа — одна схема на весь кит:** `SERVER_IP`, `SERVER_USER` (до установки — `root`), `SERVER_PORT` (22),
 `BOT_TOKEN`, `USER_ID`, `PASSWORD` (временно, удаляется после `lockdown`). Токен подписки в файл **не пишется** —
-ученик сам запускает `claude setup-token` и передаёт его на сервер через `brain-link put-token` (ввод скрыт).
+участник сам запускает `claude setup-token` и передаёт его на сервер через `brain-link put-token` (ввод скрыт).
 Старые ключи `IP / LOGIN / PORT / CLAUDE_TOKEN` читаются как запасной вариант с предупреждением.
 
 **Сервер.** Рабочая папка — `/home/brain` (`CLAUDE.md`, `memory/`, скиллы в `/home/brain/.claude/skills`).
@@ -197,7 +197,7 @@
 (RT-11). brainbot читает память, пишет только inbox/dialogues; его состояние и конфиг claude — `/var/lib/brain-bot`
 (0700 brainbot). verify (ж) и audit блок 8 проверяют, что brain не читает ни `/etc/…/credentials`, ни `/run/credentials`.
 Транспорт к модели — только `claude -p`; `ANTHROPIC_API_KEY` не ставится нигде. Вход: только ключи (`lockdown`),
-**без белого списка IP** (ученики на VPN). Аварийный вход — VNC-консоль провайдера.
+**без белого списка IP** (участники на VPN). Аварийный вход — VNC-консоль провайдера.
 
 **Расписания (§7):** `com.ikigai.brain-sync` (launchd, 300 с) / задача `Ikigai brain-sync` (каждые 5 мин,
 `StartWhenAvailable`); на сервере `brain-bot.service`, `brain-brief.timer`, `brain-watch.timer`.

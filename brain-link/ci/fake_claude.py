@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""fake_claude.py — заглушка `claude` для лаборатории brain-link (GitHub Actions, не для учеников).
+"""fake_claude.py — заглушка `claude` для лаборатории brain-link (GitHub Actions, не для участников).
 
 Ставится на «сервер» лаборатории как /home/brain/.local/bin/claude (шаг `brain-link claude` видит, что
 claude уже стоит, и только проверяет `--version`). Эмулирует `claude -p`: читает промпт из stdin, отвечает

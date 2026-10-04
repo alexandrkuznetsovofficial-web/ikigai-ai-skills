@@ -116,7 +116,7 @@ if (-not $brain) {
   BAD "Папку второго мозга не нашёл (искал CLAUDE.md и memory)"
   if ($wsEnv) { INFO "В профиле ikigai_env.json записана папка, но в ней нет ни CLAUDE.md, ни memory" }
   INFO "Укажи папку явно: powershell -ExecutionPolicy Bypass -File .\audit.ps1 <папка мозга> — или запусти скилл ikigai-preflight, он запишет её в профиль"
-  Manual "Собери папку мозга — это Модуль 1, урок 1"
+  Manual "Собери папку мозга — это Модуль 1, шаг 1"
 } else {
   OK "Папка мозга: $brain ($brainFrom)"
   if ($brainIsHome) { INFO "Мозг лежит прямо в домашней папке — вглубь смотрю только на 4 уровня" }

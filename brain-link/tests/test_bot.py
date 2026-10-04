@@ -436,7 +436,7 @@ para: project
 
     def test_brief_sends_with_overdue_and_friday(self):
         with open(os.path.join(self.home, "memory", "ACTIVE.md"), "w", encoding="utf-8") as f:
-            f.write("Фокус: запуск урока")
+            f.write("Фокус: запуск встречи")
         with open(os.path.join(self.home, "memory", "commitments.md"), "w", encoding="utf-8") as f:
             f.write(self.TABLE)
         friday = dt.datetime(2026, 10, 2, 8, 0, tzinfo=self.cfg.tz)
@@ -451,9 +451,9 @@ para: project
     def test_brief_fallback_without_model(self):
         self.claude.rc, self.claude.out = 1, ""
         with open(os.path.join(self.home, "memory", "ACTIVE.md"), "w", encoding="utf-8") as f:
-            f.write("Фокус: запуск урока")
+            f.write("Фокус: запуск встречи")
         bb.brief(self.bot)
-        self.assertIn("Фокус: запуск урока", self.api.sent()[-1])
+        self.assertIn("Фокус: запуск встречи", self.api.sent()[-1])
 
 
 class TestWatch(Base):
