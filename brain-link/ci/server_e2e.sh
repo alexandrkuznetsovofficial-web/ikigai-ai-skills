@@ -131,6 +131,10 @@ LINK -- detect; assert_rc 0 $? "detect отвечает"
 say "ветка/next: $(jget branch) / $(jget next_step)"
 
 # ---------------------------------------------------------------- 4. harden (brain, swap, ufw-правила без enable, brain-admin)
+# Нормализация раннера (не «сервера ученика»): у образа GitHub /etc/sudoers.d/runner с режимом 0644 —
+# из-за этого `visudo -c` в harden ругается на чужой файл. На чистом VPS такого файла нет.
+for f in /etc/sudoers.d/*; do [ -f "$f" ] && [ "$(stat -c %a "$f")" != 440 ] && sudo chmod 0440 "$f" && say "раннер: chmod 0440 $f"; done
+sudo visudo -c >/dev/null 2>&1 && say "раннер: visudo -c чисто до harden" || say "раннер: visudo -c ругается ещё ДО harden"
 export BRAIN_LAB_SKIP_UFW_ENABLE=1   # хук harden другого агента: правила задать, enable пропустить
 LINK -- harden; rc=$?; assert_rc 0 $rc "harden прошёл"
 if [ "$rc" != 0 ]; then
