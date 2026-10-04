@@ -44,57 +44,44 @@ PY="$(command -v python3)"
 say "python: $("$PY" --version 2>&1), repo: $REPO"
 
 # ---------------------------------------------------------------- 1. sshd сервера на 127.0.0.1:2222
-SRV="$WORK/server"              # «сервер ученика»: отдельный корень с /home, /etc, sshd
-mkdir -p "$SRV"
+# «Сервер ученика» = сам раннер. Поднимаем ШТАТНЫЙ ssh.service с лабораторным drop-in, а не отдельный sshd:
+# так harden видит порт через `sshd -T`, lockdown кладёт 00-brain.conf в тот же sshd_config.d и делает
+# настоящий `systemctl reload ssh`, ключи читаются из штатных ~/.ssh/authorized_keys (root и brain).
 SSHD="$(command -v sshd || echo /usr/sbin/sshd)"
 if [ ! -x "$SSHD" ]; then
   sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server >/dev/null 2>&1 || true
   SSHD="$(command -v sshd || echo /usr/sbin/sshd)"
 fi
 [ -x "$SSHD" ] || { bad "нет sshd — не поднять сервер"; echo "ИТОГ: $PASS PASS, $((FAIL+1)) FAIL"; exit 1; }
-
-# ключ хоста сервера и конфиг отдельного sshd
-HOSTKEY="$WORK/ssh_host_ed25519_key"
-[ -f "$HOSTKEY" ] || ssh-keygen -q -t ed25519 -N "" -f "$HOSTKEY"
-SSHD_CONF="$WORK/sshd_lab.conf"
-# Корневой AuthorizedKeysFile: штатный ~/.ssh/authorized_keys (туда harden кладёт ключи brain, в т.ч. ключ
-# синка с restrict,command= — проверяем НАСТОЯЩУЮ строку продукта) + файл root лаборатории (эмуляция ssh-copy-id).
-# UsePAM yes — как на реальном сервере (иначе sshd без PAM отказывает «заблокированным» root/brain без пароля).
-cat > "$SSHD_CONF" <<CONF
-Port $PORT
-ListenAddress 127.0.0.1
-HostKey $HOSTKEY
-PidFile $WORK/sshd.pid
-PermitRootLogin prohibit-password
-PubkeyAuthentication yes
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-AuthorizedKeysFile .ssh/authorized_keys $WORK/authorized_root
-UsePAM yes
-StrictModes no
-LogLevel VERBOSE
-Subsystem sftp internal-sftp
-CONF
-: > "$WORK/authorized_root"
-chmod 600 "$WORK/authorized_root" "$HOSTKEY"
-
-# privilege separation dir: на раннере sshd как сервис не запущен, /run/sshd нет → «Missing privilege separation directory»
-sudo mkdir -p /run/sshd && sudo chmod 0755 /run/sshd
-sudo "$SSHD" -t -f "$SSHD_CONF" 2>&1 | tee -a "$LOG"
-# запускаем sshd как root (раннер даёт passwd-sudo); он эмулирует «root-сервер ученика»
-sudo "$SSHD" -f "$SSHD_CONF" -E "$WORK/sshd.log"
+sudo ssh-keygen -A >/dev/null 2>&1 || true
+HOSTKEY=/etc/ssh/ssh_host_ed25519_key
+# 10- : после 00-brain.conf (lockdown должен перебивать лабораторию), до 50-cloud-init.conf раннера
+LABCONF=/etc/ssh/sshd_config.d/10-brain-lab.conf
+printf '%s\n' '# ТОЛЬКО лаборатория (ci/server_e2e.sh): «сервер ученика» на 127.0.0.1:2222. В прод не едет.' \
+  "Port $PORT" 'ListenAddress 127.0.0.1' 'PermitRootLogin prohibit-password' 'PubkeyAuthentication yes' \
+  'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'LogLevel VERBOSE' | sudo tee "$LABCONF" >/dev/null
+grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config || say "ВНИМАНИЕ: sshd_config без Include sshd_config.d"
+sudo install -d -m 0700 /root/.ssh; sudo touch /root/.ssh/authorized_keys; sudo chmod 600 /root/.ssh/authorized_keys
+sudo mkdir -p /run/sshd && sudo chmod 0755 /run/sshd   # privilege separation dir (сервис сам создаёт, на всякий случай)
+sudo "$SSHD" -t 2>&1 | tee -a "$LOG"
+# socket activation (ubuntu 24.04) отключаем: ssh.service слушает сам, reload работает как на обычном VPS
+sudo systemctl disable --now ssh.socket >/dev/null 2>&1 || true
+sudo systemctl enable ssh.service >/dev/null 2>&1 || true
+sudo systemctl restart ssh.service 2>&1 | tee -a "$LOG"
 up=no
-for _ in $(seq 1 20); do
-  if sudo test -f "$WORK/sshd.pid" && (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then up=yes; break; fi
+for _ in $(seq 1 30); do
+  if (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null; then up=yes; break; fi
   sleep 0.5
 done
-if [ "$up" = yes ]; then ok "sshd на 127.0.0.1:$PORT поднят"; else
-  bad "sshd не поднялся"; sudo cat "$WORK/sshd.log" 2>/dev/null | tail -20 | tee -a "$LOG"
+say "sshd -T port: $(sudo "$SSHD" -T 2>/dev/null | awk '$1=="port"{print $2}' | tr '\n' ' ')"
+if [ "$up" = yes ]; then ok "sshd (ssh.service) на 127.0.0.1:$PORT поднят"; else
+  bad "sshd не поднялся"; sudo systemctl status ssh.service --no-pager 2>&1 | tail -15 | tee -a "$LOG"
+  sudo journalctl -u ssh -n 30 --no-pager 2>&1 | tee -a "$LOG"
   echo "ИТОГ: $PASS PASS, $FAIL FAIL (дальше без sshd смысла нет)"; exit 1
 fi
 
 # фейковый Telegram (для шага bot)
-"$PY" "$HERE/fake_telegram.py" --port 18081 >"$WORK/tg.log" 2>&1 &
+setsid nohup "$PY" "$HERE/fake_telegram.py" --port 18081 >"$WORK/tg.log" 2>&1 </dev/null &
 TG_PID=$!
 sleep 1
 
@@ -119,19 +106,19 @@ ACC
 chmod 600 "$BRAIN_CONFIG_DIR/server_access"
 
 # ---------------------------------------------------------------- 3. keys (с отпечатком хоста, вход по ключу)
-FP="$(ssh-keygen -lf "$HOSTKEY.pub" | awk '{print $2}')"
+FP="$(sudo ssh-keygen -lf "$HOSTKEY.pub" | awk '{print $2}')"
 say "fingerprint хоста: $FP"
 LINK -- keys --fingerprint "$FP"; rc=$?
 # admin-ключ сгенерирован — кладём его в authorized_keys сервера (эмуляция ssh-copy-id вручную)
 if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
-  cat "$HOME/.ssh/id_ed25519.pub" | sudo tee -a "$WORK/authorized_root" >/dev/null
+  cat "$HOME/.ssh/id_ed25519.pub" | sudo tee -a /root/.ssh/authorized_keys >/dev/null
   ok "admin-ключ добавлен в authorized_keys сервера"
 else
   bad "keys не создал admin-ключ"
 fi
 LINK -- keys --fingerprint "$FP"; rc=$?; assert_rc 0 $rc "keys: вход по ключу работает"
 if [ "$rc" != 0 ]; then
-  say "без входа по ключу остальные шаги бессмысленны — хвост sshd.log:"; sudo tail -15 "$WORK/sshd.log" | tee -a "$LOG"
+  say "без входа по ключу остальные шаги бессмысленны — журнал ssh:"; sudo journalctl -u ssh -n 25 --no-pager | tee -a "$LOG"
   echo "ИТОГ: $PASS PASS, $FAIL FAIL"; exit 1
 fi
 
@@ -142,7 +129,12 @@ say "ветка/next: $(jget branch) / $(jget next_step)"
 
 # ---------------------------------------------------------------- 4. harden (brain, swap, ufw-правила без enable, brain-admin)
 export BRAIN_LAB_SKIP_UFW_ENABLE=1   # хук harden другого агента: правила задать, enable пропустить
-LINK -- harden; assert_rc 0 $? "harden прошёл"
+LINK -- harden; rc=$?; assert_rc 0 $rc "harden прошёл"
+if [ "$rc" != 0 ]; then
+  echo "$LAST_JSON" | "$PY" -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");[print("   ❌",x) for x in (d.get("lines") or {}).get("bad",[])]' 2>/dev/null | tee -a "$LOG"
+  say "диагностика: visudo -c и /etc/sudoers.d"
+  RSSH root 'visudo -c 2>&1 | grep -v "parsed OK"; ls -l /etc/sudoers.d' | sed 's/^/   /' | tee -a "$LOG"
+fi
 # проверки на сервере от root
 RSSH() { ssh -i "$HOME/.ssh/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -p "$PORT" "$1@127.0.0.1" "$2" 2>>"$LOG"; }
@@ -215,19 +207,42 @@ bot_rc=${PIPESTATUS[0]}
 assert_rc 0 "$bot_rc" "сценарий бота (чужой молчит, режимы, фильтр, inbox)"
 fi
 
-# ---------------------------------------------------------------- 9. verify (что доступно без второго окна)
-LINK -- verify --wait 60; rc=$?
-say "verify rc=$rc"
+# ---------------------------------------------------------------- 9. verify
+# На Linux-«компьютере» schedule нет (только Mac/Windows) — расписание эмулируем фоновым циклом настоящего
+# brain_sync.py run (ssh-транспорт, ключ синка), «запомни тест связки» владелец пишет в фейковый Telegram.
+VSTOP="$WORK/verify_sync.stop"; rm -f "$VSTOP"
+( while [ ! -f "$VSTOP" ]; do
+    "$PY" "$SCRIPTS/brain_sync.py" run >>"$WORK/verify_sync.log" 2>&1
+    sleep 10
+  done ) &
+VLOOP=$!
+( sleep 5; "$PY" "$HERE/bot_scenario.py" say --tg http://127.0.0.1:18081 --owner 111111111 "запомни тест связки" \
+    >>"$WORK/verify_say.log" 2>&1 ) &
+LINK -- verify --wait 240; vrc=$?
+touch "$VSTOP"; wait "$VLOOP" 2>/dev/null || true
+echo "$LAST_JSON" | "$PY" -c 'import sys,json
+d=json.loads(sys.stdin.read() or "{}")
+for k,c in sorted((d.get("checks") or {}).items()):
+    print("   %s %s — %s: %s" % ("✅" if c.get("status")=="ok" else "❌", k, c.get("title"), str(c.get("detail"))[:200]))' 2>/dev/null | tee -a "$LOG"
+assert_rc 0 "$vrc" "verify зелёный (расписание эмулировано циклом brain_sync, «запомни» через фейковый TG)"
 
-# ---------------------------------------------------------------- 10. lockdown: успех + откат на испорченном ключе
-LINK --lockdown-bad-key "$WORK/bogus_key" -- lockdown --confirm --confirm-again; rc=$?
-# испорченный ключ → проверка «brain по ключу» провалится → автооткат, lockdown НЕ включён
-lk="$(RSSH root 'test -f /etc/ssh/sshd_config.d/00-brain.conf && echo on || echo off')"
-[ "$lk" = off ] && ok "lockdown с битым ключом откатился (вход как был)" || bad "lockdown не откатился: $lk"
+# ---------------------------------------------------------------- 10. lockdown: откат на испорченном ключе
+# Проверка «brain по ключу» идёт с чужим (настоящим, но не авторизованным) ключом → обязана провалиться → откат.
+rm -f "$WORK/bogus_key" "$WORK/bogus_key.pub"; ssh-keygen -q -t ed25519 -N "" -f "$WORK/bogus_key"
+LINK --lockdown-bad-key "$WORK/bogus_key" -- lockdown --confirm --confirm-again; lrc=$?
+say "lockdown rc=$lrc"
+if echo "$LAST_JSON" | grep -q 'только после зелёного verify'; then
+  bad "lockdown не запускался (verify не зелёный) — откат на битом ключе НЕ проверен"
+else
+  lk="$(RSSH root 'test -f /etc/ssh/sshd_config.d/00-brain.conf && echo on || echo off')"
+  [ "$lk" = off ] && ok "lockdown с битым ключом откатился (00-brain.conf не активен, root-вход как был)" \
+                  || bad "lockdown не откатился: 00-brain.conf=$lk"
+  [ "$lrc" != 0 ] && ok "lockdown с битым ключом вернул ошибку (rc=$lrc)" || bad "lockdown с битым ключом вернул rc=0"
+fi
 
 say "----"
 say "server-e2e: $PASS PASS, $FAIL FAIL"
 # прибраться
-kill "$TG_PID" 2>/dev/null || true
-sudo kill "$(sudo cat "$WORK/sshd.pid" 2>/dev/null)" 2>/dev/null || true
+# sshd и фейковый Telegram НЕ гасим: следующий шаг job (security_checks.sh) работает по тому же «серверу»
+echo "$TG_PID" > "$WORK/tg.pid"
 [ "$FAIL" -eq 0 ]
