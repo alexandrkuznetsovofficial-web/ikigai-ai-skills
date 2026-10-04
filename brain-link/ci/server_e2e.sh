@@ -38,6 +38,9 @@ print("  next:", d.get("next_step"))' 2>/dev/null | tee -a "$LOG" || echo "$out"
   LAST_JSON="$out"
   return $rc
 }
+# команда на «сервере» по admin-ключу (HOME = «компьютер» ученика, задаётся ниже)
+RSSH() { ssh -i "$HOME/.ssh/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null -p "$PORT" "$1@127.0.0.1" "$2" 2>>"$LOG"; }
 jget() { echo "$LAST_JSON" | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('$1',''))" 2>/dev/null; }
 
 PY="$(command -v python3)"
@@ -135,9 +138,6 @@ if [ "$rc" != 0 ]; then
   say "диагностика: visudo -c и /etc/sudoers.d"
   RSSH root 'visudo -c 2>&1 | grep -v "parsed OK"; ls -l /etc/sudoers.d' | sed 's/^/   /' | tee -a "$LOG"
 fi
-# проверки на сервере от root
-RSSH() { ssh -i "$HOME/.ssh/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null -p "$PORT" "$1@127.0.0.1" "$2" 2>>"$LOG"; }
 id_brain="$(RSSH root 'id brain >/dev/null 2>&1 && echo yes || echo no')"
 [ "$id_brain" = yes ] && ok "пользователь brain создан" || bad "пользователя brain нет"
 cred_perm="$(RSSH root 'stat -c "%a %U" /etc/brain-bot/credentials 2>/dev/null')"
@@ -155,7 +155,6 @@ sync_id="$(ssh -i "$HOME/.ssh/brain_sync_ed25519" -o BatchMode=yes -o StrictHost
 
 # ---------------------------------------------------------------- 5. claude (заглушка в PATH brain)
 RSSH root "install -d -m0750 -o brain -g brain /home/brain/.local/bin"
-sudo cp "$HERE/fake_claude.py" "$SRV/claude.tmp" 2>/dev/null || true
 cat "$HERE/fake_claude.py" | RSSH root "cat > /home/brain/.local/bin/claude && chmod 755 /home/brain/.local/bin/claude && chown brain:brain /home/brain/.local/bin/claude"
 RSSH root "mkdir -p /home/brain/.local/state/brain-bot && chown -R brain:brain /home/brain/.local/state"
 # прокинем журнал fake_claude туда, где его потом прочитает security_checks (через FAKE_CLAUDE_LOG по умолчанию — state бота)

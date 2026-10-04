@@ -122,6 +122,8 @@ rt11() {
 
 # RT-12 — токен не в /proc/*/cmdline во время verify/audit (сторож на хосте, от root)
 rt12() {
+  if [ ! -s "$WORK/tok_claude" ] || [ ! -s "$WORK/tok_bot" ]; then
+    bad "RT-12 не проверено: e2e не дошёл до put-token (нет сгенерированных токенов)"; return 0; fi
   local stop="$WORK/rt12.stop" out="$WORK/rt12.json"
   rm -f "$stop" "$out"
   sudo "$PY" "$HERE/cmdline_watch.py" --secret-file "$WORK/tok_claude" --secret-file "$WORK/tok_bot" \
