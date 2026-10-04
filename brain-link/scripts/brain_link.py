@@ -532,20 +532,48 @@ fi
 # Возможности сервера: версия claude и флаги изоляции, systemd и его песочница, контейнер, ufw, Python.
 # claude запускается С ПРАВАМИ brain и с конфигом бота (CLAUDE_CONFIG_DIR), root его не запускает.
 CAPS_SH = r"""
+# >>> claude-flags — одна логика: здесь, в CAPS_SH установщика (brain_link.py) и в claude_capabilities() бота.
+# Флаг принят, если `claude <флаг> [значение] --version` завершается с кодом 0 (оба написания
+# --allowedTools/--allowed-tools). --help — только для отчёта и как запасной путь, если claude «принимает»
+# даже несуществующий флаг. claude запускается С ПРАВАМИ brain и с конфигом бота, root его не запускает.
 cl_run() {
   CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=/home/brain/.local/state/brain-bot/claude-config"
-  if [ "$(id -u)" = 0 ]; then runuser -u brain -- $CE /home/brain/.local/bin/claude "$@"; else $CE /home/brain/.local/bin/claude "$@"; fi
+  if [ "$(id -u)" = 0 ]; then timeout 30 runuser -u brain -- $CE /home/brain/.local/bin/claude "$@"
+  else timeout 30 $CE /home/brain/.local/bin/claude "$@"; fi
 }
-if [ -x /home/brain/.local/bin/claude ]; then
-  echo "CLAUDE_VER=$(cl_run --version 2>/dev/null | head -1)"
-  H=$(cl_run --help 2>/dev/null)
-  if [ -n "$H" ]; then
-    for f in tools setting-sources allowedTools disallowedTools; do
-      k=$(echo "$f" | tr 'a-z-' 'A-Z_')
-      printf '%s\n' "$H" | grep -qE -- "(^|[^-[:alnum:]])--$f([^-[:alnum:]]|$)" && echo "CAP_$k=1" || echo "CAP_$k=0"
-    done
+cl_flag() { cl_run "$@" --version </dev/null >/dev/null 2>&1; }
+cl_has() { # «--флаг[,--написание2]» значение|-   (- — флаг без значения)
+  local n
+  for n in $(printf '%s' "$1" | tr ',' ' '); do
+    if [ "$CL_M" = exec ]; then
+      if [ "$2" = - ]; then cl_flag "$n" && return 0; else cl_flag "$n" "$2" && return 0; fi
+    elif printf '%s\n' "$CL_H" | grep -qE -- "(^|[^-[:alnum:]])$n([^-[:alnum:]]|$)"; then return 0; fi
+  done
+  return 1
+}
+cl_caps() { # печатает CAP_METHOD=exec|help|none и CAP_<ФЛАГ>=1|0
+  CL_H=""; CL_M=none
+  if [ -x /home/brain/.local/bin/claude ]; then
+    CL_H=$(cl_run --help </dev/null 2>/dev/null || true)
+    if cl_flag --brain-link-no-such-flag; then
+      [ -n "$CL_H" ] && CL_M=help        # «принимает» любой флаг — исполнение ничего не различает
+    elif cl_flag; then CL_M=exec
+    elif [ -n "$CL_H" ]; then CL_M=help; fi
   fi
+  echo "CAP_METHOD=$CL_M"
+  [ "$CL_M" = none ] && return 0
+  if cl_has --tools ""; then echo CAP_TOOLS=1; else echo CAP_TOOLS=0; fi
+  if cl_has --setting-sources ""; then echo CAP_SETTING_SOURCES=1; else echo CAP_SETTING_SOURCES=0; fi
+  if cl_has --allowedTools,--allowed-tools Read; then echo CAP_ALLOWEDTOOLS=1; else echo CAP_ALLOWEDTOOLS=0; fi
+  if cl_has --disallowedTools,--disallowed-tools Bash; then echo CAP_DISALLOWEDTOOLS=1; else echo CAP_DISALLOWEDTOOLS=0; fi
+  if cl_has --no-session-persistence -; then echo CAP_NO_SESSION_PERSISTENCE=1; else echo CAP_NO_SESSION_PERSISTENCE=0; fi
+  if cl_has --strict-mcp-config -; then echo CAP_STRICT_MCP_CONFIG=1; else echo CAP_STRICT_MCP_CONFIG=0; fi
+}
+# <<< claude-flags
+if [ -x /home/brain/.local/bin/claude ]; then
+  echo "CLAUDE_VER=$(cl_run --version </dev/null 2>/dev/null | head -1)"
 fi
+cl_caps
 echo "SYSTEMD_VER=$(systemctl --version 2>/dev/null | head -1 | awk '{print $2}')"
 echo "VIRT=$(systemd-detect-virt 2>/dev/null || echo none)"
 echo "CONTAINER=$(systemd-detect-virt -c 2>/dev/null || echo none)"
@@ -563,6 +591,8 @@ PROBE_SH = PROBE_SH.replace("__CAPS__", CAPS_SH)
 SYSTEMD_MIN = 247
 CLAUDE_FLAG_KEYS = (("CAP_TOOLS", "--tools"), ("CAP_SETTING_SOURCES", "--setting-sources"),
                     ("CAP_ALLOWEDTOOLS", "--allowedTools"), ("CAP_DISALLOWEDTOOLS", "--disallowedTools"))
+CLAUDE_OPTIONAL_KEYS = (("CAP_NO_SESSION_PERSISTENCE", "--no-session-persistence"),
+                        ("CAP_STRICT_MCP_CONFIG", "--strict-mcp-config"))
 
 
 def server_capabilities(srv):
@@ -574,12 +604,15 @@ def server_capabilities(srv):
             "virt": srv.get("VIRT") or None, "container": (srv.get("CONTAINER") or "none") != "none",
             "cgroup2": srv.get("CGROUP_UNIFIED") == "1", "ufw": srv.get("UFW_BIN") == "1",
             "systemd_run": srv.get("SYSTEMD_RUN") == "1", "security_exposure": srv.get("SEC_EXPOSURE") or None}
+    # CAP_METHOD: exec — флаги проверены исполнением; help — только по --help; none — claude не ответил
+    caps["claude_flags_method"] = srv.get("CAP_METHOD") or None
     flags = {}
-    for key, flag in CLAUDE_FLAG_KEYS:
-        if key in srv:
-            flags[flag] = srv.get(key) == "1"
+    if caps["claude_flags_method"] != "none":
+        for key, flag in CLAUDE_FLAG_KEYS + CLAUDE_OPTIONAL_KEYS:
+            if key in srv:
+                flags[flag] = srv.get(key) == "1"
     caps["claude_flags"] = flags
-    missing = [f for f, ok in flags.items() if not ok]
+    missing = [f for key, f in CLAUDE_FLAG_KEYS if f in flags and not flags[f]]
     if missing:
         warns.append("у Claude Code на сервере нет флагов %s — бот уйдёт в безопасный режим. Обнови: "
                      "sudo brain-admin update-claude (до lockdown — шаг claude)" % ", ".join(missing))
@@ -1603,7 +1636,8 @@ def find_inbox_note(ws, since):
     return None
 
 
-SELFCHECK_TIMEOUT = 1900   # 8 вызовов claude по ≤ 180 с + замок + запас
+# brain-admin даёт задаче RuntimeMaxSec=1800 (> SELFCHECK_BUDGET бота ≈1700 с); ssh ждём ещё дольше
+SELFCHECK_TIMEOUT = 1980
 
 
 def run_selfcheck(ctx):
@@ -1624,10 +1658,12 @@ def run_selfcheck(ctx):
     m = marks(o)
     cached = " (итог последних суток)" if v.get("SELFCHECK_CACHED") == "1" else ""
     if st == "pass":
-        det = "PASS%s, утечек нет" % cached
-        if v.get("SELFCHECK_SANDBOX") and v.get("SELFCHECK_SANDBOX") != "systemd":
-            det += "; 🟡 запуск вне песочницы юнита (%s)" % v.get("SELFCHECK_SANDBOX")
-        return "pass", det
+        sandbox = v.get("SELFCHECK_SANDBOX") or "unknown"
+        if sandbox != "systemd":
+            # PASS вне песочницы юнита проверил только слой claude, не systemd: для lockdown это «не проверено»
+            return "unverified", ("PASS%s, но вне песочницы юнита (%s) — слой systemd не проверен; lockdown — "
+                                  "только с --accept-unverified" % (cached, sandbox))
+        return "pass", "PASS%s, утечек нет" % cached
     if st == "fail":
         return "fail", "FAIL%s: %s — бот в безопасном режиме; brain-link report и к куратору" % (
             cached, "; ".join(m["bad"][:3]) or "утечка")
@@ -1832,6 +1868,12 @@ def drop_password_line():
     return True
 
 
+def server_selfcheck_status(status_out):
+    """Строка «selfcheck: pass|fail|unverified» из sudo brain-admin status (или None)."""
+    m = re.search(r"(?m)^selfcheck:\s*([a-z]+)\s*$", status_out or "")
+    return m.group(1) if m else None
+
+
 def cmd_lockdown(ctx):
     a = ctx.args
     if not (a.confirm and a.confirm_again):
@@ -1867,6 +1909,14 @@ def cmd_lockdown(ctx):
     if rc != 0:
         raise LinkExit(EXIT_ERR, "sudo -n brain-admin status от brain не работает — после lockdown нечем будет "
                                  "обслуживать сервер. Сначала harden", step="lockdown")
+    # свежий итог самопроверки — с сервера (brain-watch мог прогнать её после verify): fail → отказ всегда,
+    # даже с --accept-unverified; приманка в живом ответе (canary-hit) — тоже
+    server_sc = server_selfcheck_status(o)
+    if server_sc == "fail" or "canary-hit" in (o or ""):
+        raise LinkExit(EXIT_ERR, "на сервере самопроверка безопасности НЕ ПРОШЛА (%s) — lockdown запрещён, "
+                                 "--accept-unverified не помогает. brain-link report и к куратору"
+                       % ("приманка в живом ответе бота" if "canary-hit" in (o or "") else "selfcheck: fail"),
+                       step="lockdown", next_step="report")
     if st.get("lockdown"):
         finish(EXIT_OK, "lockdown уже включён", step="lockdown")
     sess = Session(ctx.ssh_argv(["bash", "-s"], user="root"))
@@ -1938,7 +1988,9 @@ IPV4_RE = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\
 IPV6_RE = re.compile(r"(?i)(?<![\w:])(?:[0-9a-f]{1,4}:){2,7}(?::|[0-9a-f]{1,4})(?![\w:])|(?<![\w:])(?:[0-9a-f]{1,4}:){1,6}:(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4})*)?(?![\w:])")
 MASK_PATTERNS = (
     (re.compile(r"sk-ant-[A-Za-z0-9_\-]{6,}"), "sk-ant-•••"),
-    (re.compile(r"\b\d{6,12}:[A-Za-z0-9_-]{30,}"), "•••:••• (токен бота)"),
+    (re.compile(r"(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}"), "•••:••• (токен бота)"),
+    # посторонние в журнале бота («ignored update … user_id=… chat=…») — частично, как USER_ID владельца
+    (re.compile(r"\b(user_id=|chat=)(-?\d{2})\d+(\d{2})\b"), "\\1\\2…\\3"),
     (re.compile(r"CANARY-[A-Za-z0-9]{8,}"), "CANARY-•••"),
     (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|$)"),
      "[закрытый ключ скрыт]"),
@@ -2013,6 +2065,26 @@ def raw_access_values():
     return vals, uids, ips
 
 
+def write_private(dest, data):
+    """Файл 0600 с момента создания (os.open с режимом), затем атомарная замена: окна, когда отчёт
+    читается всеми, нет. На Windows режим игнорируется — там доступ задаёт папка пользователя."""
+    dest = Path(dest)
+    tmp = dest.with_name(".%s.%d.tmp" % (dest.name, os.getpid()))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp), str(dest))
+    except BaseException:
+        try:
+            os.unlink(str(tmp))
+        except OSError:
+            pass
+        raise
+
+
 def _section(title, body):
     return "\n===== %s =====\n%s\n" % (title, (body or "").rstrip() or "(пусто)")
 
@@ -2059,14 +2131,11 @@ def cmd_report(ctx):
         if os.environ.get(var):
             homes.append(os.environ[var])
     homes += [h.replace("\\", "/") for h in homes] + [h.replace("/", "\\") for h in homes]
+    # в JSON (detect, sync_status.json) Windows-путь записан с двойными обратными слэшами
+    homes += [h.replace("\\", "\\\\") for h in homes if "\\" in h]
     text = mask_report("\n".join(parts), secrets=vals + ips, user_ids=uids, homes=homes)
     dest = home() / ("brain-link-report-%s.txt" % stamp)
-    bl.atomic_write_bytes(dest, text.encode("utf-8"))
-    if os_name() != "windows":
-        try:
-            os.chmod(str(dest), 0o600)
-        except OSError:
-            pass
+    write_private(dest, text.encode("utf-8"))
     finish(EXIT_OK, "отчёт для куратора готов: %s. Токены, пароли и адреса в нём замаскированы — приложи файл "
                     "в чат потока" % mask_report(str(dest), homes=homes), step="report",
            path=str(dest), lines=text.count("\n"))

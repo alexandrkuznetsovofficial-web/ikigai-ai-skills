@@ -17,7 +17,8 @@
   1. dist/site/ — дерево для витрины Академии (/aipotok/skills/) с теми же
      относительными путями, что в репозитории. Состав — из git ls-files
      (файлы из .gitignore не попадают никогда), без папок dist/ и tools/ на любом
-     уровне (тот же список, что в check_kit.py), скрытых файлов и *.bak*.
+     уровне (тот же список, что в check_kit.py), скрытых файлов, *.bak* и без
+     NOT_PUBLISHED_PREFIXES (brain-link/ci/, brain-link/tests/ — ни на витрину, ни в пак).
   2. dist/AI_Potok_Graduation_Pack_v2.zip — выпускной пак (имена в UTF-8,
      все файлы внутри папки AI_Potok_Graduation_Pack_v2/).
   3. dist/manifest.json — sha256 каждого файла витрины и пака + sha256 архива.
@@ -71,10 +72,15 @@ PACK_ITEMS = [
     "brain-link/",
 ]
 
-# Внутри папок пака не берём (префиксы путей): тесты нужны разработчику, не ученику.
-PACK_EXCLUDE = [
+# Не публикуются НИ на витрину, НИ в пак (префиксы путей от корня): тесты и CI-лаборатория нужны
+# разработчику, не ученику (brain-link/ci/README.md обещает, что ci/ в дистрибутив не входит).
+NOT_PUBLISHED_PREFIXES = [
+    "brain-link/ci/",
     "brain-link/tests/",
 ]
+
+# Внутри папок пака дополнительно не берём (префиксы путей).
+PACK_EXCLUDE = list(NOT_PUBLISHED_PREFIXES)
 
 # Не публикуется ни на витрину, ни в пак. Папки — SKIP_DIRS из check_kit.py
 # (dist, tools, .git, __pycache__, node_modules) на любом уровне пути.
@@ -90,6 +96,8 @@ def die(msg):
 
 
 def is_excluded(relpath):
+    if any(relpath.startswith(p) for p in NOT_PUBLISHED_PREFIXES):
+        return True
     parts = relpath.split("/")
     for p in parts:
         if p in SKIP_DIRS or p in EXCLUDE_FILES:

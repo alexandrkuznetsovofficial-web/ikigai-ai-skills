@@ -37,6 +37,7 @@ sudo brain-admin <команда>
   selfcheck-security       самопроверка безопасности на живом claude (приманки, секреты, SSRF) в песочнице
                            юнита brain-bot (systemd-run с его свойствами); ≤ 8 вызовов, не чаще раза в сутки
   canary-init              положить приманки самопроверки (фальшивые CANARY-значения), идемпотентно
+  clear-canary-hit         снять безопасный режим «приманка в живом ответе» — ТОЛЬКО после разбора с куратором
   update-claude            обновить Claude Code официальным установщиком под brain, проверить флаги, рестарт бота
   remove-private           удалить на сервере personal/ и прочие исключённые пути из memory (подтверждение YES)
 USAGE
@@ -57,6 +58,45 @@ safe_install() { # src dst mode owner:group
   chown "$og" "$tmp"; chmod "$mode" "$tmp"
   echo "$tmp"
 }
+
+# >>> claude-flags — одна логика: здесь, в CAPS_SH установщика (brain_link.py) и в claude_capabilities() бота.
+# Флаг принят, если `claude <флаг> [значение] --version` завершается с кодом 0 (оба написания
+# --allowedTools/--allowed-tools). --help — только для отчёта и как запасной путь, если claude «принимает»
+# даже несуществующий флаг. claude запускается С ПРАВАМИ brain и с конфигом бота, root его не запускает.
+cl_run() {
+  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=/home/brain/.local/state/brain-bot/claude-config"
+  if [ "$(id -u)" = 0 ]; then timeout 30 runuser -u brain -- $CE /home/brain/.local/bin/claude "$@"
+  else timeout 30 $CE /home/brain/.local/bin/claude "$@"; fi
+}
+cl_flag() { cl_run "$@" --version </dev/null >/dev/null 2>&1; }
+cl_has() { # «--флаг[,--написание2]» значение|-   (- — флаг без значения)
+  local n
+  for n in $(printf '%s' "$1" | tr ',' ' '); do
+    if [ "$CL_M" = exec ]; then
+      if [ "$2" = - ]; then cl_flag "$n" && return 0; else cl_flag "$n" "$2" && return 0; fi
+    elif printf '%s\n' "$CL_H" | grep -qE -- "(^|[^-[:alnum:]])$n([^-[:alnum:]]|$)"; then return 0; fi
+  done
+  return 1
+}
+cl_caps() { # печатает CAP_METHOD=exec|help|none и CAP_<ФЛАГ>=1|0
+  CL_H=""; CL_M=none
+  if [ -x /home/brain/.local/bin/claude ]; then
+    CL_H=$(cl_run --help </dev/null 2>/dev/null || true)
+    if cl_flag --brain-link-no-such-flag; then
+      [ -n "$CL_H" ] && CL_M=help        # «принимает» любой флаг — исполнение ничего не различает
+    elif cl_flag; then CL_M=exec
+    elif [ -n "$CL_H" ]; then CL_M=help; fi
+  fi
+  echo "CAP_METHOD=$CL_M"
+  [ "$CL_M" = none ] && return 0
+  if cl_has --tools ""; then echo CAP_TOOLS=1; else echo CAP_TOOLS=0; fi
+  if cl_has --setting-sources ""; then echo CAP_SETTING_SOURCES=1; else echo CAP_SETTING_SOURCES=0; fi
+  if cl_has --allowedTools,--allowed-tools Read; then echo CAP_ALLOWEDTOOLS=1; else echo CAP_ALLOWEDTOOLS=0; fi
+  if cl_has --disallowedTools,--disallowed-tools Bash; then echo CAP_DISALLOWEDTOOLS=1; else echo CAP_DISALLOWEDTOOLS=0; fi
+  if cl_has --no-session-persistence -; then echo CAP_NO_SESSION_PERSISTENCE=1; else echo CAP_NO_SESSION_PERSISTENCE=0; fi
+  if cl_has --strict-mcp-config -; then echo CAP_STRICT_MCP_CONFIG=1; else echo CAP_STRICT_MCP_CONFIG=0; fi
+}
+# <<< claude-flags
 
 cmd=${1:-}
 case "$cmd" in
@@ -210,29 +250,47 @@ PY
 
   selfcheck-security)
     # Честная проверка: тот же код бота, тот же claude, ТЕ ЖЕ свойства песочницы, что у brain-bot.service
-    # (LoadCredential, ProtectHome, ProtectProc, IPAddressDeny…) — читаем их из установленного юнита
-    # и передаём systemd-run. Нет systemd-run или он не принял свойства — запуск с тем же окружением
-    # без песочницы, в selfcheck.json пометка sandbox=fallback.
+    # (LoadCredential, ProtectHome, ProtectProc, IPAddressDeny…) — итоговые, с drop-in (systemctl cat),
+    # и передаём их systemd-run. Запасной запуск без песочницы — ТОЛЬКО если systemd-run нет или он не
+    # принял свойства (Unknown assignment / Failed to start transient); в выводе SELFCHECK_SANDBOX=fallback,
+    # verify считает такой итог «не проверено». Задача стартовала и умерла без итога — «не проверено».
     UNIT=/etc/systemd/system/brain-bot.service
     [ -f "$UNIT" ] || die "нет $UNIT — сначала brain-link bot"
-    grep -q '__OWNER_ID__' "$UNIT" && die "OWNER_ID в юните не задан — сначала brain-link bot"
+    UNIT_TXT=$(systemctl cat brain-bot.service 2>/dev/null || cat "$UNIT")
+    grep -q '__OWNER_ID__' <<<"$UNIT_TXT" && die "OWNER_ID в юните не задан — сначала brain-link bot"
+    dropins=$(systemctl show -p DropInPaths --value brain-bot.service 2>/dev/null || true)
+    if [ -n "$dropins" ] || compgen -G "/etc/systemd/system/brain-bot.service.d/*.conf" >/dev/null; then
+      warn "у brain-bot.service есть drop-in (${dropins:-brain-bot.service.d/}) — самопроверка берёт свойства с его учётом; проверь, что он не ослабляет песочницу"
+    fi
     [ -f "$CONF_DIR/canary.list" ] || "$0" canary-init
+    # RuntimeMaxSec > SELFCHECK_BUDGET бота (≈1700 с); brain_link.py ждёт ssh дольше (SELFCHECK_TIMEOUT)
     props=(-p User=brain -p Group=brain -p "WorkingDirectory=$BRAIN_HOME" -p RuntimeMaxSec=1800)
     while IFS= read -r line; do
       case "$line" in ''|'#'*|'['*) continue ;; esac
       case "${line%%=*}" in
         Type|Restart|RestartSec|ExecStart|ExecStartPre|ExecStartPost|ExecReload|ExecStop|TimeoutStartSec|\
-        StartLimitIntervalSec|StartLimitBurst|WorkingDirectory|User|Group) continue ;;
+        StartLimitIntervalSec|StartLimitBurst|WorkingDirectory|User|Group|RuntimeMaxSec) continue ;;
       esac
       props+=(-p "$line")
-    done < <(sed -n '/^\[Service\]/,/^\[/p' "$UNIT")
-    grep -q '^LoadCredential=canary_list:' "$UNIT" || props+=(-p "LoadCredential=canary_list:$CONF_DIR/canary.list")
-    out=$(mktemp); err=$(mktemp); rc=0; mode=systemd
+    done < <(sed -n '/^\[Service\]/,/^\[/p' <<<"$UNIT_TXT")
+    grep -q '^LoadCredential=canary_list:' <<<"$UNIT_TXT" || props+=(-p "LoadCredential=canary_list:$CONF_DIR/canary.list")
+    out=$(mktemp); err=$(mktemp); rc=0; mode=systemd; CD=""
+    trap 'rm -f "$out" "$err"' EXIT HUP INT TERM
     if command -v systemd-run >/dev/null 2>&1; then
       systemd-run --quiet --wait --pipe --collect --unit="brain-selfcheck-$$" "${props[@]}" -p User=brain /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
       if ! grep -q '^SELFCHECK=' "$out"; then
-        warn "systemd-run не выполнил самопроверку ($(head -1 "$err")) — запускаю с тем же окружением без песочницы"
-        mode=fallback
+        if grep -qE 'Unknown assignment|Failed to start transient' "$err"; then
+          warn "systemd-run не принял свойства юнита ($(grep -m1 -E 'Unknown assignment|Failed to start transient' "$err" | head -c 200)) — запускаю с тем же окружением без песочницы"
+          mode=fallback
+        else
+          cat "$out"
+          grep -E '^(ERROR|CRITICAL)' "$err" | tail -5 >&2 || true
+          echo "🟡 не проверено: самопроверка в песочнице запустилась, но завершилась без итога (код $rc) — sudo brain-admin logs 100"
+          echo "SELFCHECK=unverified"
+          echo "SELFCHECK_CACHED=0"
+          echo "SELFCHECK_SANDBOX=systemd"
+          exit 3
+        fi
       fi
     else
       warn "systemd-run нет — запуск с тем же окружением без песочницы systemd"
@@ -241,6 +299,7 @@ PY
     if [ "$mode" = fallback ]; then
       rc=0
       CD=$(mktemp -d /run/brain-selfcheck.XXXXXX)
+      trap 'rm -rf "$CD"; rm -f "$out" "$err"' EXIT HUP INT TERM   # копии токенов не переживут обрыв
       for n in bot_token claude_token; do if [ -f "$CRED_DIR/$n" ]; then cp "$CRED_DIR/$n" "$CD/$n"; fi; done
       cp "$CONF_DIR/canary.list" "$CD/canary_list"
       chown -R brain:brain "$CD"; chmod 0700 "$CD"; chmod 0600 "$CD"/*
@@ -253,8 +312,22 @@ PY
     fi
     cat "$out"
     grep -E '^(ERROR|CRITICAL)' "$err" | tail -5 >&2 || true
-    rm -f "$out" "$err"
     exit "$rc"
+    ;;
+
+  clear-canary-hit)
+    # Причина canary-hit: в ЖИВОМ ответе модели оказалась приманка. Самопроверка её не снимает — только
+    # человек, после разбора с куратором (brain-link report). Файл состояния пишет brain (runuser), не root.
+    st=$BRAIN_HOME/.local/state/brain-bot
+    if ! runuser -u brain -- grep -qs '"canary-hit"' "$st/safe_mode"; then ok "причины canary-hit нет"; exit 0; fi
+    warn "снимаешь безопасный режим после срабатывания приманки. Делай это только после разбора с куратором."
+    answer=""
+    read -r -t 60 -p "Напиши YES в течение 60 секунд, чтобы снять canary-hit: " answer || die "время вышло или ввода нет — отменено"
+    [ "$answer" = "YES" ] || die "отменено"
+    oid=$(owner_id || true)
+    runuser -u brain -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" \
+      PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" clear-canary-hit
     ;;
 
   update-claude)
@@ -263,17 +336,23 @@ PY
       ok "Claude Code обновлён официальным установщиком (под brain)"
     else tail -5 "$LOG" >&2; rm -f "$LOG"; die "установщик Claude Code упал (сеть? место на диске?)"; fi
     rm -f "$LOG"
-    cc=$BRAIN_HOME/.local/state/brain-bot/claude-config
-    CL="env -i HOME=$BRAIN_HOME PATH=$BRAIN_HOME/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 CLAUDE_CONFIG_DIR=$cc $BRAIN_HOME/.local/bin/claude"
-    v=$(runuser -u brain -- $CL --version 2>/dev/null | head -1 || true)
+    v=$(cl_run --version </dev/null 2>/dev/null | head -1 || true)
     echo "claude: ${v:-не отвечает}"
-    h=$(runuser -u brain -- $CL --help 2>/dev/null || true)
+    caps=$(cl_caps)
+    method=$(sed -n 's/^CAP_METHOD=//p' <<<"$caps")
+    if [ "$method" = none ]; then
+      systemctl restart brain-bot.service && ok "бот перезапущен"
+      warn "claude не ответил ни на проверку флагов, ни на --help — флаги изоляции НЕ проверены. Бот проверит их сам при старте; итог — в /status"
+      exit 0
+    fi
+    [ "$method" = help ] && warn "claude принимает даже несуществующий флаг — флаги проверены только по --help"
     miss=0
-    for f in --tools --setting-sources --allowedTools --disallowedTools; do
-      if grep -q -- "$f" <<<"$h"; then ok "флаг $f есть"; else echo "❌ флага $f нет"; miss=1; fi
+    for kf in TOOLS:--tools SETTING_SOURCES:--setting-sources ALLOWEDTOOLS:--allowedTools DISALLOWEDTOOLS:--disallowedTools; do
+      if grep -qx "CAP_${kf%%:*}=1" <<<"$caps"; then ok "флаг ${kf#*:} есть"; else echo "❌ флага ${kf#*:} нет"; miss=1; fi
     done
-    systemctl restart brain-bot.service && ok "бот перезапущен (флаги на месте → безопасный режим по причине claude-flags снимется сам)"
+    systemctl restart brain-bot.service && ok "бот перезапущен"
     [ "$miss" = 0 ] || die "не все флаги изоляции есть — бот остаётся в безопасном режиме, напиши куратору"
+    ok "флаги изоляции на месте — безопасный режим по причине claude-flags бот снимет сам при старте"
     ;;
 
   remove-private)

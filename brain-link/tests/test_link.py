@@ -230,6 +230,17 @@ class TestLockdownFlow(Base):
         self.assertNotIn("PASSWORD", (self.cfg / "server_access").read_text())
         self.assertTrue(list(self.cfg.glob("server_access.bak.*")))
 
+    def test_server_selfcheck_fail_refuses_even_with_accept_unverified(self):
+        (self.cfg / "link_state.json").write_text('{"verify_green": true, "selfcheck": "unverified"}',
+                                                  encoding="utf-8")
+        for status in ("safe_mode: off\nselfcheck: fail\n", 'safe_mode: on\n{"reasons": {"canary-hit": {}}}\n'
+                                                              "selfcheck: pass\n"):
+            self.runner.rules = [("brain-admin status", (0, status.encode(), b"")), ("brain@", (0, b"", b""))]
+            code, res, _ = self.call(["lockdown", "--confirm", "--confirm-again", "--accept-unverified"])
+            self.assertEqual(code, 1, res)
+            self.assertIn("НЕ ПРОШЛА", res["human"])
+            self.assertEqual(self.sessions, [])               # root-сессию lockdown даже не открывали
+
     def test_rollback_when_password_still_accepted(self):
         self.runner.rules = [("PubkeyAuthentication=no",
                               (255, b"", b"root@h: Permission denied (publickey,password).")),
@@ -356,7 +367,7 @@ class TestInitPreview(Base):
         (self.ws / "memory" / "a.md").write_text("привет", encoding="utf-8")
         (self.ws / "CLAUDE.md").write_text("# ядро", encoding="utf-8")
         skills = self.tmp / "skills"
-        (skills / "demo").mkdir(parents=True)
+        (skills / "demo").mkdir(parents=True, exist_ok=True)
         (skills / "demo" / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
         with mock.patch.object(bk, "RUNNER", bk_runner):
             code, res, _ = self.call(["init", "--root", str(self.ws), "--skills-dir", str(skills),
@@ -554,10 +565,10 @@ class TestVerifyCleansProbe(Base):
         self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
         self.ready_keys()
         inbox = self.ws / "memory" / "inbox"
-        inbox.mkdir(parents=True)
+        inbox.mkdir(parents=True, exist_ok=True)
         (inbox / "n.md").write_text("запомни тест связки", encoding="utf-8")
         skills = self.tmp / "skills"
-        (skills / "demo").mkdir(parents=True)
+        (skills / "demo").mkdir(parents=True, exist_ok=True)
         (skills / "demo" / "SKILL.md").write_text("x", encoding="utf-8")
         self.runner.rules = [("grep -q verify-", (0, b"SYNCED=1\n", b"")),
                              ("bash -s", (0, b"NOW=0\nNTP=yes\nPRIVATE=\n", b""))]
@@ -668,6 +679,37 @@ class TestReport(KeysMixin, Base):
         self.assertIn("ufw: active", text)
         self.assertIn("brain-admin logs 200", text)
 
+    def test_report_file_private_from_creation(self):
+        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
+        if os.name == "nt":
+            self.skipTest("права POSIX")
+        old = os.umask(0)
+        try:
+            with mock.patch.object(bk.os, "chmod", lambda *a, **k: None):   # без chmod «после» — всё равно 0600
+                code, res, _ = self.call(["report"])
+        finally:
+            os.umask(old)
+        self.assertEqual(code, 0, res)
+        self.assertEqual(os.stat(res["path"]).st_mode & 0o777, 0o600)
+
+    def test_mask_windows_json_paths_tokens_and_strangers(self):
+        win = "C:\\Users\\Иван"
+        homes = [win, win.replace("\\", "/"), win.replace("\\", "\\\\")]
+        text = json.dumps({"path": win + "\\brain\\memory"}) + " bot" + FAKE_BOT_TOKEN + \
+            " ignored update kind=message from user_id=999888777 chat=-1001234567890"
+        t = bk.mask_report(text, homes=homes)
+        self.assertNotIn("Иван", t)
+        self.assertNotIn(FAKE_BOT_TOKEN.split(":")[1], t)       # токен прилип к слову — всё равно скрыт
+        self.assertNotIn("999888777", t)
+        self.assertIn("user_id=99…77", t)
+        self.assertNotIn("1001234567890", t)
+
+    def test_cmd_report_adds_double_backslash_homes(self):
+        src = (KIT / "scripts" / "brain_link.py").read_text(encoding="utf-8")
+        body = src[src.index("def cmd_report("):]
+        self.assertIn('h.replace("\\\\", "\\\\\\\\")', body)
+        self.assertIn("write_private(dest", body)
+
     def test_mask_report_unit(self):
         t = bk.mask_report("a sk-" + "ant-oat01-abcdefghijkl b 8.8.8.8 c 2001:db8::1 d version 1.2.300.4",
                            homes=["/Users/x"])
@@ -723,10 +765,10 @@ class TestVerifySelfcheck(KeysMixin, Base):
         self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
         self.ready_keys()
         inbox = self.ws / "memory" / "inbox"
-        inbox.mkdir(parents=True)
+        inbox.mkdir(parents=True, exist_ok=True)
         (inbox / "n.md").write_text("запомни тест связки", encoding="utf-8")
         skills = self.tmp / "skills"
-        (skills / "demo").mkdir(parents=True)
+        (skills / "demo").mkdir(parents=True, exist_ok=True)
         (skills / "demo" / "SKILL.md").write_text("x", encoding="utf-8")
         sha = hashlib.sha256(b"x").hexdigest()
         vs = ("NOW=%d\nNTP=yes\nPRIVATE=\nSKILL_SHA=%s\nBOT_USER=brain\nBOT_ACTIVE=active\nSELFTEST=ok\n"
@@ -745,6 +787,16 @@ class TestVerifySelfcheck(KeysMixin, Base):
         self.assertEqual(code, 0, {k: (v["status"], v["detail"]) for k, v in res.get("checks", {}).items()})
         self.assertEqual(res["checks"]["и"]["status"], "ok")
         self.assertEqual(self._state()["selfcheck"], "pass")
+
+    def test_pass_outside_unit_sandbox_is_unverified(self):
+        for sandbox in ("fallback", None):
+            out = "✅ утечки нет\nSELFCHECK=pass\nSELFCHECK_CACHED=0\n" + (
+                "SELFCHECK_SANDBOX=%s\n" % sandbox if sandbox else "")
+            code, res, _ = self._verify((0, out.encode(), b""))
+            self.assertEqual(code, 2, res)
+            self.assertEqual(res["checks"]["и"]["status"], "warn")
+            self.assertEqual(self._state()["selfcheck"], "unverified")
+            self.assertIn("--accept-unverified", res["human"])
 
     def test_fail_blocks(self):
         out = "❌ приманка в ~/.config — в ответе модели есть приманка или токен\nSELFCHECK=fail\n"
@@ -775,6 +827,86 @@ class TestVerifySelfcheck(KeysMixin, Base):
         self.assertIn("PASS", res["human"])
 
 
+class TestCapabilitiesFlagsByExec(Base):
+    """Флаги claude — исполнением (`claude <флаг> [значение] --version` → 0), одна логика в трёх местах."""
+
+    def test_same_block_in_brain_admin_and_caps_sh(self):
+        admin = (KIT / "server" / "brain-admin").read_text(encoding="utf-8")
+
+        def block(t):
+            return t[t.index("# >>> claude-flags"):t.index("# <<< claude-flags")]
+        self.assertEqual(block(admin), block(bk.CAPS_SH))
+        b = block(admin)
+        self.assertIn("--version", b)
+        self.assertIn("--allowedTools,--allowed-tools", b)
+        self.assertIn("--brain-link-no-such-flag", b)
+        self.assertIn("runuser -u brain", b)
+        upd = admin[admin.index("  update-claude)"):admin.index("  remove-private)")]
+        self.assertNotIn("grep -q --", upd)               # не по --help
+        self.assertIn("cl_caps", upd)
+
+    def test_help_only_is_reported_and_none_means_unknown(self):
+        caps, warns = bk.server_capabilities({"CLAUDE_VER": "2.1", "CAP_METHOD": "none", "SYSTEMD_VER": "255",
+                                              "CGROUP_UNIFIED": "1"})
+        self.assertEqual(caps["claude_flags"], {})
+        self.assertFalse(any("update-claude" in w for w in warns))   # неизвестно ≠ «флагов нет»
+        caps, warns = bk.server_capabilities({"CAP_METHOD": "exec", "CAP_TOOLS": "1", "CAP_SETTING_SOURCES": "1",
+                                              "CAP_ALLOWEDTOOLS": "1", "CAP_DISALLOWEDTOOLS": "1",
+                                              "CAP_NO_SESSION_PERSISTENCE": "0", "SYSTEMD_VER": "255"})
+        self.assertEqual(caps["claude_flags_method"], "exec")
+        self.assertFalse(caps["claude_flags"]["--no-session-persistence"])
+        self.assertFalse(any("update-claude" in w for w in warns))   # необязательный флаг — не повод
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash") and shutil.which("timeout"),
+                         "shell-блок исполняется на Linux-сервере (нужны bash и timeout)")
+    def test_shell_block_runs_against_fake_claude(self):
+        import subprocess
+        fake = self.tmp / "claude"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "for a in \"$@\"; do case \"$a\" in --tools|--setting-sources|--allowed-tools|--disallowedTools|"
+            "--version|--help|''|Read|Bash) ;; *) echo \"unknown option $a\" >&2; exit 1 ;; esac; done\n"
+            "case \" $* \" in *' --help '*) echo 'Usage: --allowedTools --no-session-persistence';; "
+            "*) echo '9.9.9 (Claude Code)';; esac\n", encoding="utf-8")
+        fake.chmod(0o755)
+        sh = bk.CAPS_SH[bk.CAPS_SH.index("# >>> claude-flags"):bk.CAPS_SH.index("# <<< claude-flags")]
+        sh = sh.replace("/home/brain/.local/bin/claude", str(fake)) + "\ncl_caps\n"
+        sh = sh.replace('[ "$(id -u)" = 0 ]', "false")
+        out = subprocess.run(["bash", "-c", sh], capture_output=True, text=True, timeout=60).stdout
+        self.assertIn("CAP_METHOD=exec", out)
+        for k in ("TOOLS", "SETTING_SOURCES", "ALLOWEDTOOLS", "DISALLOWEDTOOLS"):
+            self.assertIn("CAP_%s=1" % k, out)               # --allowed-tools принят во втором написании
+        self.assertIn("CAP_NO_SESSION_PERSISTENCE=0", out)   # в help есть, исполнением — нет
+        self.assertIn("CAP_STRICT_MCP_CONFIG=0", out)
+
+
+class TestSelfcheckSandboxAndBudget(Base):
+    def test_brain_admin_selfcheck_fallback_rules_and_trap(self):
+        admin = (KIT / "server" / "brain-admin").read_text(encoding="utf-8")
+        block = admin[admin.index("  selfcheck-security)"):admin.index("  clear-canary-hit)")]
+        self.assertIn("systemctl cat brain-bot.service", block)
+        self.assertIn("DropInPaths", block)
+        self.assertIn("Unknown assignment|Failed to start transient", block)
+        died = block[block.index("Unknown assignment|Failed"):block.index('if [ "$mode" = fallback ]')]
+        self.assertIn("SELFCHECK=unverified", died)        # стартовала и умерла — не проверено, без запасного
+        lines = block.splitlines()
+        i = [n for n, l in enumerate(lines) if "mktemp -d /run/brain-selfcheck" in l][0]
+        self.assertRegex(lines[i + 1].strip(), r"""^trap 'rm -rf "\$CD"[^']*' EXIT HUP INT TERM""")
+        rt = int(__import__("re").search(r"RuntimeMaxSec=(\d+)", block).group(1))
+        sys.path.insert(0, str(KIT / "server"))
+        import brain_bot as bb
+        self.assertLess(bb.SELFCHECK_BUDGET, rt)
+        self.assertLess(rt, bk.SELFCHECK_TIMEOUT)
+
+    def test_brain_admin_clear_canary_hit(self):
+        admin = (KIT / "server" / "brain-admin").read_text(encoding="utf-8")
+        block = admin[admin.index("  clear-canary-hit)"):admin.index("  update-claude)")]
+        self.assertIn("read -r -t 60", block)
+        self.assertIn("runuser -u brain", block)
+        self.assertIn("brain_bot.py\" clear-canary-hit", block)
+        self.assertIn("clear-canary-hit", admin[:admin.index("USAGE\n}")])
+
+
 class TestCapabilities(Base):
     def test_server_caps_warn_old_claude_and_container(self):
         caps, warns = bk.server_capabilities({"CLAUDE_VER": "1.0.0", "CAP_TOOLS": "0", "CAP_SETTING_SOURCES": "1",
@@ -799,7 +931,7 @@ class TestCapabilities(Base):
         self.assertEqual(res["capabilities"]["server"]["claude_version"], "2.1.200")
         self.assertTrue(res["capabilities"]["server"]["ip_address_deny"])
         self.assertEqual(res["capabilities"]["local"]["os"], "mac")
-        self.assertIn("CAP_$k=1", bk.PROBE_SH)
+        self.assertIn("CAP_METHOD=", bk.PROBE_SH)
         self.assertIn("systemd-detect-virt", bk.PROBE_SH)
         self.assertIn("runuser -u brain", bk.CAPS_SH)        # claude root не запускает
 
@@ -846,3 +978,30 @@ class TestLabTransportWindows(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDistAndKitChecks(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(KIT.parent / "tools"))
+
+    def test_ci_and_tests_not_published_anywhere(self):
+        import build_dist
+        for p in ("brain-link/ci/fake_claude.py", "brain-link/ci/README.md", "brain-link/tests/test_bot.py"):
+            self.assertTrue(build_dist.is_excluded(p), p)           # ни витрина, ни пак
+        self.assertFalse(build_dist.is_excluded("brain-link/server/brain_bot.py"))
+        files = ["brain-link/SKILL.md", "brain-link/ci/x.py", "brain-link/tests/t.py"]
+        site = [f for f in files if not build_dist.is_excluded(f)]
+        self.assertEqual(site, ["brain-link/SKILL.md"])
+
+    def test_ps1_without_bom_is_error(self):
+        import check_kit
+        tmp = Path(tempfile.mkdtemp(prefix="kitbom-"))
+        try:
+            (tmp / "a.ps1").write_bytes("Write-Host 'привет'".encode("utf-8"))
+            (tmp / "b.ps1").write_bytes(b"\xef\xbb\xbf" + "Write-Host 'привет'".encode("utf-8"))
+            rep = check_kit.Report()
+            check_kit.check_ps1_bom(rep, str(tmp), ["a.ps1", "b.ps1"])
+            self.assertEqual([m for _, m in rep.errors if "a.ps1" in m] != [], True)
+            self.assertFalse(any("b.ps1" in m for _, m in rep.errors))
+        finally:
+            shutil.rmtree(str(tmp), ignore_errors=True)

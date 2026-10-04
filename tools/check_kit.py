@@ -19,6 +19,8 @@
   7. Копии-близнецы совпадают байт-в-байт (TWINS).
   8. Нет двух разных скиллов (или двух разных агентов) с одним name: — ошибка.
   9. Бинарные файлы, кроме pdf / png / jpg / zip, — предупреждение.
+ 10. Каждый *.ps1 начинается с UTF-8 BOM — иначе Windows PowerShell 5.1 читает его в ANSI
+     и портит кириллицу (ошибка).
 
 Какие файлы проверяются: если это git-репозиторий — ровно те, что уйдут в публикацию
 (git ls-files: в индексе + новые, не попавшие в .gitignore); иначе — обход папки.
@@ -508,6 +510,18 @@ def check_sensitive(rep, root, files):
 
 
 # --- 7. Близнецы --------------------------------------------------------------
+def check_ps1_bom(rep, root, files):
+    """*.ps1 без UTF-8 BOM: PowerShell 5.1 читает файл в кодировке ANSI — кириллица превращается в мусор."""
+    for f in files:
+        if not f.lower().endswith(".ps1"):
+            continue
+        with open(os.path.join(root, *f.split("/")), "rb") as fh:
+            head = fh.read(3)
+        if head != b"\xef\xbb\xbf":
+            rep.err("кодировка", "%s без UTF-8 BOM — Windows PowerShell 5.1 испортит кириллицу; "
+                                 "сохраните как «UTF-8 with BOM»" % f)
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -586,6 +600,7 @@ def run(root, quiet=False):
     check_sensitive(rep, root, files)
     check_twins(rep, root)
     check_duplicate_names(rep, root, files)
+    check_ps1_bom(rep, root, files)
 
     print("check_kit · kit 2.0 · %s" % root)
     print("Файлов: %d · скиллов с шапкой: %d" % (len(files), len(targets)))
