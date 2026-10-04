@@ -157,6 +157,13 @@ case "$cmd" in
       [ -L memory ] && exit 3
       mkdir -p memory/inbox memory/dialogues && chmod 0750 memory
       for d in memory/inbox memory/dialogues; do [ -L "$d" ] && exit 3; chmod 2770 "$d" || exit 4; done
+      # ACL (наследованные от /home и т.п.): chmod меняет только маску, запись группе даёт запись group::
+      if command -v setfacl >/dev/null 2>&1; then
+        for d in memory/inbox memory/dialogues; do
+          setfacl -m g::rwx,m::rwx "$d" 2>/dev/null
+          getfacl -d -c "$d" 2>/dev/null | grep -q . && setfacl -d -m g::rwx,m::rwx "$d" 2>/dev/null
+        done
+      fi
       if [ -f CLAUDE.md ] && [ ! -L CLAUDE.md ]; then chmod u+rw,g+r,g-w,o-rwx CLAUDE.md; fi
       find -P memory .claude/skills -xdev \( -path memory/inbox -o -path memory/dialogues \) -prune -o -user brain \
         \( -type d -exec chmod u+rwx,g+rx,g-w,o-rwx {} + -o -type f -exec chmod u+rw,g+r,g-w,o-rwx {} + \) 2>/dev/null
