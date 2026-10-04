@@ -1,0 +1,141 @@
+name: brain-link lab
+
+# Лаборатория связки brain-link вместо тестового VPS и Windows-машины (kit 2.1).
+# Ничего наружу не ходит, секретов репозитория не использует; «сервер ученика» эмулируется на раннере.
+on:
+  push:
+    branches: ["kit-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: brain-link-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # 1 — юнит-тесты и смоук на трёх ОС × двух версиях Python
+  unit:
+    name: unit (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: unittest brain-link
+        run: python -m unittest discover -s brain-link/tests -v
+      - name: check_kit
+        run: python tools/check_kit.py
+      - name: smoke JSON под cp1251 (только Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python brain-link/ci/smoke_json.py --fake-home --with-access \
+            --env PYTHONIOENCODING=cp1251 --expect-rc 0,4 -- \
+            python brain-link/scripts/brain_sync.py status
+          python brain-link/ci/smoke_json.py --fake-home --with-access \
+            --env PYTHONIOENCODING=cp1251 --expect-rc 0,4 -- \
+            python brain-link/scripts/brain_link.py detect
+
+  # 2 — расписание на реальном Планировщике задач Windows (PowerShell 5.1), транспорт local
+  windows-integration:
+    name: windows-integration
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: расписание + probe + audit (Windows PowerShell 5.1)
+        shell: powershell
+        env:
+          WORK: ${{ runner.temp }}\brain-lab
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File brain-link\ci\win_integration.ps1
+      - name: артефакт (журнал Windows)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-integration-logs
+          path: ${{ runner.temp }}\brain-lab\**\*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 3 — расписание на реальном launchd macOS, транспорт local
+  macos-integration:
+    name: macos-integration
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: расписание launchd (local transport)
+        env:
+          WORK: ${{ runner.temp }}/brain-lab
+        run: bash brain-link/ci/mac_integration.sh
+
+  # 4 — e2e по «серверу ученика» на 127.0.0.1:2222 + защитные регресс-проверки RT-6…RT-16
+  server-e2e:
+    name: server-e2e + security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      WORK: ${{ runner.temp }}/brain-lab
+      REPO: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: e2e установщика против локального sshd:2222
+        run: bash brain-link/ci/server_e2e.sh
+      - name: защитные регресс-проверки (RT-6…RT-16)
+        run: bash brain-link/ci/security_checks.sh
+      - name: очистка артефактов от секретов
+        if: always()
+        run: |
+          set -u
+          OUT="$WORK/artifacts"; mkdir -p "$OUT"
+          # токены, что лаборатория сгенерировала сама (точные значения вычищаем из логов)
+          REDACT=()
+          for f in "$WORK/tok_claude" "$WORK/tok_bot"; do
+            [ -f "$f" ] && REDACT+=("$(cat "$f")")
+          done
+          scrub() { # файл -> в OUT с заменой точных токенов и похожих паттернов
+            local src="$1" dst="$OUT/$(basename "$1")"
+            cp "$src" "$dst" 2>/dev/null || return 0
+            for v in "${REDACT[@]:-}"; do [ -n "$v" ] && sed -i "s#$(printf '%s' "$v" | sed 's/[&/\]/\\&/g')#<redacted>#g" "$dst"; done
+            # на всякий случай — любые строки, похожие на токены
+            sed -i -E 's#sk-ant-[A-Za-z0-9_-]{10,}#<redacted-anthropic>#g; s#[0-9]{8,10}:[A-Za-z0-9_-]{30,}#<redacted-tg>#g' "$dst"
+          }
+          for f in "$WORK"/*.log "$WORK"/*.json; do [ -f "$f" ] && scrub "$f"; done
+          # удаляем сами файлы токенов и ключи из набора артефактов
+          rm -f "$OUT/tok_claude" "$OUT/tok_bot" 2>/dev/null || true
+          # контроль: в артефактах не осталось ни одного сгенерированного токена
+          bad=0
+          for v in "${REDACT[@]:-}"; do
+            [ -n "$v" ] || continue
+            if grep -rqF "$v" "$OUT" 2>/dev/null; then echo "СТОП: токен остался в артефактах"; bad=1; fi
+          done
+          [ "$bad" = 0 ] && echo "артефакты очищены от секретов" || exit 1
+      - name: артефакт (очищенные логи e2e и redteam)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-e2e-logs
+          path: ${{ runner.temp }}/brain-lab/artifacts
+          if-no-files-found: ignore
+          retention-days: 7

@@ -65,9 +65,8 @@ rt8() {
   local before; before="$(RROOT 'cat /usr/local/lib/brain-bot/brain_bot.py 2>/dev/null | head -c 40')"
   RBRAIN 'sudo -n brain-admin update-bot >/dev/null 2>&1 || true'
   local leaked; leaked="$(RROOT "grep -l lab-secret /usr/local/lib/brain-bot/brain_bot.py 2>/dev/null")"
-  # вернуть настоящий код бота
+  # вернуть настоящий код бота в копию кита brain
   cat "$REPO/brain-link/server/brain_bot.py" | RBRAIN 'cat > /home/brain/.local/share/brain-link/server/brain_bot.py'
-  RROOT 'yes | cp "" "" 2>/dev/null || true'
   [ -z "$leaked" ] && ok "RT-8 update-bot по симлинку на приманку не подставил чужой файл" \
                    || bad "RT-8 содержимое приманки уехало в код бота"
 }
