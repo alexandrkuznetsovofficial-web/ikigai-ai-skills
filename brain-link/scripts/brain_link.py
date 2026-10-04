@@ -507,6 +507,8 @@ echo "NOW=$(date +%s)"
 echo "NTP=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
 id brain >/dev/null 2>&1 && echo BRAIN=1 || echo BRAIN=0
 [ -x /home/brain/.local/bin/claude ] && echo CLAUDE=1 || echo CLAUDE=0
+# RT-11b: claude бота — отдельная root-копия (ставит brain-admin update-claude) с контрольной суммой
+[ -x /usr/local/lib/brain-bot/claude/bin/claude ] && [ -s /usr/local/lib/brain-bot/claude.sha256 ] && echo CLAUDE_BOT=1 || echo CLAUDE_BOT=0
 [ -x /usr/local/sbin/brain-admin ] && echo HARDENED=1 || echo HARDENED=0
 [ -f /etc/ssh/sshd_config.d/00-brain.conf ] && echo LOCKDOWN=1 || echo LOCKDOWN=0
 [ -f /home/brain/.brain-sync/heartbeat ] && echo HEARTBEAT=1 || echo HEARTBEAT=0
@@ -533,20 +535,21 @@ fi
 """.replace("__OLDSCAN__", OLD_SCAN)
 
 # Возможности сервера: версия claude и флаги изоляции, systemd и его песочница, контейнер, ufw, Python.
-# claude запускается С ПРАВАМИ brainbot и с конфигом бота (CLAUDE_CONFIG_DIR; до шага bot — от brain), root его не запускает.
+# claude — root-копия бота (/usr/local/lib/brain-bot/claude), запускается С ПРАВАМИ brainbot и с конфигом бота
+# (CLAUDE_CONFIG_DIR; пока brainbot нет — от brain, без токена), root его не запускает.
 CAPS_SH = r"""
 # >>> claude-flags — одна логика: здесь, в CAPS_SH установщика (brain_link.py) и в claude_capabilities() бота.
 # Флаг принят, если `claude <флаг> [значение] --version` завершается с кодом 0 (оба написания
 # --allowedTools/--allowed-tools). --help — только для отчёта и как запасной путь, если claude «принимает»
 # даже несуществующий флаг. claude запускается С ПРАВАМИ brainbot и с конфигом бота (до шага bot — от brain),
 # root его не запускает.
-cl_run() {
-  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1"
+cl_run() { # только root-копия бота (RT-11b): ~/.local/bin/claude владельца бот и проверки не запускают
+  CE="env -i HOME=/home/brain PATH=/usr/local/lib/brain-bot/claude/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1"
   if [ "$(id -u)" = 0 ] && id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot ]; then
-    timeout 30 runuser -u brainbot -- $CE CLAUDE_CONFIG_DIR=/var/lib/brain-bot/claude-config /home/brain/.local/bin/claude "$@"
-  elif [ "$(id -u)" = 0 ]; then   # до шага bot (brainbot ещё нет): от brain, конфиг-черновик в его кэше
-    timeout 30 runuser -u brain -- $CE CLAUDE_CONFIG_DIR=/home/brain/.cache/brain-link-claude-probe /home/brain/.local/bin/claude "$@"
-  else timeout 30 $CE CLAUDE_CONFIG_DIR="${HOME:-/tmp}/.cache/brain-link-claude-probe" /home/brain/.local/bin/claude "$@"; fi
+    timeout 30 runuser -u brainbot -- $CE CLAUDE_CONFIG_DIR=/var/lib/brain-bot/claude-config /usr/local/lib/brain-bot/claude/bin/claude "$@"
+  elif [ "$(id -u)" = 0 ]; then   # brainbot ещё нет: от brain, конфиг-черновик в его кэше (токена здесь нет)
+    timeout 30 runuser -u brain -- $CE CLAUDE_CONFIG_DIR=/home/brain/.cache/brain-link-claude-probe /usr/local/lib/brain-bot/claude/bin/claude "$@"
+  else timeout 30 $CE CLAUDE_CONFIG_DIR="${HOME:-/tmp}/.cache/brain-link-claude-probe" /usr/local/lib/brain-bot/claude/bin/claude "$@"; fi
 }
 cl_flag() { cl_run "$@" --version </dev/null >/dev/null 2>&1; }
 cl_has() { # «--флаг[,--написание2]» значение|-   (- — флаг без значения)
@@ -560,7 +563,7 @@ cl_has() { # «--флаг[,--написание2]» значение|-   (- — 
 }
 cl_caps() { # печатает CAP_METHOD=exec|help|none и CAP_<ФЛАГ>=1|0
   CL_H=""; CL_M=none
-  if [ -x /home/brain/.local/bin/claude ]; then
+  if [ -x /usr/local/lib/brain-bot/claude/bin/claude ]; then
     CL_H=$(cl_run --help </dev/null 2>/dev/null || true)
     if cl_flag --brain-link-no-such-flag; then
       [ -n "$CL_H" ] && CL_M=help        # «принимает» любой флаг — исполнение ничего не различает
@@ -577,7 +580,7 @@ cl_caps() { # печатает CAP_METHOD=exec|help|none и CAP_<ФЛАГ>=1|0
   if cl_has --strict-mcp-config -; then echo CAP_STRICT_MCP_CONFIG=1; else echo CAP_STRICT_MCP_CONFIG=0; fi
 }
 # <<< claude-flags
-if [ -x /home/brain/.local/bin/claude ]; then
+if [ -x /usr/local/lib/brain-bot/claude/bin/claude ]; then
   echo "CLAUDE_VER=$(cl_run --version </dev/null 2>/dev/null | head -1)"
 fi
 cl_caps
@@ -797,7 +800,7 @@ def cmd_detect(ctx):
         nxt = "keys"
     elif srv.get("HARDENED") != "1":
         nxt = "harden"
-    elif srv.get("CLAUDE") != "1":
+    elif srv.get("CLAUDE") != "1" or srv.get("CLAUDE_BOT") == "0":
         nxt = "claude"
     elif srv.get("TOKEN_CLAUDE") == "0":
         nxt = "put-token claude"
@@ -1081,7 +1084,19 @@ if [ ! -x /home/brain/.local/bin/claude ]; then
   rm -f "$LOG"
 else echo "✅ Claude Code уже стоит под brain"; fi
 V=$(as_brain '/home/brain/.local/bin/claude --version' 2>/dev/null | head -1)
-if [ -n "$V" ]; then echo "✅ claude --version: $V"; echo "CLAUDE_VERSION=$V"; else echo "❌ claude --version не отвечает"; F=1; fi
+if [ -n "$V" ]; then echo "✅ claude --version: $V (твой, для ручной работы)"; echo "CLAUDE_VERSION=$V"; else echo "❌ claude --version не отвечает"; F=1; fi
+# RT-11b: копия бота — отдельная, root-владения (/usr/local/lib/brain-bot/claude): бот не запускает ничего из
+# папки brain. Ставит brain-admin update-claude (официальный установщик во временной папке, sha256).
+if [ "$(id -u)" = 0 ]; then BA=/usr/local/sbin/brain-admin; else BA="sudo -n /usr/local/sbin/brain-admin"; fi
+LOGB=$(mktemp)
+if $BA update-claude >"$LOGB" 2>&1; then
+  grep -E '^(✅|🟡)' "$LOGB" | sed -n '1,12p'
+  VB=$(sed -n 's/^claude: //p' "$LOGB" | head -1); echo "CLAUDE_BOT_VERSION=$VB"
+else
+  grep -E '^(❌|🟡)' "$LOGB" | tail -4
+  echo "❌ копия claude для бота не встала: sudo brain-admin update-claude (после lockdown со старым brain-admin — через CTO-скилл)"; F=1
+fi
+rm -f "$LOGB"
 [ -d /home/brain/.claude/skills ] || as_brain 'mkdir -p ~/.claude/skills && chmod 750 ~/.claude ~/.claude/skills'
 [ -d /home/brain/.claude/skills ] && echo "✅ скиллы на сервере будут в /home/brain/.claude/skills" || { echo "❌ нет /home/brain/.claude/skills"; F=1; }
 HIT=$(grep -ls ANTHROPIC_API_KEY /etc/environment /etc/profile.d/* /home/brain/.profile /home/brain/.bashrc \
@@ -1098,17 +1113,18 @@ def cmd_claude(ctx):
     ctx.access
     need_ssh_ready()
     script = CLAUDE_SH.replace("__ASBRAIN__", AS_BRAIN_SELF if ctx.locked() else AS_BRAIN_ROOT)
-    say("claude: ставлю Claude Code под brain (1–3 минуты)…")
+    say("claude: ставлю Claude Code под brain и root-копию для бота (2–5 минут)…")
     rc, o, e = ctx.sh(script, timeout=900)
     if rc == 255:
         raise ssh_fail(rc, e, "claude")
     m = marks(o)
     ver = kv(o).get("CLAUDE_VERSION")
+    bver = kv(o).get("CLAUDE_BOT_VERSION")
     if rc == 0:
-        save_state(claude_version=ver)
-        finish(EXIT_OK, "Claude Code на сервере: %s · API-ключа нет. Следующий шаг: put-token claude (его "
-                        "запускаешь ты сама в своём терминале)" % (ver or "?"), step="claude", lines=m,
-               next_step="put-token claude")
+        save_state(claude_version=ver, claude_bot_version=bver)
+        finish(EXIT_OK, "Claude Code на сервере: %s (твой) и root-копия для бота: %s · API-ключа нет. Следующий "
+                        "шаг: put-token claude (его запускаешь ты сама в своём терминале)" % (ver or "?", bver or "?"),
+               step="claude", lines=m, next_step="put-token claude")
     finish(EXIT_ERR, "claude: %s" % "; ".join(m["bad"][:3] or [e.strip()[-200:]]), step="claude", lines=m)
 
 
@@ -1495,10 +1511,17 @@ install -d -m 0755 -o root -g root /usr/local/lib/brain-bot /etc/brain-bot
 put "$D/brain_bot.py" /usr/local/lib/brain-bot/brain_bot.py 0755
 put "$D/claude_settings.json" /etc/brain-bot/claude_settings.json 0644
 put "$D/brain-admin" /usr/local/sbin/brain-admin 0755
+put "$D/requirements-voice.txt" /usr/local/lib/brain-bot/requirements-voice.txt 0644
 # RT-11: бот — отдельный пользователь brainbot. На ранних установках (бот под brain) здесь же перенос состояния.
 if /usr/local/sbin/brain-admin bot-user >/tmp/brain-botuser.$$ 2>&1; then ok "пользователь бота brainbot, /var/lib/brain-bot (0700), права памяти"
 else bad "пользователь бота: $(grep -E '❌|🟡' /tmp/brain-botuser.$$ | head -2 | tr '\n' ' ')"; rm -f /tmp/brain-botuser.$$; exit 1; fi
 rm -f /tmp/brain-botuser.$$
+# RT-11b: claude бота — root-копия. Нет её (установка до этого исправления) — ставим сейчас.
+if [ -x /usr/local/lib/brain-bot/claude/bin/claude ] && [ -s /usr/local/lib/brain-bot/claude.sha256 ]; then
+  ok "claude бота: root-копия /usr/local/lib/brain-bot/claude/bin/claude"
+elif /usr/local/sbin/brain-admin update-claude >/tmp/brain-claude.$$ 2>&1; then ok "claude бота: root-копия поставлена (update-claude)"
+else bad "claude бота не встал: $(grep -E '❌' /tmp/brain-claude.$$ | head -2 | tr '\n' ' ')"; fi
+rm -f /tmp/brain-claude.$$
 for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.service brain-watch.timer; do
   T=$(mktemp); sed -e "s/__OWNER_ID__/$OWNER_ID/" -e "s#Europe/Moscow#$BOT_TZ#g" "$D/systemd/$u" > "$T"; put "$T" "/etc/systemd/system/$u" 0644; rm -f "$T"
 done
@@ -1508,19 +1531,25 @@ __COPY__
 for s in __OLD__; do
   systemctl disable --now "$s" >/dev/null 2>&1 && ok "старый бот $s выключен (не удалён; вернуть: systemctl enable --now $s)" || warn "старый бот $s не выключился"
 done
+VC=/etc/systemd/system/brain-bot.service.d/voice.conf
 if [ "__VOICE__" = 1 ]; then
+  # RT-11b: venv голоса — root-владения в /usr/local/lib/brain-bot (не ~/.venv-voice под brain)
   LOG=$(mktemp)
-  if runuser -l brain -c 'python3 -m venv ~/.venv-voice && ~/.venv-voice/bin/pip install -q --upgrade pip && ~/.venv-voice/bin/pip install -q -r ~/.local/share/brain-link/server/requirements-voice.txt' >"$LOG" 2>&1; then
-    ok "голос: /home/brain/.venv-voice с faster-whisper"
-  else bad "голос: установка faster-whisper упала: $(tail -2 "$LOG" | tr '\n' ' ')"; fi
+  if /usr/local/sbin/brain-admin voice-venv >"$LOG" 2>&1; then
+    ok "голос: /usr/local/lib/brain-bot/voice-venv (root) с faster-whisper"
+    install -d -m 0755 /etc/systemd/system/brain-bot.service.d
+    T=$(mktemp)
+    printf '%s\n' '# brain-link bot --voice' '[Service]' 'ExecStart=' \
+      'ExecStart=/usr/local/lib/brain-bot/voice-venv/bin/python3 -I /usr/local/lib/brain-bot/brain_bot.py run' \
+      'Environment=VOICE=1' 'MemoryMax=2500M' > "$T"
+    put "$T" "$VC" 0644; rm -f "$T"
+    ok "голос включён: VOICE=1, MemoryMax=2500M"
+  else bad "голос: $(grep -E '❌' "$LOG" | head -1) $(tail -2 "$LOG" | tr '\n' ' ')"; fi
   rm -f "$LOG"
-  install -d -m 0755 /etc/systemd/system/brain-bot.service.d
-  T=$(mktemp)
-  printf '%s\n' '# brain-link bot --voice' '[Service]' 'ExecStart=' \
-    'ExecStart=/home/brain/.venv-voice/bin/python3 /usr/local/lib/brain-bot/brain_bot.py run' \
-    'Environment=VOICE=1' 'MemoryMax=2500M' > "$T"
-  put "$T" /etc/systemd/system/brain-bot.service.d/voice.conf 0644; rm -f "$T"
-  ok "голос включён: VOICE=1, MemoryMax=2500M"
+elif [ -f "$VC" ] && grep -q '/home/brain/' "$VC"; then
+  # голос ранней установки исполнял ~/.venv-voice из папки brain — выключаем, вернуть: bot --voice
+  install -d -m 0700 -o root -g root "$BAK"; mv -f "$VC" "$BAK/brain-bot.voice.conf.$stamp"
+  warn "голос выключен: прежний venv лежал в /home/brain (brain мог подменить код бота). Включить заново: bot --voice"
 fi
 systemctl daemon-reload
 systemctl enable brain-bot.service brain-brief.timer brain-watch.timer >/dev/null 2>&1 || bad "systemctl enable не прошёл"

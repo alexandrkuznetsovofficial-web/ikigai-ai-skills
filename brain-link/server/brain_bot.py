@@ -22,6 +22,9 @@ Python 3.9+ и только стандартная библиотека (urllib)
   VOICE=1               включить расшифровку голосовых (faster-whisper small, CPU, int8, ru)
   DIALOGUES=0           не вести журнал memory/dialogues/
   BRAIN_HOME            рабочая папка (по умолчанию /home/brain)
+  CLAUDE_BIN            claude бота (юнит: /usr/local/lib/brain-bot/claude/bin/claude — root-копия). При старте
+                        сверяется с /usr/local/lib/brain-bot/claude.sha256 (BRAIN_CLAUDE_SHA256), владелец файла
+                        и папок — root, без записи группе/всем; не так → безопасный режим claude-integrity
   BRAIN_STATE_DIR       состояние бота (юнит: /var/lib/brain-bot, StateDirectory, 0700 brainbot); без него —
                         $STATE_DIRECTORY, затем /var/lib/brain-bot, если есть, иначе ~/.local/state/brain-bot
                         (установки до kit 2.1-RT11, бот ещё под brain)
@@ -51,12 +54,14 @@ import base64
 import contextlib
 import datetime as dt
 import errno
+import hashlib
 import json
 import logging
 import os
 import posixpath
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -83,7 +88,15 @@ TG_CHUNK = 4096  # лимит Telegram — в UTF-16 единицах, не в �
 VOICE_MAX_SEC = 300
 VOICE_MAX_BYTES = 20 * 1024 * 1024
 WATCH_REPEAT_SEC = 24 * 3600
-CHILD_PATH = "{home}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# kit 2.1 (RT-11b): claude бота — root-копия (ставит `sudo brain-admin update-claude`), а НЕ ~/.local/bin/claude
+# владельца: тот принадлежит brain, и подменённая обёртка получила бы токен из окружения бота. В PATH дочернего
+# claude нет ни одной папки brain. sha256 копии — рядом (root); не совпало → безопасный режим claude-integrity,
+# модель не вызывается вовсе.
+BOT_CLAUDE_DIR = "/usr/local/lib/brain-bot/claude"
+BOT_CLAUDE_BIN = BOT_CLAUDE_DIR + "/bin/claude"
+BOT_CLAUDE_SHA256 = "/usr/local/lib/brain-bot/claude.sha256"
+CHILD_PATH = BOT_CLAUDE_DIR + "/bin:/usr/local/bin:/usr/bin:/bin"
+CLAUDE_INTEGRITY = "claude-integrity"
 
 KEY_FILES = ("CLAUDE.md", "memory/MEMORY.md", "memory/ACTIVE.md", "memory/user_profile.md")
 
@@ -214,6 +227,9 @@ MSG_SELFCHECK_PASS = "✅ Самопроверка безопасности пр
 CANARY_HIT = "canary-hit"
 CANARY_HIT_DETAIL = ("в живом ответе модели оказалась приманка (canary) — разбор с куратором, затем "
                      "sudo brain-admin clear-canary-hit")
+MSG_CLAUDE_INTEGRITY = ("🛡 claude на сервере не прошёл проверку целостности ({detail}). Модель не вызываю. "
+                        "Обнови: `sudo brain-admin update-claude`; повторится — напиши куратору и приложи "
+                        "`brain-link report`.")
 MSG_CLAUDE_OLD = ("🛡 Бот в безопасном режиме: установленный Claude Code не знает флаги {flags}, без них "
                   "изоляция не держится. Обнови Claude Code: sudo brain-admin update-claude")
 
@@ -249,8 +265,10 @@ class Config:
         self.settings = env.get("BRAIN_CLAUDE_SETTINGS") or "/etc/brain-bot/claude_settings.json"
         self.sync_dir = os.path.join(self.home, ".brain-sync")
         self.claude_config = env.get("BRAIN_CLAUDE_CONFIG") or os.path.join(self.state_dir, "claude-config")
-        self.child_path = CHILD_PATH.format(home=self.home)
-        self.claude_bin = env.get("CLAUDE_BIN") or shutil.which("claude", path=self.child_path) or "claude"
+        self.child_path = CHILD_PATH
+        # только явный путь: никакого поиска по PATH (там могла бы оказаться копия владельца из /home/brain)
+        self.claude_bin = env.get("CLAUDE_BIN") or BOT_CLAUDE_BIN
+        self.claude_sha_file = env.get("BRAIN_CLAUDE_SHA256") or BOT_CLAUDE_SHA256
         self.model_default = env.get("MODEL_DEFAULT") or "sonnet"
         self.model_deep = env.get("MODEL_DEEP") or "opus"
         self.voice = env.get("VOICE", "0") == "1"
@@ -871,6 +889,91 @@ def apply_capabilities(cfg, caps):
     return True
 
 
+# ---------------------------------------------------------------- целостность claude бота (RT-11b)
+# системные папки над /usr/local/lib/brain-bot не проверяем: на части образов /usr/local — root:staff 2775,
+# это не путь brain/brainbot, а ложная тревога навсегда заперла бы бота в безопасном режиме
+_SYSTEM_DIRS = ("/", "/usr", "/usr/local", "/usr/local/lib", "/usr/lib", "/opt")
+
+
+def _owned_chain(path, uid):
+    """Файл и его папки (до системных) принадлежат uid и не пишутся группой/всеми. -> None | текст проблемы."""
+    p = path
+    while True:
+        try:
+            st = os.lstat(p)
+        except OSError:
+            return "нет %s" % p
+        if st.st_uid != uid or st.st_mode & 0o022:
+            return "%s: владелец не root или запись группе/всем" % p
+        parent = os.path.dirname(p)
+        if parent == p or parent in _SYSTEM_DIRS:
+            return None
+        p = parent
+
+
+def file_sha256(path, cap=2 * 1024 ** 3):
+    h, n = hashlib.sha256(), 0
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            n += len(chunk)
+            if n > cap:
+                raise OSError("слишком большой файл")
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def claude_integrity(cfg, trusted_uid=0):
+    """claude бота — root-копия с известной sha256? -> (ok, detail). trusted_uid=None — без проверки владельца
+    (только тесты). Владелец brain (копия из ~/.local/bin, подмена) → отказ ещё до сверки sha."""
+    path, sha_file = cfg.claude_bin, cfg.claude_sha_file
+    if not os.path.isabs(path):
+        return False, "CLAUDE_BIN не абсолютный путь"
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False, "нет %s" % path
+    if not stat.S_ISREG(st.st_mode):
+        return False, "%s — не обычный файл (симлинк?)" % path
+    if trusted_uid is not None:
+        for p in (path, sha_file):
+            bad = _owned_chain(p, trusted_uid)
+            if bad:
+                return False, bad
+    try:
+        with open(sha_file, encoding="ascii") as f:
+            expected = (f.read(200).split() or [""])[0].lower()
+    except (OSError, ValueError):
+        return False, "нет контрольной суммы %s" % sha_file
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return False, "контрольная сумма %s битая" % sha_file
+    try:
+        actual = file_sha256(path)
+    except OSError as e:
+        return False, "не читается %s (%s)" % (path, type(e).__name__)
+    if actual != expected:
+        return False, "sha256 %s не совпадает с %s" % (path, sha_file)
+    return True, "sha256 совпадает"
+
+
+def apply_integrity(cfg, trusted_uid=0):
+    """Проверка при старте: не так → безопасный режим claude-integrity (модель не вызывается); так → снять."""
+    ok, detail = claude_integrity(cfg, trusted_uid)
+    if ok:
+        clear_safe_reason(cfg, CLAUDE_INTEGRITY)
+    else:
+        set_safe_reason(cfg, CLAUDE_INTEGRITY, "claude не прошёл проверку целостности: %s — sudo brain-admin "
+                                               "update-claude" % detail)
+    return ok, detail
+
+
+def integrity_block(cfg):
+    """Текст причины, если claude бота заблокирован проверкой целостности, иначе None."""
+    reason = read_safe_mode(cfg).get(CLAUDE_INTEGRITY)
+    if reason is None:
+        return None
+    return str((reason or {}).get("detail") if isinstance(reason, dict) else reason) or CLAUDE_INTEGRITY
+
+
 # ---------------------------------------------------------------- самопроверка безопасности
 def selfcheck_paths(cfg):
     return os.path.join(cfg.state_dir, "selfcheck.json"), os.path.join(cfg.state_dir, "selfcheck_runs.json")
@@ -1003,6 +1106,9 @@ def selfcheck(bot, now=None):
     Два параллельных запуска (brain-watch и brain-admin) разводит flock на selfcheck_runs.lock."""
     cfg = bot.cfg
     now = now or time.time()
+    blocked = integrity_block(cfg)
+    if blocked:   # подменённый claude не запускаем даже ради проверки
+        return {"status": "unverified", "reason": blocked, "items": {}, "sandbox": _sandbox_kind(), "calls": 0}
     result_path, runs_path = selfcheck_paths(cfg)
     if fcntl is not None:
         os.makedirs(cfg.state_dir, exist_ok=True)
@@ -1464,6 +1570,10 @@ class Bot:
         mode = mode or pick_mode(text)
         model = self.cfg.model_deep if deep else self.cfg.model_default
         meta = "%s, %s" % (mode, model)
+        blocked = integrity_block(self.cfg)
+        if blocked:
+            log.error("claude call refused: %s", CLAUDE_INTEGRITY)
+            return MSG_CLAUDE_INTEGRITY.format(detail=blocked), meta, False
         token = self.secrets("claude_token")
         if not token:
             return MSG_NO_TOKEN, meta, False
@@ -1643,6 +1753,8 @@ def ntp_synced():
 
 
 def claude_version(cfg):
+    if integrity_block(cfg):   # подменённый claude не запускаем даже ради --version
+        return "заблокирован проверкой целостности"
     env = {"HOME": cfg.home, "PATH": cfg.child_path, "LANG": cfg.lang, "DISABLE_AUTOUPDATER": "1",
            "CLAUDE_CONFIG_DIR": cfg.claude_config}
     return _cmd([cfg.claude_bin, "--version"], timeout=20, env=env) or "не отвечает"
@@ -1710,6 +1822,9 @@ def watch(bot, state_path=None):
         problems.append(("sync", "🔄 Синк не приходил больше суток. Проверь компьютер: `brain-sync status`."))
     if bot_active() != "active":
         problems.append(("bot", "🤖 brain-bot не работает. `sudo brain-admin restart-bot`."))
+    blocked = integrity_block(cfg)
+    if blocked:
+        problems.append((CLAUDE_INTEGRITY, MSG_CLAUDE_INTEGRITY.format(detail=blocked)))
     # самопроверка безопасности — раз в неделю (не чаще раза в сутки), только если приманки установлены
     # (LoadCredential=canary_list в юните brain-watch, свойства песочницы — как у brain-bot)
     if bot.secrets("canary_list"):
@@ -1779,8 +1894,13 @@ def selftest(cfg):
         row(sj.get("disableAllHooks") is True, "claude_settings.json: disableAllHooks=true")
     except (OSError, ValueError):
         row(False, "claude_settings.json не найден или битый: %s" % cfg.settings)
-    found = shutil.which(cfg.claude_bin, path=cfg.child_path) or (os.access(cfg.claude_bin, os.X_OK) and cfg.claude_bin)
-    row(bool(found), "claude установлен (%s)" % (found or "нет в PATH бота"))
+    found = os.path.isabs(cfg.claude_bin) and os.access(cfg.claude_bin, os.X_OK)
+    row(bool(found), "claude бота установлен (%s)" % (cfg.claude_bin if found else "нет %s — sudo brain-admin "
+                                                      "update-claude" % cfg.claude_bin))
+    row(not cfg.claude_bin.startswith(cfg.home.rstrip("/") + "/"),
+        "claude бота — не из папки brain (%s)" % cfg.claude_bin)
+    iok, idetail = claude_integrity(cfg)
+    row(iok, "claude бота: root-копия, %s" % idetail)
     cc = cfg.claude_config
     row(os.path.isdir(cc) and not os.path.islink(cc) and os.access(cc, os.W_OK),
         "конфиг claude бота (CLAUDE_CONFIG_DIR) %s" % cc)
@@ -1867,6 +1987,7 @@ def main(argv=None, api_factory=Telegram):
     if cmd == "selftest":
         return selftest(cfg)
     if cmd == "selfcheck":
+        apply_integrity(cfg)   # подменённый claude самопроверка не запускает (selfcheck → «не проверено»)
         return selfcheck_cli(cfg, api_factory)
     if cmd == "clear-canary-hit":
         # только через sudo brain-admin clear-canary-hit, после разбора с куратором
@@ -1880,11 +2001,20 @@ def main(argv=None, api_factory=Telegram):
         log.error("нет секрета bot_token (LoadCredential) — выход")
         raise SystemExit(2)
     bot = Bot(cfg, api_factory(token) if api_factory is not Telegram else Telegram(token, base=cfg.tg_base))
+    # RT-11b: до ЛЮБОГО запуска claude — сверка root-копии с sha256; не так → claude не запускается вовсе
+    iok, idetail = apply_integrity(cfg)
+    if not iok:
+        log.error("claude integrity: %s — безопасный режим %s", idetail, CLAUDE_INTEGRITY)
     if cmd == "brief":
-        bot.caps = claude_capabilities(cfg)   # не передавать флаги, которых нет у установленного claude
+        if iok:
+            bot.caps = claude_capabilities(cfg)   # не передавать флаги, которых нет у установленного claude
         return brief(bot)
     if cmd == "watch":
         return watch(bot)
+    if not iok:
+        bot.send(MSG_CLAUDE_INTEGRITY.format(detail=idetail))
+        bot.run()
+        return 0
     # адаптация к установленному claude: нет флагов изоляции → безопасный режим с понятным сообщением
     bot.caps = claude_capabilities(cfg)
     if apply_capabilities(cfg, bot.caps) is False:

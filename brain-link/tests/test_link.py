@@ -904,7 +904,8 @@ class TestCapabilitiesFlagsByExec(Base):
             "*) echo '9.9.9 (Claude Code)';; esac\n", encoding="utf-8")
         fake.chmod(0o755)
         sh = bk.CAPS_SH[bk.CAPS_SH.index("# >>> claude-flags"):bk.CAPS_SH.index("# <<< claude-flags")]
-        sh = sh.replace("/home/brain/.local/bin/claude", str(fake)) + "\ncl_caps\n"
+        self.assertNotIn("/home/brain/.local/bin/claude", sh)   # RT-11b: только root-копия бота
+        sh = sh.replace("/usr/local/lib/brain-bot/claude/bin/claude", str(fake)) + "\ncl_caps\n"
         sh = sh.replace('[ "$(id -u)" = 0 ]', "false")
         out = subprocess.run(["bash", "-c", sh], capture_output=True, text=True, timeout=60).stdout
         self.assertIn("CAP_METHOD=exec", out)

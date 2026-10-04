@@ -19,7 +19,8 @@ Group=brain
 StateDirectory=brain-bot
 StateDirectoryMode=0700
 WorkingDirectory=/home/brain
-# VOICE=1: ExecStart меняется на /home/brain/.venv-voice/bin/python3 и MemoryMax=2500M (делает brain-link bot --voice)
+# VOICE=1: ExecStart меняется на /usr/local/lib/brain-bot/voice-venv/bin/python3 (venv root-владения, не в /home/brain)
+# и MemoryMax=2500M (делает brain-link bot --voice)
 ExecStart=/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py run
 Environment=OWNER_ID=__OWNER_ID__
 Environment=VOICE=0
@@ -29,7 +30,10 @@ Environment=LANG=C.UTF-8
 Environment=BRAIN_STATE_DIR=/var/lib/brain-bot
 Environment=XDG_CACHE_HOME=/var/lib/brain-bot/cache
 Environment=PYTHONUNBUFFERED=1
-Environment=PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin
+# RT-11b: claude бота — root-копия (sudo brain-admin update-claude), sha256 сверяется при старте; в PATH нет
+# ни одной папки brain (~/.local/bin владельца бот не использует)
+Environment=PATH=/usr/local/lib/brain-bot/claude/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CLAUDE_BIN=/usr/local/lib/brain-bot/claude/bin/claude
 LoadCredential=bot_token:/etc/brain-bot/credentials/bot_token
 LoadCredential=claude_token:/etc/brain-bot/credentials/claude_token
 # приманки самопроверки (фальшивые CANARY-значения, кладёт harden / brain-admin canary-init): бот прячет

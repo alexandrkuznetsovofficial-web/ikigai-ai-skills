@@ -196,6 +196,17 @@
 `/run/credentials/brain-bot.service/` пользователю юнита, поэтому юнит под brain = токены у любого процесса brain
 (RT-11). brainbot читает память, пишет только inbox/dialogues; его состояние и конфиг claude — `/var/lib/brain-bot`
 (0700 brainbot). verify (ж) и audit блок 8 проверяют, что brain не читает ни `/etc/…/credentials`, ни `/run/credentials`.
+**Бот не исполняет ничего, чем владеет brain (RT-11b).** claude бота — root-копия `/usr/local/lib/brain-bot/claude/bin/claude`
+(root:root 0755). Ставит её только `sudo brain-admin update-claude`: официальный установщик во временной папке root-владения
+от brainbot, root забирает итоговый бинарник (только ELF из `versions/`), проверяет `--version` от brainbot с `env -i`
+и пишет sha256 в `/usr/local/lib/brain-bot/claude.sha256`. Бот (`CLAUDE_BIN` из юнита) сверяет sha256 и владельца при старте:
+не совпало → безопасный режим `claude-integrity`, модель не вызывается вовсе. В `PATH` юнитов нет папок brain; голос —
+`/usr/local/lib/brain-bot/voice-venv` (root, pip только готовыми колёсами по `requirements-voice.txt` вида `пакет==версия`).
+`~/.local/bin/claude` владельца остаётся для его ручной работы; шаг `claude` ставит обе копии. brain и brainbot
+не пишут в `/usr/local/lib/brain-bot` (selftest). audit отдаёт настоящий токен только root-копии со сходящейся sha256.
+**Перенос состояния ранней установки** (`~/.local/state/brain-bot` → `/var/lib/brain-bot`) — только пока юнит под `User=brain`,
+один раз (метка `.migrated-from-brain` пишется всегда, и на свежей установке), существующие файлы бота не перезаписываются,
+включённый безопасный режим не снимается (RT-11c).
 Транспорт к модели — только `claude -p`; `ANTHROPIC_API_KEY` не ставится нигде. Вход: только ключи (`lockdown`),
 **без белого списка IP** (участники на VPN). Аварийный вход — VNC-консоль провайдера.
 

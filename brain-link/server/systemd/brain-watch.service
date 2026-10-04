@@ -25,7 +25,10 @@ Environment=DIALOGUES=0
 Environment=LANG=C.UTF-8
 Environment=BRAIN_STATE_DIR=/var/lib/brain-bot
 Environment=XDG_CACHE_HOME=/var/lib/brain-bot/cache
-Environment=PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin
+# RT-11b: claude бота — root-копия (sudo brain-admin update-claude), sha256 сверяется при старте; в PATH нет
+# ни одной папки brain (~/.local/bin владельца бот не использует)
+Environment=PATH=/usr/local/lib/brain-bot/claude/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CLAUDE_BIN=/usr/local/lib/brain-bot/claude/bin/claude
 LoadCredential=bot_token:/etc/brain-bot/credentials/bot_token
 LoadCredential=claude_token:/etc/brain-bot/credentials/claude_token
 LoadCredential=canary_list:/etc/brain-bot/canary.list

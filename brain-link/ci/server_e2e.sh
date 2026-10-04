@@ -169,11 +169,26 @@ sync_id="$(ssh -i "$HOME/.ssh/brain_sync_ed25519" -o BatchMode=yes -o StrictHost
            -p "$PORT" brain@127.0.0.1 id 2>/dev/null)"
 [ -z "$sync_id" ] && ok "ключ синка не даёт shell (id пуст)" || bad "ключ синка дал shell: $sync_id"
 
-# ---------------------------------------------------------------- 5. claude (заглушка в PATH brain)
+# ---------------------------------------------------------------- 5. claude: владельца (заглушка) + root-копия бота
+# claude владельца — заглушка в ~/.local/bin brain (для его ручной работы; бот её НЕ использует, RT-11b).
 RSSH root "install -d -m0750 -o brain -g brain /home/brain/.local/bin"
 cat "$HERE/fake_claude.py" | RSSH root "cat > /home/brain/.local/bin/claude && chmod 755 /home/brain/.local/bin/claude && chown brain:brain /home/brain/.local/bin/claude"
+# claude бота ставит шаг claude → brain-admin update-claude ТЕМ ЖЕ путём, что у участника (временная папка,
+# установщик от brainbot, проверка ELF и --version, root-копия, sha256). Вместо скачивания claude.ai/install.sh —
+# root-файл /etc/brain-bot/lab-claude-installer.sh: та же раскладка versions/<версия>, внутри ELF-обёртка заглушки.
+LAB_SHA="$("$PY" "$HERE/make_lab_claude_installer.py" "$WORK/lab-claude-installer.sh" 2>>"$LOG")"
+[ -n "$LAB_SHA" ] && ok "лабораторный установщик claude собран (ELF ${LAB_SHA:0:12}…)" || bad "лабораторный установщик claude не собрался (нет cc?)"
+cat "$WORK/lab-claude-installer.sh" | RSSH root "install -d -m0755 -o root -g root /etc/brain-bot && cat > /etc/brain-bot/lab-claude-installer.sh && chown root:root /etc/brain-bot/lab-claude-installer.sh && chmod 0644 /etc/brain-bot/lab-claude-installer.sh"
 # журнал fake_claude по умолчанию — рядом с CLAUDE_CONFIG_DIR бота, т.е. в /var/lib/brain-bot (0700 brainbot)
-LINK -- claude; assert_rc 0 $? "claude (заглушка) принят"
+LINK -- claude; assert_rc 0 $? "claude: заглушка владельца + root-копия бота (brain-admin update-claude)"
+bc="$(RSSH root 'stat -c "%U:%G %a" /usr/local/lib/brain-bot /usr/local/lib/brain-bot/claude /usr/local/lib/brain-bot/claude/bin /usr/local/lib/brain-bot/claude/bin/claude /usr/local/lib/brain-bot/claude.sha256; head -c 4 /usr/local/lib/brain-bot/claude/bin/claude | od -An -tx1 | tr -d " \n"; echo; sha256sum /usr/local/lib/brain-bot/claude/bin/claude | cut -d" " -f1; cut -d" " -f1 /usr/local/lib/brain-bot/claude.sha256; ls -d /var/cache/brain-claude-install.* 2>/dev/null | wc -l' | tr '\n' '|')"
+say "root-копия claude: $bc"
+case "$bc" in
+  "root:root 755|root:root 755|root:root 755|root:root 755|root:root 644|7f454c46|$LAB_SHA|$LAB_SHA|0|") ok "claude бота: root:root 0755 ELF, sha256 записан и совпадает, временная папка убрана" ;;
+  *) bad "root-копия claude не та: $bc" ;;
+esac
+bw="$(RSSH root 'for u in brain brainbot; do for f in /usr/local/lib/brain-bot /usr/local/lib/brain-bot/claude/bin /usr/local/lib/brain-bot/claude/bin/claude /usr/local/lib/brain-bot/claude.sha256; do runuser -u $u -- test -w $f && echo "$u:$f"; done; done; true')"
+[ -z "$bw" ] && ok "brain и brainbot не могут писать в /usr/local/lib/brain-bot (код и claude бота)" || bad "запись в /usr/local/lib/brain-bot: $bw"
 
 # ---------------------------------------------------------------- 6. put-token claude|bot (через GETPASS-инъекцию)
 "$PY" - <<PYGEN
@@ -204,6 +219,9 @@ printf '%s\n' \
 RSSH root "systemctl daemon-reload 2>/dev/null || true"
 # миграция ранней установки (бот был под brain, состояние в ~/.local/state/brain-bot): шаг bot переносит
 # состояние в /var/lib/brain-bot и убирает старую папку. Безвредный файл — watch_state.json.
+# Эмуляция ранней установки: юнит brain-bot ещё под User=brain и метки переноса нет (harden свежей версии
+# уже поставил юнит под brainbot и метку — на свежей установке перенос запрещён, это проверяет RT-11c).
+RSSH root "sed -i 's/^User=brainbot\$/User=brain/' /etc/systemd/system/brain-bot.service && rm -f /var/lib/brain-bot/.migrated-from-brain && systemctl daemon-reload"
 printf '{"lab": 1}\n' | RSSH root "runuser -u brain -- sh -c 'mkdir -p /home/brain/.local/state/brain-bot/claude-config && cat > /home/brain/.local/state/brain-bot/watch_state.json'"
 LINK -- bot --yes; rc=$?
 say "bot rc=$rc"

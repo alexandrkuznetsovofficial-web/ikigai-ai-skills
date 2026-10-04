@@ -471,17 +471,21 @@ ENGINE_OK=0; BRIDGE_OK=0
 if [ "$SRV_OK" = "1" ] && [ "$(printf '%s' "$SRV_INFO" | grep -c '^CLAUDE=yes')" = "1" ]; then
   printf '  %s·%s спрашиваю мозг на сервере (до 90 сек)…\n' "$DIM" "$D"
   ANSWER="$(ssh_srv "${SERVER_USER}@${SERVER_IP}" 'bash -s' <<'REMOTE'
-CL=/home/brain/.local/bin/claude; [ -x "$CL" ] || CL=claude
+CL=/usr/local/lib/brain-bot/claude/bin/claude
 if [ "$(id -u)" != 0 ]; then echo "NOT_ROOT"; exit 0; fi
 if [ -s /etc/brain-bot/credentials/claude_token ]; then
   # kit 2.1: токен только у root. В argv его нет: файл открывает root как stdin, внутри sh -c токен читается
   # в переменную и уходит claude только окружением. Настройки и конфиг-папка — те же, что у бота.
-  # kit 2.1 (RT-11): бот — brainbot, конфиг claude в /var/lib/brain-bot; ранние установки — brain и ~/.local/state
-  RU=brain; CCD=/home/brain/.local/state/brain-bot/claude-config
-  if id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot/claude-config ]; then RU=brainbot; CCD=/var/lib/brain-bot/claude-config; fi
-  [ -d "$CCD" ] || CCD=/home/brain/.claude
+  # kit 2.1 (RT-11b): настоящий токен получает ТОЛЬКО root-копия claude бота (root, sha256 из claude.sha256
+  # сходится) и только от brainbot. claude владельца в /home/brain/.local/bin принадлежит brain: подменённая
+  # обёртка забрала бы токен — ему токен не отдаём никогда.
+  SUM=$(awk '{print $1; exit}' /usr/local/lib/brain-bot/claude.sha256 2>/dev/null)
+  if [ ! -f "$CL" ] || [ -L "$CL" ] || [ "$(stat -c '%U' "$CL" 2>/dev/null)" != root ] || [ -z "$SUM" ] \
+     || [ "$(sha256sum "$CL" 2>/dev/null | awk '{print $1}')" != "$SUM" ]; then echo "NO_BOT_CLAUDE"; exit 0; fi
+  RU=brainbot; CCD=/var/lib/brain-bot/claude-config
+  if ! id brainbot >/dev/null 2>&1 || [ ! -d "$CCD" ]; then echo "NO_BOT_CLAUDE"; exit 0; fi
   ST=/etc/brain-bot/claude_settings.json; [ -f "$ST" ] || ST=
-  cd /tmp && runuser -u "$RU" -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin \
+  cd /tmp && runuser -u "$RU" -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/usr/local/lib/brain-bot/claude/bin:/usr/local/bin:/usr/bin:/bin \
     CLAUDE_CONFIG_DIR="$CCD" sh -c 'IFS= read -r CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CODE_OAUTH_TOKEN
       if [ -n "$2" ]; then exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" --settings "$2" </dev/null
       else exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" </dev/null; fi' sh "$CL" "$ST" \
@@ -495,6 +499,9 @@ REMOTE
 )"
   if printf '%s' "$ANSWER" | grep -q 'NOT_ROOT'; then
     info "После lockdown вход root закрыт — мозг проверь из Telegram: напиши боту /status и любой вопрос"
+  elif printf '%s' "$ANSWER" | grep -q 'NO_BOT_CLAUDE'; then
+    warn "У бота нет своей root-копии Claude Code (или контрольная сумма не сходится) — токен ей не отдаю"
+    manual "Поставь копию для бота: brain_link.py claude (или на сервере: sudo brain-admin update-claude)"
   elif printf '%s' "$ANSWER" | grep -qi 'жив'; then
     ok "МОЗГ НА СЕРВЕРЕ ДУМАЕТ и отвечает из твоей подписки"
     ENGINE_OK=1

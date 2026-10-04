@@ -615,6 +615,10 @@ class TestServerScripts(unittest.TestCase):
             code = line.split("#", 1)[0]
             if "python3" in code:
                 self.assertIn("python3 -I", code, "строка %d: python3 без -I" % n)
+                if "$VOICE_VENV.new" in code and "env -i PATH=/usr/bin:/bin HOME=/root" in code:
+                    # venv голоса (RT-11b): root-интерпретатор, но без файлов brain: env -i, cwd /, root-копия списка
+                    self.assertNotRegex(code, r"/home/brain|\$BRAIN_HOME|\$SRC_DIR")
+                    continue
                 # под brain: runuser, либо systemd-run с User=brain (песочница юнита бота)
                 self.assertTrue("runuser -u brain" in code or ("systemd-run" in code and "User=brain" in code),
                                 "строка %d: интерпретатор не под brain" % n)
@@ -1252,6 +1256,7 @@ class TestBotUserRT11(unittest.TestCase):
     def test_brain_admin_bot_user(self):
         src = self._src("brain-admin")
         block = src[src.index("  bot-user)"):src.index("  status)")]
+        block += src[src.index("# >>> migrate-state"):src.index("# <<< migrate-state")]
         self.assertIn("useradd --system --user-group --no-create-home", block)
         self.assertIn("--shell /usr/sbin/nologin", block)
         self.assertIn('usermod -aG brain "$BOT_USER"', block)
@@ -1353,7 +1358,19 @@ class TestSelfcheckServerScripts(unittest.TestCase):
         self.assertIn("canary.list", block)
         self.assertNotIn("credentials/bot_token", block)        # настоящие токены не трогаем
         upd_block = src[src.index("  update-claude)"):]
-        self.assertIn("runuser -l brain -c 'curl -fsSL https://claude.ai/install.sh | bash'", upd_block)
+        upd_block = upd_block[:upd_block.index("  voice-venv)")]
+        # RT-11b: установщик — от brainbot во временной папке root-владения, не под brain и не от root
+        self.assertIn("curl -fsSL https://claude.ai/install.sh | bash", upd_block)
+        self.assertNotIn("runuser -l brain", upd_block)
+        self.assertIn('runuser -u "$BOT_USER" -- "${BENV[@]}" bash -c', upd_block)
+        self.assertIn("mktemp -d /var/cache/brain-claude-install.", upd_block)
+        self.assertIn('runuser -u "$BOT_USER" -- head -c', upd_block)      # бинарник root читает правами brainbot
+        self.assertIn("7f454c46", upd_block)                                # только ELF
+        self.assertIn('"$NEW" --version', upd_block)
+        self.assertIn("sha256sum", upd_block)
+        self.assertIn('mv -f "$ts" "$BOT_CLAUDE_SHA"', upd_block)
+        self.assertIn("BOT_CLAUDE=$BOT_CLAUDE_DIR/bin/claude", src)
+        self.assertIn("BOT_CLAUDE_DIR=$LIB_DIR/claude", src)
         for f in bb.REQUIRED_FLAGS:
             self.assertIn(f, upd_block)
 
@@ -1373,6 +1390,248 @@ class TestSelfcheckServerScripts(unittest.TestCase):
         for line in ("LoadCredential=claude_token:", "LoadCredential=canary_list:", "MemoryMax=1500M",
                      "ProtectHome=read-only", "IPAddressDeny=link-local localhost multicast"):
             self.assertIn(line, watch)
+
+
+# ---------------------------------------------------------------- RT-11b: claude бота — root-копия с sha256
+class TestClaudeBinChoice(unittest.TestCase):
+    def test_default_is_root_copy_never_home(self):
+        cfg = bb.Config({"OWNER_ID": "1", "BRAIN_HOME": "/home/brain"})
+        self.assertEqual(cfg.claude_bin, "/usr/local/lib/brain-bot/claude/bin/claude")
+        self.assertEqual(cfg.claude_bin, bb.BOT_CLAUDE_BIN)
+        self.assertEqual(cfg.claude_sha_file, "/usr/local/lib/brain-bot/claude.sha256")
+        self.assertNotIn("/home", cfg.child_path)
+        self.assertTrue(cfg.child_path.startswith("/usr/local/lib/brain-bot/claude/bin:"))
+
+    def test_owner_copy_in_home_is_not_picked_up(self):
+        tmp = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(tmp, ".local", "bin"))
+            fake = os.path.join(tmp, ".local", "bin", "claude")
+            with open(fake, "w") as f:
+                f.write("#!/bin/sh\n")
+            os.chmod(fake, 0o755)
+            cfg = bb.Config({"OWNER_ID": "1", "BRAIN_HOME": tmp, "PATH": os.path.join(tmp, ".local", "bin")})
+            self.assertEqual(cfg.claude_bin, bb.BOT_CLAUDE_BIN)    # PATH окружения не используется
+            self.assertNotIn(tmp, cfg.child_path)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_env_claude_bin_wins(self):
+        cfg = bb.Config({"OWNER_ID": "1", "CLAUDE_BIN": "/opt/x/claude", "BRAIN_CLAUDE_SHA256": "/opt/x/sum"})
+        self.assertEqual((cfg.claude_bin, cfg.claude_sha_file), ("/opt/x/claude", "/opt/x/sum"))
+
+
+class TestClaudeIntegrity(Base):
+    def setUp(self):
+        super().setUp()
+        self.bin = os.path.join(self.tmp, "claude-bin")
+        with open(self.bin, "wb") as f:
+            f.write(b"\x7fELF fake claude for tests")
+        self.sumf = os.path.join(self.tmp, "claude.sha256")
+        self._write_sum(bb.file_sha256(self.bin))
+        self.cfg.claude_bin, self.cfg.claude_sha_file = self.bin, self.sumf
+
+    def _write_sum(self, value):
+        with open(self.sumf, "w") as f:
+            f.write("%s  /usr/local/lib/brain-bot/claude/bin/claude\n" % value)
+
+    def test_match_ok_and_clears_reason(self):
+        bb.set_safe_reason(self.cfg, bb.CLAUDE_INTEGRITY, "было")
+        ok, detail = bb.apply_integrity(self.cfg, trusted_uid=None)
+        self.assertTrue(ok, detail)
+        self.assertNotIn(bb.CLAUDE_INTEGRITY, bb.read_safe_mode(self.cfg))
+        self.assertIsNone(bb.integrity_block(self.cfg))
+
+    def test_mismatch_sets_safe_mode_and_claude_never_runs(self):
+        with open(self.bin, "ab") as f:
+            f.write(b"\n# wrapper: cat /run/credentials/* > inbox")
+        ok, detail = bb.apply_integrity(self.cfg, trusted_uid=None)
+        self.assertFalse(ok)
+        self.assertIn("не совпадает", detail)
+        self.assertIn(bb.CLAUDE_INTEGRITY, bb.read_safe_mode(self.cfg))
+        answer, _, good = self.bot.ask_claude("что в памяти?", deep=False)
+        self.assertFalse(good)
+        self.assertIn("целостности", answer)
+        self.assertEqual(self.claude.calls, [])          # подменённый бинарник не запускался вовсе
+        self.assertIn("заблокирован", bb.claude_version(self.cfg))
+
+    def test_missing_or_broken_sum(self):
+        os.unlink(self.sumf)
+        self.assertFalse(bb.claude_integrity(self.cfg, trusted_uid=None)[0])
+        self._write_sum("zz")
+        ok, detail = bb.claude_integrity(self.cfg, trusted_uid=None)
+        self.assertFalse(ok)
+        self.assertIn("битая", detail)
+
+    def test_symlink_and_relative_rejected(self):
+        link = os.path.join(self.tmp, "claude-link")
+        os.symlink(self.bin, link)
+        self.cfg.claude_bin = link
+        self.assertFalse(bb.claude_integrity(self.cfg, trusted_uid=None)[0])
+        self.cfg.claude_bin = "claude"
+        self.assertFalse(bb.claude_integrity(self.cfg, trusted_uid=None)[0])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "под root файл и так root")
+    def test_not_root_owned_rejected_even_if_sum_matches(self):
+        # копия «как у brain» (владелец не root): отказ ещё до сверки суммы
+        ok, detail = bb.claude_integrity(self.cfg)            # trusted_uid=0 по умолчанию
+        self.assertFalse(ok)
+        self.assertIn("владелец не root", detail)
+
+    def test_selfcheck_does_not_run_blocked_claude(self):
+        bb.set_safe_reason(self.cfg, bb.CLAUDE_INTEGRITY, "sha256 не совпадает")
+        self.bot.caps_probe = lambda: self.fail("claude не должен запускаться даже для проверки флагов")
+        res = bb.selfcheck(self.bot)
+        self.assertEqual((res["status"], res["calls"]), ("unverified", 0))
+        self.assertEqual(self.claude.calls, [])
+
+    def test_watch_reports_integrity(self):
+        bb.set_safe_reason(self.cfg, bb.CLAUDE_INTEGRITY, "sha256 не совпадает")
+        with mock.patch.object(bb, "bot_active", return_value="active"), \
+                mock.patch.object(bb, "ntp_synced", return_value="yes"):
+            bb.watch(self.bot)
+        sent = " ".join(str(p.get("text")) for m, p in self.api.calls if m == "sendMessage")
+        self.assertIn("целостности", sent)
+
+
+class TestClaudeRootCopyScripts(unittest.TestCase):
+    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
+
+    def _src(self, *parts):
+        return _read(os.path.join(self.ROOT, *parts))
+
+    def test_units_have_no_brain_paths(self):
+        for u in ("brain-bot.service", "brain-brief.service", "brain-watch.service"):
+            src = self._src("brain-link", "server", "systemd", u)
+            code = "\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+            self.assertIn("Environment=CLAUDE_BIN=/usr/local/lib/brain-bot/claude/bin/claude", code, u)
+            self.assertIn("Environment=PATH=/usr/local/lib/brain-bot/claude/bin:/usr/local/bin:/usr/bin:/bin", code, u)
+            self.assertNotIn("/home/brain/.local/bin", code, u)
+            self.assertNotIn(".venv-voice", code, u)
+
+    def test_installer_voice_is_root_venv(self):
+        sys.path.insert(0, os.path.join(self.ROOT, "brain-link", "scripts"))
+        import brain_link as bk
+        sh = "\n".join(l for l in bk.BOT_ROOT_SH.splitlines() if not l.lstrip().startswith("#"))
+        self.assertNotIn("~/.venv-voice", sh)
+        self.assertNotIn("runuser -l brain -c 'python3 -m venv", sh)
+        self.assertIn("ExecStart=/usr/local/lib/brain-bot/voice-venv/bin/python3 -I", sh)
+        self.assertIn("brain-admin voice-venv", sh)
+        self.assertIn("brain-admin update-claude", sh)
+        self.assertIn("brain-admin update-claude", bk.CLAUDE_SH)
+        admin = self._src("brain-link", "server", "brain-admin")
+        vv = admin[admin.index("  voice-venv)"):admin.index("  remove-private)")]
+        self.assertIn("--only-binary=:all:", vv)
+        self.assertIn('"$VOICE_REQ"', vv)
+        self.assertNotIn("$SRC_DIR", vv)                     # список пакетов — только root-копия
+        for line in self._src("brain-link", "server", "requirements-voice.txt").splitlines():
+            if line.strip() and not line.startswith("#"):
+                self.assertRegex(line, r"^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][0-9A-Za-z.]*$")
+
+    def test_brain_admin_never_runs_owner_claude(self):
+        admin = self._src("brain-link", "server", "brain-admin")
+        code = "\n".join(l for l in admin.splitlines() if not l.lstrip().startswith("#"))
+        self.assertNotIn("/home/brain/.local/bin/claude", code)
+        self.assertNotIn('"$BRAIN_HOME/.local/bin', code)
+
+    def test_audit_hands_token_only_to_root_copy(self):
+        for name in ("audit.sh", "audit.ps1"):
+            src = self._src("novoselie-server-kit", "audit", name)
+            self.assertNotIn("CL=/home/brain/.local/bin/claude", src, name)
+            block = src[src.index("CL=/usr/local/lib/brain-bot/claude/bin/claude"):]
+            block = block[:block.index("ENVF=")]
+            block = "\n".join(l for l in block.splitlines() if not l.lstrip().startswith("#"))
+            self.assertIn("NO_BOT_CLAUDE", block, name)
+            self.assertIn("RU=brainbot", block, name)
+            self.assertNotIn("RU=brain;", block, name)
+            self.assertNotIn("/home/brain/.local/bin", block, name)
+            self.assertIn("/usr/local/lib/brain-bot/claude/bin/claude", block, name)
+            self.assertIn("claude.sha256", block, name)
+
+
+@unittest.skipUnless(os.name != "nt" and shutil.which("bash"), "shell-блок brain-admin (bash)")
+class TestMigrateLegacyState(unittest.TestCase):
+    """🟡-2: перенос ~/.local/state/brain-bot → /var/lib/brain-bot только при настоящей миграции, один раз,
+    без перезаписи. runuser подменён (пользователи — текущий), остальное — настоящий код brain-admin."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="migrate_")
+        self.state = os.path.join(self.tmp, "var-lib-brain-bot")
+        self.legacy = os.path.join(self.tmp, "home", ".local", "state", "brain-bot")
+        self.unit = os.path.join(self.tmp, "brain-bot.service")
+        os.makedirs(self.state)
+        os.makedirs(self.legacy)
+        admin = _read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "server", "brain-admin"))
+        self.block = admin[admin.index("# >>> migrate-state"):admin.index("# <<< migrate-state")]
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _put(self, folder, name, text):
+        with open(os.path.join(folder, name), "w") as f:
+            f.write(text)
+
+    def _unit(self, user):
+        self._put(self.tmp, "brain-bot.service", "[Service]\nUser=%s\nGroup=brain\n" % user)
+
+    def run_migrate(self):
+        import subprocess
+        sh = r"""
+set -uo pipefail
+ok(){ echo "OK $*"; }; warn(){ echo "WARN $*"; }
+runuser(){ while [ "$1" != "--" ]; do shift; done; shift
+  local a=(); for x in "$@"; do [ "$x" = "--one-file-system" ] || a+=("$x"); done; "${a[@]}"; }
+BOT_USER=brainbot BOT_STATE="$1" LEGACY_STATE="$2" BOT_UNIT="$3"
+LEGACY_FILES="safe_mode selfcheck.json selfcheck_runs.json watch_state.json calls.json"
+""" + self.block + "\nmigrate_legacy_state\n"
+        r = subprocess.run(["bash", "-c", sh, "sh", self.state, self.legacy, self.unit],
+                           capture_output=True, text=True, timeout=60)
+        return r.stdout + r.stderr
+
+    def _state(self, name):
+        p = os.path.join(self.state, name)
+        return _read(p) if os.path.exists(p) else None
+
+    def test_fresh_install_never_migrates_and_marks(self):
+        self._put(self.legacy, "selfcheck.json", '{"status": "pass", "planted": 1}')   # подложил brain
+        out = self.run_migrate()                                                        # юнита ещё нет
+        self.assertIn("MIGRATE=skip", out)
+        self.assertIsNone(self._state("selfcheck.json"))
+        self.assertTrue(os.path.exists(os.path.join(self.state, ".migrated-from-brain")))
+        self.assertTrue(os.path.exists(os.path.join(self.legacy, "selfcheck.json")))   # папку brain не трогаем
+        self._unit("brain")                                                             # и позже — уже нет
+        self.assertIn("MIGRATE=already", self.run_migrate())
+        self.assertIsNone(self._state("selfcheck.json"))
+
+    def test_unit_already_brainbot_no_migration(self):
+        self._unit("brainbot")
+        self._put(self.legacy, "calls.json", "[]")
+        self._put(self.state, "calls.json", "[1, 2, 3]")
+        self.assertIn("MIGRATE=skip", self.run_migrate())
+        self.assertEqual(self._state("calls.json"), "[1, 2, 3]")
+
+    def test_real_migration_once_without_overwrite_and_keeps_safe_mode(self):
+        self._unit("brain")
+        self._put(self.legacy, "watch_state.json", '{"lab": 1}')
+        self._put(self.legacy, "selfcheck.json", '{"status": "pass"}')
+        self._put(self.state, "selfcheck.json", '{"status": "fail"}')        # уже есть — не перезаписываем
+        self._put(self.state, "safe_mode", '{"reasons": {"selfcheck": {}}}')  # включён — остаётся включённым
+        out = self.run_migrate()
+        self.assertIn("MIGRATE=done 1", out)
+        self.assertEqual(self._state("watch_state.json"), '{"lab": 1}')
+        self.assertEqual(self._state("selfcheck.json"), '{"status": "fail"}')
+        self.assertIn("selfcheck", self._state("safe_mode"))
+        self.assertFalse(os.path.exists(self.legacy))                          # старое состояние убрано
+        os.makedirs(self.legacy)
+        self._put(self.legacy, "safe_mode", "")                               # второй раз — ничего
+        self.assertIn("MIGRATE=already", self.run_migrate())
+        self.assertIn("selfcheck", self._state("safe_mode"))
+
+    def test_real_migration_turns_safe_mode_on_not_off(self):
+        self._unit("brain")
+        self._put(self.legacy, "safe_mode", '{"reasons": {"canary-hit": {}}}')
+        self.assertIn("MIGRATE=done 1", self.run_migrate())
+        self.assertIn("canary-hit", self._state("safe_mode"))
 
 
 if __name__ == "__main__":

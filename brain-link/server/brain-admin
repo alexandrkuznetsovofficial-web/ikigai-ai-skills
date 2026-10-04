@@ -24,6 +24,19 @@ BOT_STATE=/var/lib/brain-bot
 LEGACY_STATE=$BRAIN_HOME/.local/state/brain-bot
 # что переносим из состояния ранних установок (бот под brain): только эти обычные файлы
 LEGACY_FILES="safe_mode selfcheck.json selfcheck_runs.json watch_state.json calls.json"
+BOT_UNIT=/etc/systemd/system/brain-bot.service
+# kit 2.1 (RT-11b): claude бота — root-копия, а не ~/.local/bin/claude владельца (тот принадлежит brain:
+# подменённая обёртка получила бы токен бота). Ставит только update-claude; sha256 сверяет бот при старте.
+BOT_CLAUDE_DIR=$LIB_DIR/claude
+BOT_CLAUDE=$BOT_CLAUDE_DIR/bin/claude
+BOT_CLAUDE_SHA=$LIB_DIR/claude.sha256
+BOT_PATH=$BOT_CLAUDE_DIR/bin:/usr/local/bin:/usr/bin:/bin
+# голос бота: venv root-владения (не ~/.venv-voice под brain: sitecustomize/модули brain исполнял бы бот)
+VOICE_VENV=$LIB_DIR/voice-venv
+VOICE_REQ=$LIB_DIR/requirements-voice.txt
+# ТОЛЬКО лаборатория CI: root-файл вместо скачивания официального установщика (создать его может лишь root;
+# sudo с env_reset/!setenv brain ничего сюда не передаст). На серверах участников файла нет.
+LAB_INSTALLER=$CONF_DIR/lab-claude-installer.sh
 
 die() { echo "❌ $*" >&2; exit 1; }
 ok() { echo "✅ $*"; }
@@ -47,7 +60,9 @@ sudo brain-admin <команда>
                            юнита brain-bot (systemd-run с его свойствами); ≤ 8 вызовов, не чаще раза в сутки
   canary-init              положить приманки самопроверки (фальшивые CANARY-значения), идемпотентно
   clear-canary-hit         снять безопасный режим «приманка в живом ответе» — ТОЛЬКО после разбора с куратором
-  update-claude            обновить Claude Code официальным установщиком под brain, проверить флаги, рестарт бота
+  update-claude            claude бота: официальный установщик во временной папке (от brainbot), root-копия в
+                           /usr/local/lib/brain-bot/claude + sha256, проверка флагов, рестарт бота
+  voice-venv               голос бота: /usr/local/lib/brain-bot/voice-venv (root) из requirements-voice.txt
   remove-private           удалить на сервере personal/ и прочие исключённые пути из memory (подтверждение YES)
 USAGE
 }
@@ -73,13 +88,13 @@ safe_install() { # src dst mode owner:group
 # --allowedTools/--allowed-tools). --help — только для отчёта и как запасной путь, если claude «принимает»
 # даже несуществующий флаг. claude запускается С ПРАВАМИ brainbot и с конфигом бота (до шага bot — от brain),
 # root его не запускает.
-cl_run() {
-  CE="env -i HOME=/home/brain PATH=/home/brain/.local/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1"
+cl_run() { # только root-копия бота (RT-11b): ~/.local/bin/claude владельца бот и проверки не запускают
+  CE="env -i HOME=/home/brain PATH=/usr/local/lib/brain-bot/claude/bin:/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1"
   if [ "$(id -u)" = 0 ] && id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot ]; then
-    timeout 30 runuser -u brainbot -- $CE CLAUDE_CONFIG_DIR=/var/lib/brain-bot/claude-config /home/brain/.local/bin/claude "$@"
-  elif [ "$(id -u)" = 0 ]; then   # до шага bot (brainbot ещё нет): от brain, конфиг-черновик в его кэше
-    timeout 30 runuser -u brain -- $CE CLAUDE_CONFIG_DIR=/home/brain/.cache/brain-link-claude-probe /home/brain/.local/bin/claude "$@"
-  else timeout 30 $CE CLAUDE_CONFIG_DIR="${HOME:-/tmp}/.cache/brain-link-claude-probe" /home/brain/.local/bin/claude "$@"; fi
+    timeout 30 runuser -u brainbot -- $CE CLAUDE_CONFIG_DIR=/var/lib/brain-bot/claude-config /usr/local/lib/brain-bot/claude/bin/claude "$@"
+  elif [ "$(id -u)" = 0 ]; then   # brainbot ещё нет: от brain, конфиг-черновик в его кэше (токена здесь нет)
+    timeout 30 runuser -u brain -- $CE CLAUDE_CONFIG_DIR=/home/brain/.cache/brain-link-claude-probe /usr/local/lib/brain-bot/claude/bin/claude "$@"
+  else timeout 30 $CE CLAUDE_CONFIG_DIR="${HOME:-/tmp}/.cache/brain-link-claude-probe" /usr/local/lib/brain-bot/claude/bin/claude "$@"; fi
 }
 cl_flag() { cl_run "$@" --version </dev/null >/dev/null 2>&1; }
 cl_has() { # «--флаг[,--написание2]» значение|-   (- — флаг без значения)
@@ -93,7 +108,7 @@ cl_has() { # «--флаг[,--написание2]» значение|-   (- — 
 }
 cl_caps() { # печатает CAP_METHOD=exec|help|none и CAP_<ФЛАГ>=1|0
   CL_H=""; CL_M=none
-  if [ -x /home/brain/.local/bin/claude ]; then
+  if [ -x /usr/local/lib/brain-bot/claude/bin/claude ]; then
     CL_H=$(cl_run --help </dev/null 2>/dev/null || true)
     if cl_flag --brain-link-no-such-flag; then
       [ -n "$CL_H" ] && CL_M=help        # «принимает» любой флаг — исполнение ничего не различает
@@ -110,6 +125,46 @@ cl_caps() { # печатает CAP_METHOD=exec|help|none и CAP_<ФЛАГ>=1|0
   if cl_has --strict-mcp-config -; then echo CAP_STRICT_MCP_CONFIG=1; else echo CAP_STRICT_MCP_CONFIG=0; fi
 }
 # <<< claude-flags
+
+# >>> migrate-state — перенос состояния ранней установки (бот был под brain, ~/.local/state/brain-bot).
+# Только если юнит brain-bot ЕЩЁ под User=brain (настоящая миграция) и метки .migrated-from-brain нет; ровно
+# один раз. Метка пишется всегда, в т.ч. на свежей установке (иначе brain подложил бы «старое состояние» и
+# через sudo brain-admin bot-user переписал бы /var/lib/brain-bot). Существующие файлы бота не перезаписываются
+# никогда (ln, не mv -f): включённый safe_mode переносом только сохраняется или включается, не снимается.
+migrate_legacy_state() {
+  local unit_user="" n=0 f
+  if [ -e "$BOT_STATE/.migrated-from-brain" ] || [ -L "$BOT_STATE/.migrated-from-brain" ]; then
+    echo "MIGRATE=already"; return 0
+  fi
+  [ -f "$BOT_UNIT" ] && unit_user=$(sed -n 's/^[[:space:]]*User=[[:space:]]*//p' "$BOT_UNIT" | tail -1)
+  if [ "$unit_user" = brain ] && [ -d "$LEGACY_STATE" ] && [ ! -L "$LEGACY_STATE" ]; then
+    for f in $LEGACY_FILES; do
+      runuser -u brain -- test -f "$LEGACY_STATE/$f" -a ! -L "$LEGACY_STATE/$f" 2>/dev/null || continue
+      if runuser -u brain -- head -c 1048576 -- "$LEGACY_STATE/$f" \
+         | runuser -u "$BOT_USER" -- sh -c 'umask 077
+             if [ -e "$1" ] || [ -L "$1" ]; then cat >/dev/null; exit 5; fi
+             t="$1.tmp.$$"; rm -f "$t"; cat > "$t" && ln "$t" "$1"; r=$?; rm -f "$t"; exit $r' sh "$BOT_STATE/$f"; then
+        n=$((n+1))
+      else warn "не перенёс $f: в $BOT_STATE уже есть (не перезаписываю) или не записался"; fi
+    done
+    runuser -u "$BOT_USER" -- sh -c 'date +%s > "$1"' sh "$BOT_STATE/.migrated-from-brain"
+    # старое состояние (в т.ч. прежний конфиг claude бота) убираем — от brain, это его папка
+    runuser -u brain -- rm -rf --one-file-system -- "${LEGACY_STATE:?}" 2>/dev/null || warn "не удалил $LEGACY_STATE"
+    ok "перенесено состояние ранней установки: $n файл(ов) из $LEGACY_STATE (безопасный режим сохранён)"
+    echo "MIGRATE=done $n"
+  else
+    runuser -u "$BOT_USER" -- sh -c 'date +%s > "$1"' sh "$BOT_STATE/.migrated-from-brain"
+    echo "MIGRATE=skip"
+  fi
+}
+# <<< migrate-state
+
+restart_bot_if_installed() {
+  if [ -f "$BOT_UNIT" ] && systemctl is-enabled --quiet brain-bot.service 2>/dev/null; then
+    systemctl restart brain-bot.service && ok "бот перезапущен"
+  fi
+  return 0
+}
 
 cmd=${1:-}
 case "$cmd" in
@@ -171,21 +226,8 @@ case "$cmd" in
         \( -type d -exec chmod 2770 {} + -o -type f -exec chmod u+rw,g+rw,o-rwx {} + \) 2>/dev/null
       exit 0' && ok "права памяти: файлы 0640, папки 0750, inbox и dialogues 2770 (группа brain)" \
       || die "права памяти не выставились (memory, inbox или dialogues — симлинк?)"
-    # перенос состояния ранней установки (бот был под brain): только обычные файлы из белого списка
-    if [ -d "$LEGACY_STATE" ] && [ ! -L "$LEGACY_STATE" ] && [ ! -e "$BOT_STATE/.migrated-from-brain" ]; then
-      n=0
-      for f in $LEGACY_FILES; do
-        runuser -u brain -- test -f "$LEGACY_STATE/$f" -a ! -L "$LEGACY_STATE/$f" 2>/dev/null || continue
-        if runuser -u brain -- head -c 1048576 -- "$LEGACY_STATE/$f" \
-           | runuser -u "$BOT_USER" -- sh -c 'umask 077; [ -L "$1" ] && exit 3; t="$1.tmp.$$"; cat > "$t" && mv -f "$t" "$1"' sh "$BOT_STATE/$f"; then
-          n=$((n+1))
-        else warn "не перенёс $f из $LEGACY_STATE"; fi
-      done
-      runuser -u "$BOT_USER" -- sh -c 'date +%s > "$1"' sh "$BOT_STATE/.migrated-from-brain"
-      # старое состояние (в т.ч. прежний конфиг claude бота) убираем — от brain, это его папка
-      runuser -u brain -- rm -rf --one-file-system -- "$LEGACY_STATE" 2>/dev/null || warn "не удалил $LEGACY_STATE"
-      ok "перенесено состояние ранней установки: $n файл(ов) из $LEGACY_STATE (безопасный режим сохранён)"
-    fi
+    # перенос состояния ранней установки — только настоящая миграция (юнит ещё под brain), один раз, без перезаписи
+    migrate_legacy_state | grep -v '^MIGRATE=' || true
     ;;
 
   status)
@@ -317,8 +359,26 @@ PY
     else ok "ANTHROPIC_API_KEY нигде не задан"; fi
     if [ -f "$CONF_DIR/canary.list" ] && [ "$(stat -c '%a %U' "$CONF_DIR/canary.list")" = "600 root" ]; then ok "приманки самопроверки: $CONF_DIR/canary.list (0600 root)"
     else echo "❌ нет приманок самопроверки ($CONF_DIR/canary.list 0600 root) — sudo brain-admin canary-init"; rc=1; fi
+    # RT-11b: claude бота — root-копия с известной sha256; brain и brainbot не пишут в /usr/local/lib/brain-bot;
+    # юниты не берут ничего из /home/brain (ни claude из ~/.local/bin, ни venv голоса)
+    if [ -f "$BOT_CLAUDE" ] && [ ! -L "$BOT_CLAUDE" ] && [ "$(stat -c '%U %a' "$BOT_CLAUDE")" = "root 755" ] \
+       && [ -f "$BOT_CLAUDE_SHA" ] && [ "$(awk '{print $1; exit}' "$BOT_CLAUDE_SHA")" = "$(sha256sum "$BOT_CLAUDE" | awk '{print $1}')" ]; then
+      ok "claude бота: $BOT_CLAUDE (root 0755), sha256 совпадает"
+    else echo "❌ claude бота: нет root-копии $BOT_CLAUDE или sha256 не совпадает — sudo brain-admin update-claude"; rc=1; fi
+    wr=""
+    for u in brain "$BOT_USER"; do
+      for d in "$LIB_DIR" "$BOT_CLAUDE_DIR" "$BOT_CLAUDE_DIR/bin" "$BOT_CLAUDE" "$BOT_CLAUDE_SHA"; do
+        [ -e "$d" ] && runuser -u "$u" -- test -w "$d" 2>/dev/null && wr="$wr $u→$d"
+      done
+    done
+    [ -z "$wr" ] && ok "brain и $BOT_USER не пишут в $LIB_DIR (код бота, claude, sha256)" \
+      || { echo "❌ запись в код бота:$wr"; rc=1; }
+    if systemctl cat brain-bot.service brain-brief.service brain-watch.service 2>/dev/null | grep -v '^#' \
+       | grep -qE '/home/brain/(\.local/bin|\.venv-voice)'; then
+      echo "❌ юниты бота берут код из /home/brain (~/.local/bin или ~/.venv-voice) — повтори шаг bot до lockdown"; rc=1
+    else ok "юниты бота не берут код из /home/brain"; fi
     runuser -u brainbot -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BRAIN_STATE_DIR="$BOT_STATE" \
-      PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      PATH="$BOT_PATH" CLAUDE_BIN="$BOT_CLAUDE" \
       /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selftest || rc=1
     exit $rc
     ;;
@@ -435,7 +495,7 @@ PY
       tz=$(systemctl show -p Environment --value brain-bot.service 2>/dev/null | tr ' ' '\n' | sed -n 's/^BOT_TZ=//p' | head -1)
       runuser -u brainbot -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BOT_TZ="${tz:-Europe/Moscow}" \
         BRAIN_STATE_DIR="$BOT_STATE" XDG_CACHE_HOME="$BOT_STATE/cache" \
-        PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" CREDENTIALS_DIRECTORY="$CD" BRAIN_SELFCHECK_SANDBOX=fallback \
+        PATH="$BOT_PATH" CLAUDE_BIN="$BOT_CLAUDE" CREDENTIALS_DIRECTORY="$CD" BRAIN_SELFCHECK_SANDBOX=fallback \
         /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" selfcheck </dev/null >"$out" 2>"$err" || rc=$?
       rm -rf "$CD"
     fi
@@ -455,22 +515,69 @@ PY
     [ "$answer" = "YES" ] || die "отменено"
     oid=$(owner_id || true)
     runuser -u brainbot -- env -i HOME="$BRAIN_HOME" LANG=C.UTF-8 OWNER_ID="${oid:-0}" BRAIN_STATE_DIR="$BOT_STATE" \
-      PATH="$BRAIN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" \
+      PATH="$BOT_PATH" CLAUDE_BIN="$BOT_CLAUDE" \
       /usr/bin/python3 -I "$LIB_DIR/brain_bot.py" clear-canary-hit
     ;;
 
   update-claude)
-    LOG=$(mktemp)
-    if runuser -l brain -c 'curl -fsSL https://claude.ai/install.sh | bash' >"$LOG" 2>&1; then
-      ok "Claude Code обновлён официальным установщиком (под brain)"
-    else tail -5 "$LOG" >&2; rm -f "$LOG"; die "установщик Claude Code упал (сеть? место на диске?)"; fi
-    rm -f "$LOG"
-    v=$(cl_run --version </dev/null 2>/dev/null | head -1 || true)
-    echo "claude: ${v:-не отвечает}"
+    # RT-11b. claude бота — root-копия, бот не запускает ничего из папки brain.
+    # 1) официальный установщик — во временной папке root-владения, от brainbot с HOME внутри неё
+    #    (не под brain: его ~/.local он мог бы подменить; root установщик из интернета не исполняет);
+    # 2) root забирает ИТОГОВЫЙ бинарник — читает его С ПРАВАМИ brainbot (подложенный симлинк на root-файл ничего
+    #    не даст), только из $HOME/.local/share/claude/versions/, только ELF ≤ 1 ГБ;
+    # 3) копия root:root 0755 в /usr/local/lib/brain-bot/claude/bin, `--version` от brainbot с env -i,
+    #    sha256 → /usr/local/lib/brain-bot/claude.sha256 (бот сверяет при старте). Интерактивный claude
+    #    владельца (~/.local/bin под brain) не трогаем — он для ручной работы, бот его не использует.
+    id "$BOT_USER" >/dev/null 2>&1 || die "нет пользователя $BOT_USER — сначала sudo brain-admin bot-user"
+    install -d -m 0755 -o root -g root "$LIB_DIR" "$BOT_CLAUDE_DIR" "$BOT_CLAUDE_DIR/bin"
+    for d in "$LIB_DIR" "$BOT_CLAUDE_DIR" "$BOT_CLAUDE_DIR/bin"; do
+      [ ! -L "$d" ] && [ "$(stat -c '%U %a' "$d")" = "root 755" ] || die "$d не root 0755 (или симлинк)"
+    done
+    T=$(mktemp -d /var/cache/brain-claude-install.XXXXXX) || die "не создал временную папку в /var/cache"
+    case "$T" in /var/cache/brain-claude-install.*) ;; *) die "временная папка не там: $T" ;; esac
+    NEW=""; LOG=$(mktemp)
+    uc_cleanup() {
+      runuser -u "$BOT_USER" -- rm -rf --one-file-system -- "${T:?}/home" 2>/dev/null || true
+      rm -rf --one-file-system -- "${T:?}" 2>/dev/null || true
+      [ -n "$NEW" ] && rm -f -- "$NEW"; rm -f -- "$LOG"
+    }
+    trap uc_cleanup EXIT HUP INT TERM
+    chmod 0711 "$T"
+    H=$T/home
+    install -d -m 0700 -o "$BOT_USER" -g "$BOT_USER" "$H"
+    BENV=(env -i "HOME=$H" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 "TMPDIR=$H" DISABLE_AUTOUPDATER=1)
+    if [ -f "$LAB_INSTALLER" ] && [ ! -L "$LAB_INSTALLER" ] && [ "$(stat -c '%u' "$LAB_INSTALLER")" = 0 ] \
+       && ! stat -c '%A' "$LAB_INSTALLER" | grep -qE '^.{5}w|^.{8}w'; then
+      warn "лаборатория: установщик $LAB_INSTALLER вместо скачивания (на серверах участников этого файла нет)"
+      timeout 900 runuser -u "$BOT_USER" -- "${BENV[@]}" bash "$LAB_INSTALLER" >"$LOG" 2>&1 \
+        || { tail -5 "$LOG" >&2; die "лабораторный установщик упал"; }
+    elif timeout 900 runuser -u "$BOT_USER" -- "${BENV[@]}" bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >"$LOG" 2>&1; then
+      ok "официальный установщик Claude Code отработал (от $BOT_USER, во временной папке)"
+    else tail -5 "$LOG" >&2; die "установщик Claude Code упал (сеть? место на диске?)"; fi
+    R=$(runuser -u "$BOT_USER" -- readlink -f -- "$H/.local/bin/claude" 2>/dev/null || true)
+    case "$R" in "$H"/.local/share/claude/versions/*) ;; *) die "установщик не положил claude в ~/.local/share/claude/versions (${R:-нет})" ;; esac
+    NEW=$(mktemp "$BOT_CLAUDE_DIR/bin/.claude.new.XXXXXX")
+    runuser -u "$BOT_USER" -- head -c 1073741825 -- "$R" > "$NEW" || die "не читается $R"
+    sz=$(stat -c %s "$NEW")
+    [ "$sz" -gt 0 ] && [ "$sz" -le 1073741824 ] || die "размер claude подозрительный: $sz"
+    [ "$(head -c 4 "$NEW" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] || die "claude — не ELF-бинарник, не ставлю"
+    chown root:root "$NEW"; chmod 0755 "$NEW"
+    install -d -m 0700 -o "$BOT_USER" -g "$BOT_USER" "$H/probe-config"
+    v=$(timeout 30 runuser -u "$BOT_USER" -- env -i "HOME=$H" PATH=/usr/bin:/bin LANG=C.UTF-8 DISABLE_AUTOUPDATER=1 \
+          "CLAUDE_CONFIG_DIR=$H/probe-config" "$NEW" --version </dev/null 2>/dev/null | head -1 || true)
+    [ -n "$v" ] || die "новая копия claude не ответила на --version (от $BOT_USER, env -i) — оставляю прежнюю"
+    sum=$(sha256sum "$NEW" | awk '{print $1}')
+    ts=$(mktemp "$LIB_DIR/.claude.sha256.XXXXXX")
+    printf '%s  %s\n' "$sum" "$BOT_CLAUDE" > "$ts"; chown root:root "$ts"; chmod 0644 "$ts"
+    tv=$(mktemp "$BOT_CLAUDE_DIR/.VERSION.XXXXXX"); printf '%s\n' "$v" > "$tv"; chmod 0644 "$tv"
+    mv -f "$NEW" "$BOT_CLAUDE"; NEW=""
+    mv -f "$ts" "$BOT_CLAUDE_SHA"; mv -f "$tv" "$BOT_CLAUDE_DIR/VERSION"
+    ok "claude бота: $BOT_CLAUDE (root 0755), версия $v, sha256 ${sum:0:16}… → $BOT_CLAUDE_SHA"
+    echo "claude: $v"
     caps=$(cl_caps)
     method=$(sed -n 's/^CAP_METHOD=//p' <<<"$caps")
     if [ "$method" = none ]; then
-      systemctl restart brain-bot.service && ok "бот перезапущен"
+      restart_bot_if_installed
       warn "claude не ответил ни на проверку флагов, ни на --help — флаги изоляции НЕ проверены. Бот проверит их сам при старте; итог — в /status"
       exit 0
     fi
@@ -479,9 +586,34 @@ PY
     for kf in TOOLS:--tools SETTING_SOURCES:--setting-sources ALLOWEDTOOLS:--allowedTools DISALLOWEDTOOLS:--disallowedTools; do
       if grep -qx "CAP_${kf%%:*}=1" <<<"$caps"; then ok "флаг ${kf#*:} есть"; else echo "❌ флага ${kf#*:} нет"; miss=1; fi
     done
-    systemctl restart brain-bot.service && ok "бот перезапущен"
+    restart_bot_if_installed
     [ "$miss" = 0 ] || die "не все флаги изоляции есть — бот остаётся в безопасном режиме, напиши куратору"
-    ok "флаги изоляции на месте — безопасный режим по причине claude-flags бот снимет сам при старте"
+    ok "флаги изоляции на месте — безопасный режим по причинам claude-flags и claude-integrity бот снимет сам при старте"
+    ;;
+
+  voice-venv)
+    # Голос бота (RT-11b): venv root-владения в /usr/local/lib/brain-bot/voice-venv. Список пакетов — только
+    # root-копия requirements-voice.txt (ставит шаг bot), строки строго «имя==версия»; pip от root — только
+    # готовые колёса (--only-binary=:all:, без сборки и setup.py), без кэша, без ввода. brain сюда ничего не пишет.
+    [ -f "$VOICE_REQ" ] && [ ! -L "$VOICE_REQ" ] && [ "$(stat -c %U "$VOICE_REQ")" = root ] \
+      || die "нет $VOICE_REQ (root) — сначала шаг bot --voice до lockdown"
+    if grep -vE '^[[:space:]]*(#|$)' "$VOICE_REQ" | grep -vqE '^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][0-9A-Za-z.]*$'; then
+      die "в $VOICE_REQ строка не вида «пакет==версия» — не ставлю"
+    fi
+    LOG=$(mktemp)
+    rm -rf --one-file-system -- /usr/local/lib/brain-bot/voice-venv.new
+    if env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 /usr/bin/python3 -I -m venv "$VOICE_VENV.new" >"$LOG" 2>&1 \
+       && env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 PIP_NO_INPUT=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
+            "$VOICE_VENV.new/bin/python3" -I -m pip install -q --no-cache-dir --only-binary=:all: -r "$VOICE_REQ" >>"$LOG" 2>&1; then
+      chown -R root:root "$VOICE_VENV.new"; chmod -R go-w "$VOICE_VENV.new"
+      rm -rf --one-file-system -- /usr/local/lib/brain-bot/voice-venv
+      mv "$VOICE_VENV.new" "$VOICE_VENV"
+      rm -f "$LOG"
+      ok "голос: $VOICE_VENV (root) с $(grep -vE '^[[:space:]]*(#|$)' "$VOICE_REQ" | tr '\n' ' ')"
+    else
+      tail -3 "$LOG" >&2; rm -f "$LOG"; rm -rf --one-file-system -- /usr/local/lib/brain-bot/voice-venv.new
+      die "голос: установка faster-whisper упала"
+    fi
     ;;
 
   remove-private)

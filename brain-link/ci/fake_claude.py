@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """fake_claude.py — заглушка `claude` для лаборатории brain-link (GitHub Actions, не для участников).
 
-Ставится на «сервер» лаборатории как /home/brain/.local/bin/claude (шаг `brain-link claude` видит, что
-claude уже стоит, и только проверяет `--version`). Эмулирует `claude -p`: читает промпт из stdin, отвечает
+Ставится на «сервер» лаборатории дважды: как /home/brain/.local/bin/claude владельца (бот её НЕ зовёт —
+RT-11b) и, в ELF-обёртке make_lab_claude_installer.py, как root-копия бота /usr/local/lib/brain-bot/claude/bin/claude
+через штатный `brain-admin update-claude`. Эмулирует `claude -p`: читает промпт из stdin, отвечает
 строкой LAB-ANSWER и пишет в журнал, ЧТО ему передали — для проверок изоляции бота:
   argv целиком; имена переменных окружения; есть ли ANTHROPIC_API_KEY / BOT_TOKEN / похожее на токен
   Telegram; sha256 токена подписки (сам токен — никогда); cwd; длину промпта и есть ли в нём метка памяти.

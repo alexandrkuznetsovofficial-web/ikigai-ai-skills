@@ -1,4 +1,6 @@
-# brain-link kit 2.1 — голос бота (VOICE=1): ставится в /home/brain/.venv-voice
-# python3 -m venv ~/.venv-voice && ~/.venv-voice/bin/pip install -r requirements-voice.txt
-# Модель small (~460 МБ) скачается в ~/.cache/huggingface при первом голосовом.
-faster-whisper>=1.1,<2
+# brain-link kit 2.1 — голос бота (VOICE=1). Ставит root: шаг `brain-link bot --voice` кладёт этот файл в
+# /usr/local/lib/brain-bot/requirements-voice.txt и зовёт `brain-admin voice-venv` →
+# /usr/local/lib/brain-bot/voice-venv (root-владение, только готовые колёса: pip --only-binary=:all:).
+# Строки — строго «пакет==версия» (иначе brain-admin откажет). Модель small (~460 МБ) скачается в
+# /var/lib/brain-bot/cache при первом голосовом.
+faster-whisper==1.1.1

@@ -11,7 +11,8 @@
 
 | Файл | Роль |
 |---|---|
-| `fake_claude.py` | заглушка `claude`: эмулирует `claude -p`, пишет полученные argv/env/cwd в журнал (сам токен — только sha256), по меткам в промпте проверяет фильтр секретов бота. Ставится на «сервер» как `~/.local/bin/claude`. |
+| `fake_claude.py` | заглушка `claude`: эмулирует `claude -p`, пишет полученные argv/env/cwd в журнал (сам токен — только sha256), по меткам в промпте проверяет фильтр секретов бота. На «сервер» ставится дважды: как `~/.local/bin/claude` владельца (бот её НЕ зовёт) и, в ELF-обёртке, как root-копия бота через `brain-admin update-claude`. |
+| `make_lab_claude_installer.py` | собирает лабораторный «официальный установщик»: ELF-обёртку над `fake_claude.py` (cc) в раскладке `~/.local/share/claude/versions/<версия>` + симлинк `~/.local/bin/claude`. `server_e2e.sh` кладёт его root-файлом `/etc/brain-bot/lab-claude-installer.sh`, и `update-claude` проходит штатный путь (ELF, `--version`, sha256) без скачивания. На серверах участников этого файла нет. |
 | `fake_telegram.py` | локальный Bot API на `127.0.0.1`: `getUpdates`/`sendMessage`/`getMe` + управление `/_ctl/update`, `/_ctl/sent`. Токен нигде не пишет, только его sha256. |
 | `bot_scenario.py` | сценарий «владелец и чужой пишут боту»: молчание чужому и группе, режимы файлы/веб с полной проверкой argv и окружения, модель sonnet/opus, фильтр секретов, «запомни»→inbox, ни одного токена в исходящих. |
 | `drive_link.py` | запускает `brain_link.py` с подменой внедряемых зависимостей: `--getpass-file` (put-token без терминала), `--sync-shim` (расписание через local-транспорт), `--lockdown-bad-key` (проверка автоотката lockdown). |

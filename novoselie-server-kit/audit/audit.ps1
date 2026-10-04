@@ -393,16 +393,20 @@ H1 "6. Живые проверки"
 $EngineOk = $false; $BridgeOk = $false
 
 $EngineProbe = @'
-CL=/home/brain/.local/bin/claude; [ -x "$CL" ] || CL=claude
+CL=/usr/local/lib/brain-bot/claude/bin/claude
 if [ "$(id -u)" != 0 ]; then echo "NOT_ROOT"; exit 0; fi
 if [ -s /etc/brain-bot/credentials/claude_token ]; then
   # токен не в argv: файл открывает root как stdin, sh -c читает его в переменную и отдаёт claude окружением
-  # kit 2.1 (RT-11): бот — brainbot, конфиг claude в /var/lib/brain-bot; ранние установки — brain и ~/.local/state
-  RU=brain; CCD=/home/brain/.local/state/brain-bot/claude-config
-  if id brainbot >/dev/null 2>&1 && [ -d /var/lib/brain-bot/claude-config ]; then RU=brainbot; CCD=/var/lib/brain-bot/claude-config; fi
-  [ -d "$CCD" ] || CCD=/home/brain/.claude
+  # kit 2.1 (RT-11b): настоящий токен получает ТОЛЬКО root-копия claude бота (root, sha256 из claude.sha256
+  # сходится) и только от brainbot. claude владельца в /home/brain/.local/bin принадлежит brain: подменённая
+  # обёртка забрала бы токен — ему токен не отдаём никогда.
+  SUM=$(awk '{print $1; exit}' /usr/local/lib/brain-bot/claude.sha256 2>/dev/null)
+  if [ ! -f "$CL" ] || [ -L "$CL" ] || [ "$(stat -c '%U' "$CL" 2>/dev/null)" != root ] || [ -z "$SUM" ] \
+     || [ "$(sha256sum "$CL" 2>/dev/null | awk '{print $1}')" != "$SUM" ]; then echo "NO_BOT_CLAUDE"; exit 0; fi
+  RU=brainbot; CCD=/var/lib/brain-bot/claude-config
+  if ! id brainbot >/dev/null 2>&1 || [ ! -d "$CCD" ]; then echo "NO_BOT_CLAUDE"; exit 0; fi
   ST=/etc/brain-bot/claude_settings.json; [ -f "$ST" ] || ST=
-  cd /tmp && runuser -u "$RU" -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/home/brain/.local/bin:/usr/local/bin:/usr/bin:/bin \
+  cd /tmp && runuser -u "$RU" -- env -i HOME=/home/brain LANG=C.UTF-8 PATH=/usr/local/lib/brain-bot/claude/bin:/usr/local/bin:/usr/bin:/bin \
     CLAUDE_CONFIG_DIR="$CCD" sh -c 'IFS= read -r CLAUDE_CODE_OAUTH_TOKEN; export CLAUDE_CODE_OAUTH_TOKEN
       if [ -n "$2" ]; then exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" --settings "$2" </dev/null
       else exec timeout 80 "$1" -p "Ответь ровно одним словом: живой" </dev/null; fi' sh "$CL" "$ST" \
@@ -418,6 +422,10 @@ if ($SrvOk -and (G 'CLAUDE') -eq 'yes') {
   Write-Host "  .      спрашиваю мозг на сервере (до 90 сек)..." -ForegroundColor DarkGray
   $ans = ($EngineProbe | & ssh @SshArgs "$SrvUser@$SrvIp" $RemoteBash 2>$null) -join "`n"
   if ($ans -match 'NOT_ROOT') { INFO "После lockdown вход root закрыт — мозг проверь из Telegram: напиши боту /status и любой вопрос" }
+  elseif ($ans -match 'NO_BOT_CLAUDE') {
+    WARN "У бота нет своей root-копии Claude Code (или контрольная сумма не сходится) — токен ей не отдаю"
+    Manual "Поставь копию для бота: brain_link.py claude (или на сервере: sudo brain-admin update-claude)"
+  }
   elseif ($ans -match 'жив') { OK "МОЗГ НА СЕРВЕРЕ ДУМАЕТ и отвечает из твоей подписки"; $EngineOk = $true }
   elseif ($ans -match 'credit|balance|login|auth|subscription|invalid') {
     BAD "Мозг на сервере не пускает по подписке — токен протух или не тот"
