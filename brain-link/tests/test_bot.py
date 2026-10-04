@@ -1298,7 +1298,7 @@ class TestBotUserRT11(unittest.TestCase):
     def test_default_state_dir(self):
         env = {"OWNER_ID": "1"}
         with mock.patch.object(bb, "STATE_DIR_SYSTEM", "/nonexistent/brain-bot"):
-            self.assertEqual(bb.default_state_dir(env, "/home/brain"), "/home/brain/.local/state/brain-bot")
+            self.assertEqual(bb.default_state_dir(env, "/home/brain"), os.path.join("/home/brain", ".local/state/brain-bot"))
             self.assertEqual(bb.default_state_dir(dict(env, STATE_DIRECTORY="/var/lib/brain-bot:/x"), "/h"),
                              "/var/lib/brain-bot")
             self.assertEqual(bb.default_state_dir(dict(env, BRAIN_STATE_DIR="/s", STATE_DIRECTORY="/x"), "/h"), "/s")

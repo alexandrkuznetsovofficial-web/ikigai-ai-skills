@@ -120,10 +120,12 @@ rt11() {
   local f out leaked=0 checked=0
   for f in /run/credentials/brain-bot.service/claude_token /run/credentials/brain-bot.service/bot_token \
            /etc/brain-bot/credentials/claude_token /etc/brain-bot/credentials/bot_token; do
-    out="$(RBRAIN "cat $f 2>&1 | head -c 40; echo; echo RC=\${PIPESTATUS[0]}")"
+    # stdout (содержимое) и stderr (отказ ОС) — раздельно; содержимое не печатаем
+    out="$(RBRAIN "cat $f 2>/dev/null | grep -cE 'sk-ant|[0-9]{8}:'; cat $f 2>&1 >/dev/null | grep -cE 'Permission denied|No such file'")"
     checked=$((checked+1))
-    if echo "$out" | grep -qiE 'sk-ant|[0-9]{8}:' || ! echo "$out" | grep -qiE 'Permission denied|No such file'; then
-      bad "RT-11 brain прочитал (или не получил отказ) $f: $(echo "$out" | head -1 | cut -c1-12)…"; leaked=1
+    set -- $out
+    if [ "${1:-1}" != 0 ] || [ "${2:-0}" = 0 ]; then
+      bad "RT-11 brain прочитал (или не получил отказ ОС) $f: секрет=${1:-?}, отказ=${2:-?}"; leaked=1
     fi
   done
   # выданные юниту секреты существуют (бот жив) — иначе отказ «нет файла» ничего не доказывает

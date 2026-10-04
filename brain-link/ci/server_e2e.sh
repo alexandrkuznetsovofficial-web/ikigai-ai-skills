@@ -207,6 +207,13 @@ RSSH root "systemctl daemon-reload 2>/dev/null || true"
 printf '{"lab": 1}\n' | RSSH root "runuser -u brain -- sh -c 'mkdir -p /home/brain/.local/state/brain-bot/claude-config && cat > /home/brain/.local/state/brain-bot/watch_state.json'"
 LINK -- bot --yes; rc=$?
 say "bot rc=$rc"
+say "права для бота (диагностика):"
+RSSH root 'stat -c "%A %U:%G %n" /home/brain /home/brain/memory /home/brain/memory/inbox /home/brain/memory/dialogues /var/lib/brain-bot
+  runuser -u brainbot -- id
+  runuser -u brainbot -- sh -c "test -w /home/brain/memory/inbox && echo inbox:W || echo inbox:NO-W; touch /home/brain/memory/inbox/.diag.brain-tmp 2>&1; rm -f /home/brain/memory/inbox/.diag.brain-tmp"
+  findmnt -no TARGET,OPTIONS -T /home/brain/memory/inbox
+  getfacl -p /home/brain/memory/inbox 2>/dev/null | grep -v "^#"
+  /usr/local/sbin/brain-admin selftest 2>&1 | grep -E "❌|🟡|ИТОГ"' 2>&1 | sed 's/^/   /' | tee -a "$LOG"
 # сценарию бота нужны те же токены (сравнивает по sha256, сами значения не печатает)
 mkdir -p "$WORK/secforbot"; cp "$WORK/tok_bot" "$WORK/secforbot/bot_token"; cp "$WORK/tok_claude" "$WORK/secforbot/claude_token"
 # фейковый Telegram слушает на раннере (хост), сервер=тот же хост — localhost достижим.
@@ -249,7 +256,7 @@ for k,c in sorted((d.get("checks") or {}).items()):
 assert_rc 0 "$vrc" "verify зелёный (расписание эмулировано циклом brain_sync, «запомни» через фейковый TG)"
 if [ "$vrc" != 0 ]; then
   say "диагностика самопроверки (stderr brain-admin, без секретов):"
-  RSSH root "journalctl -n 40 --no-pager -o cat _SYSTEMD_UNIT='brain-selfcheck-*' 2>/dev/null; journalctl -u brain-watch -n 15 --no-pager -o cat 2>/dev/null" \
+  RSSH root "/usr/local/sbin/brain-admin selfcheck-security 2>&1 | grep -vE '^(INFO|SELFCHECK_)' | tail -25; journalctl -u brain-watch -n 10 --no-pager -o cat 2>/dev/null" \
     | sed -E 's/sk-ant-[A-Za-z0-9_-]+/<скрыто>/g; s/[0-9]{8,10}:[A-Za-z0-9_-]{30,}/<скрыто>/g' | tail -40 | sed 's/^/   /' | tee -a "$LOG"
 fi
 # RT-11: бот (brainbot) пишет inbox, синк (brain) читает и переносит его заметку в .synced (rename по group-write)

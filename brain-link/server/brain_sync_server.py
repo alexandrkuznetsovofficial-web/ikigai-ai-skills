@@ -414,7 +414,8 @@ def ensure_bot_dirs():
                 os.mkdir(p, 0o770)
                 _forget(mem)
             st = os.lstat(p)
-            if st.st_uid == os.geteuid() and (st.st_mode & 0o7777) != BOT_DIR_MODE:
+            me = getattr(os, "geteuid", lambda: None)()   # на Windows (лаборатория, local-транспорт) прав нет
+            if me is not None and st.st_uid == me and (st.st_mode & 0o7777) != BOT_DIR_MODE:
                 os.chmod(p, BOT_DIR_MODE)
         except OSError:
             pass   # не наша папка или ФС без setgid — бот скажет в selftest

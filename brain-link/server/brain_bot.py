@@ -886,7 +886,7 @@ STATE_CANARY = "canary-bait"
 
 def state_canary_path(cfg):
     """Приманка, которую процесс бота (brainbot) прочесть МОЖЕТ: кладёт brain-admin canary-init."""
-    return os.path.join(cfg.state_dir, STATE_CANARY)
+    return posixpath.join(cfg.state_dir, STATE_CANARY)
 
 
 def selfcheck_probes(cfg, cred_dir=None):
