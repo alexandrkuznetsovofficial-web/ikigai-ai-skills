@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Скачивает актуальный кит Икигай и ставит скиллы связки: ikigai-preflight и brain-link.
+"""Скачивает актуальный кит Икигай и ставит скиллы связки: ikigai-preflight, brain-link и second-brain-audit.
 
 Источник 1 — GitHub (main), источник 2 — витрина ikigai-community.com (если GitHub недоступен).
 Старые версии скиллов не удаляются: переезжают в ~/.claude/skills_old/<имя>-<время>.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO = "alexandrkuznetsovofficial-web/ikigai-ai-skills"
 SITE = "https://ikigai-community.com/aipotok/skills/start"  # запасной источник: папка start/ витрины
-SKILLS = ("ikigai-preflight", "brain-link")
+SKILLS = ("ikigai-preflight", "brain-link", "second-brain-audit")
 # файлы-гайды, которые гайд связки открывает по ходу (лежат в распаковке, в skills не ставятся)
 GUIDES = ("KIT_CONVENTIONS.md", "SETUP_MORNING_BRIEF.md", "meeting-2-3/auto-commit-backup.md",
           "novoselie-server-kit/audit/server_access.example")
@@ -118,7 +118,7 @@ def main():
         print(json.dumps({"ok": False, "code": 1, "errors": errors,
                           "human": "Не получилось скачать кит ни с GitHub, ни с витрины. Проверь интернет "
                                    "(VPN включён — попробуй выключить, выключен — включить) и запусти ещё раз. "
-                                   "Не помогло — скачай «Пробник» и «Связку» в кабинете: "
+                                   "Не помогло — скачай «Пробник», «Связку» и «Аудит второго мозга» в кабинете: "
                                    "https://ikigai-community.com/cabinet/academy/skills"},
                          ensure_ascii=False, indent=1))
         sys.exit(1)
@@ -162,7 +162,7 @@ def main():
         "ok": True, "code": 0, "source": source, "kit_commit": sha, "unpacked_to": str(dst),
         "installed": installed, "old_versions_moved_to": moved, "older_skills": older,
         "guides": {g: str(dst / g) for g in GUIDES if (dst / g).exists()},
-        "human": f"Кит скачан ({source}, версия {sha}). Поставлены «Пробник» и «Связка»"
+        "human": f"Кит скачан ({source}, версия {sha}). Поставлены «Пробник», «Связка» и «Аудит второго мозга»"
                  + (", старые версии сохранены в skills_old" if moved else "") + "."
                  + (f" Устарели ещё {len(older)} скилла(ов) — список в older_skills." if older else ""),
     }, ensure_ascii=False, indent=1))
