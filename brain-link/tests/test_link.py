@@ -9,6 +9,7 @@ import io
 import json
 import os
 import plistlib
+import re
 import shutil
 import sys
 import tempfile
@@ -1895,6 +1896,48 @@ class TestLabTransportWindows(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGuideTexts(unittest.TestCase):
+    """kit 2.3: тексты для человека и агента не отправляют в кабинет/VNC хостера и не плодят второй файл секретов."""
+    ROOT = KIT.parent
+    FILES = ("start/START_SVYAZKA.md", "start/PASTE_TEXT.md", "start/BEFORE_START.md", "brain-link/SKILL.md",
+             "brain-link/README.md", "team-kit/skills/cto/SKILL.md")
+
+    def lines(self):
+        """Строка вместе с соседними (фразы переносятся на следующую строку)."""
+        for f in self.FILES:
+            ls = (self.ROOT / f).read_text(encoding="utf-8").splitlines()
+            for n, line in enumerate(ls):
+                yield f, n + 1, line, " ".join(ls[max(0, n - 2):n + 2])
+
+    def test_vnc_only_as_emergency(self):
+        ok_words = ("не отправляй", "не нужн", "человека **не", "и vnc человека", "после lockdown", "аварий", "не проси", "только через vnc", "vnc-консоль провайдера",
+                    "vnc не нужен", "через vnc-консоль")
+        for f, n, line, win in self.lines():
+            low = win.lower()
+            if "vnc" in line.lower():
+                self.assertTrue(any(w in low for w in ok_words), "%s:%d VNC не как аварийный вход: %s" % (f, n, line))
+
+    def test_hoster_cabinet_password_never_requested(self):
+        for f, n, line, win in self.lines():
+            low = win.lower()
+            if re.search(r"пароль (от )?(личного )?кабинета", line.lower()):
+                self.assertTrue(any(w in low for w in ("никогда", "не проси", "не нужен", "не спрашивай", "не нужно")),
+                                "%s:%d: %s" % (f, n, line))
+
+    def test_versions_23(self):
+        self.assertTrue((self.ROOT / "start/START_SVYAZKA.md").read_text(encoding="utf-8").startswith(
+            "# Связка Икигай 2.3"))
+        self.assertIn("kit_version: 2.3", (KIT / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual(__import__("brainlib").KIT_VERSION, "2.3")
+        self.assertIn("Ikigai_Svyazka_Kit_2.3", (self.ROOT / "start/PASTE_TEXT.md").read_text(encoding="utf-8"))
+
+    def test_team_kit_twins_and_author(self):
+        for n in ("cto", "devops", "secops", "code-reviewer"):
+            a = (self.ROOT / "team-kit/skills" / n / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("author: ikigai", a.split("---", 2)[1])
+            self.assertEqual(bk.it_team_status(self.ROOT / "team-kit/skills")[n], "kit")
 
 
 class TestDistAndKitChecks(unittest.TestCase):

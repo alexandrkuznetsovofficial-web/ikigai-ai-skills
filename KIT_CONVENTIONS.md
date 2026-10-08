@@ -184,8 +184,13 @@
 `sync_state.json`, `sync_status.json`, `sync.pause`, `sync.lock`, `logs/sync.log`.
 
 **Файл доступа — одна схема на весь кит:** `SERVER_IP`, `SERVER_USER` (до установки — `root`), `SERVER_PORT` (22),
-`BOT_TOKEN`, `USER_ID`, `PASSWORD` (временно, удаляется после `lockdown`). Токен подписки в файл **не пишется** —
-участник сам запускает `claude setup-token` и передаёт его на сервер через `brain-link put-token` (ввод скрыт).
+`BOT_TOKEN`, `USER_ID`, `PASSWORD` (временно, удаляется после `lockdown`). Это **единственный** файл с доступами:
+второй txt с паролями не заводим, свои заметки участник переносит сюда сам. IP и пароль root — из письма или
+кабинета **любого** хостера; пароль от личного кабинета хостера кит не спрашивает никогда. Токен подписки в файл
+**не пишется** — `brain-link put-token claude` запускает `claude setup-token` и сам ловит строку токена (kit 2.3: Mac —
+псевдотерминал, Windows — буфер обмена, запасной путь — скрытый ввод), сверка sha256 на сервере.
+kit 2.3: `BOT_TOKEN` и `USER_ID` можно не вписывать, если на сервере есть старый бот — `put-token bot --yes` переносит
+его токен (и единственного владельца из ALLOWED_USERS в `/etc/brain-bot/owner_id`) целиком на сервере.
 Старые ключи `IP / LOGIN / PORT / CLAUDE_TOKEN` читаются как запасной вариант с предупреждением.
 
 **Сервер.** Рабочая папка — `/home/brain` (`CLAUDE.md`, `memory/`, скиллы в `/home/brain/.claude/skills`).
@@ -204,7 +209,12 @@
 `/usr/local/lib/brain-bot/voice-venv` (root, pip только готовыми колёсами по `requirements-voice.txt` вида `пакет==версия`).
 `~/.local/bin/claude` владельца остаётся для его ручной работы; шаг `claude` ставит обе копии. brain и brainbot
 не пишут в `/usr/local/lib/brain-bot` (selftest). audit отдаёт настоящий токен только root-копии со сходящейся sha256.
-**Перенос состояния ранней установки** (`~/.local/state/brain-bot` → `/var/lib/brain-bot`) — только пока юнит под `User=brain`,
+**Свой юнит — по ExecStart, не по имени (kit 2.3).** `brain-bot.service`, который не запускает
+`/usr/local/lib/brain-bot/brain_bot.py` (мост claude-code-telegram, бот июльского кита), — старый бот: `harden` его не
+трогает, `bot --yes` выключает (копия юнита и drop-in'ов — `/var/backups/brain-link/old-bot.*`), файлы не удаляются.
+Бот по умолчанию отвечает Opus, `/fast` — Sonnet. lockdown проверяет действующие настройки `sshd -T` (пароль, root).
+**Перенос состояния ранней установки** (`~/.local/state/brain-bot` → `/var/lib/brain-bot`) — только пока юнит под `User=brain`
+и его ExecStart — наш,
 один раз (метка `.migrated-from-brain` пишется всегда, и на свежей установке), существующие файлы бота не перезаписываются,
 включённый безопасный режим не снимается (RT-11c).
 Транспорт к модели — только `claude -p`; `ANTHROPIC_API_KEY` не ставится нигде. Вход: только ключи (`lockdown`),
