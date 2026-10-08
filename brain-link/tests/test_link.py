@@ -684,6 +684,52 @@ class TestKeysByPassword(Base):
         self.assertFalse(st["host_key_unverified"])
         self.assertTrue(st["host_key_confirmed"])
 
+    def test_state_deleted_after_replace_no_password(self):
+        (self.cfg / "known_hosts").write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
+        self.call(["keys", "--replace"])
+        (self.cfg / "link_state.json").unlink()                        # состояние потеряно, known_hosts остался
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 2, res)
+        self.assertEqual(res["key_install"], "host_key_replaced")
+        self.assertIn("ED25519", res["human"])
+        self.assertEqual(self.push_calls(), [])
+
+    def test_state_corrupted_no_password(self):
+        self.kh_pinned()
+        (self.cfg / "link_state.json").write_text("{испорчено", encoding="utf-8")
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 2, res)
+        self.assertEqual(res["key_install"], "host_key_replaced")
+        self.assertEqual(self.push_calls(), [])
+
+    def test_state_fingerprints_mismatch_no_password(self):
+        self.kh_pinned()
+        (self.cfg / "link_state.json").write_text(json.dumps(
+            {"host_key_confirmed": True, "host_fingerprints": ["%s (ED25519)" % FP_OTHER]}), encoding="utf-8")
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(res.get("key_install"), "host_key_replaced", res)
+        self.assertEqual(self.push_calls(), [])
+
+    def test_compat_state_from_f292f2d_sends_password(self):
+        self.kh_pinned()
+        (self.cfg / "link_state.json").write_text(json.dumps(
+            {"host_key_confirmed": True, "host_fingerprints": ["%s (ED25519)" % FP]}), encoding="utf-8")
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["host_key"], "kept")
+        self.assertEqual(len(self.push_calls()), 1)
+
+    def test_unverified_but_key_login_works_says_so(self):
+        self.kh_pinned()                                               # состояния нет — ключ не сверен
+        self.logged_in = True
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 0, res)
+        self.assertIn("не сверен", res["human"])
+        self.assertEqual(self.push_calls(), [])
+
+    def kh_pinned(self):
+        (self.cfg / "known_hosts").write_bytes(SCAN_LINE)
+
     def test_wrong_fingerprint_keeps_flag(self):
         (self.cfg / "known_hosts").write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
         self.call(["keys", "--replace"])

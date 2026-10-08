@@ -982,7 +982,14 @@ def cmd_keys(ctx):
             raise LinkExit(EXIT_HUMAN, "ключ сервера НЕ совпал с закреплённым. Если сервер переустанавливали — "
                                        "keys --replace (только с «да» человека). Если нет — не продолжай: это "
                                        "может быть подмена", next_step="keys --replace", **res)
+    # отказ по умолчанию: ключ сервера считается НЕ сверенным, если так записано, или если known_hosts есть, а
+    # состояние потеряно/испорчено (нет host_key_confirmed) или его отпечатки не совпадают с known_hosts
     unverified = bool(st.get("host_key_unverified"))
+    if known_hosts().exists():
+        if not st.get("host_key_confirmed"):
+            unverified = True
+        elif st.get("host_fingerprints") and sorted(fingerprint()) != sorted(st.get("host_fingerprints") or []):
+            unverified = True
     given = norm_fp(getattr(a, "fingerprint", None))
     if same_as_pinned and st.get("host_key_confirmed") and not given:
         pinned = "kept"
@@ -1024,15 +1031,16 @@ def cmd_keys(ctx):
     user = ctx.admin_user()
     rc, o, e = ctx.ssh(["true"], timeout=40, user=user)
     if rc == 0:
-        finish(EXIT_OK, "вход по ключу работает (%s), ключ сервера закреплён: %s"
-               % (user, ", ".join(fps) or "?"), warnings=ctx.warnings, **res)
+        finish(EXIT_OK, "вход по ключу работает (%s), ключ сервера закреплён: %s%s"
+               % (user, ", ".join(fps) or "?", UNVERIFIED_NOTE if unverified else ""), warnings=ctx.warnings, **res)
     if not ctx.locked() and access.get("PASSWORD"):
         if unverified:
             # ключ сервера сменился (--replace) и не сверен — пароль на такой сервер не отправляем, в т.ч. в
             # следующих запусках keys, пока совпавший --fingerprint не снимет флаг host_key_unverified
             res["command"] = copy_id_command(access)
             res["key_install"] = "host_key_replaced"
-            finish(EXIT_HUMAN, "сервер сменил ключ — пароль не отправляю, пока не сверим отпечаток из письма хостера "
+            finish(EXIT_HUMAN, "ключ сервера сменился или не сверен (состояние связки не подтверждает его) — пароль не "
+                               "отправляю, пока не сверим отпечаток ED25519 (SHA256:…) из письма хостера "
                                "(keys --fingerprint SHA256:…). Отпечатки: было %s, стало %s. Если сверять не с чем — "
                                "запасной путь: команда из поля command в своём терминале (пароль root вводишь ты). "
                                "%s" % (", ".join(res.get("old_fingerprints") or st.get("host_key_old_fingerprints") or [])
@@ -1065,6 +1073,8 @@ def cmd_keys(ctx):
 
 
 # ---------- keys: ключ на сервер по паролю из файла доступа (SSH_ASKPASS) ----------
+UNVERIFIED_NOTE = (". Ключ сервера не сверен: сверь отпечаток ED25519 из письма хостера — keys --fingerprint "
+                   "SHA256:…")
 PW_MANAGER_NOTE = ("Важно: пароль root должен лежать в твоём менеджере паролей — положив ключ, я удалю его из файла "
                    "доступа; без менеджера паролей вернуть его можно будет только сбросом в панели хостера.")
 ASKPASS_SUB = "_askpass"

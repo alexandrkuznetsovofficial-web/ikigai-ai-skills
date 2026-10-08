@@ -31,7 +31,7 @@ memory/inbox/, memory/dialogues/ ◄── каждые 5 мин ──  бот 
 | 00 | Аудит: какая у тебя ветка (A, B или C) | [00_START_I_AUDIT.md](00_START_I_AUDIT.md) |
 | 01 | Заказать сервер, заполнить Файл доступа | [01_ZAKAZ_VPS.md](01_ZAKAZ_VPS.md) |
 | brain-link | `detect → keys → harden → claude → put-token → init/adopt → schedule → bot → verify → lockdown` | скилл `brain-link`; объяснение шагов — модули 02, 03A, 04, 05 |
-| 06 | Приёмка: 8 проверок `brain-link verify` | [06_QA_PROVERKA.md](06_QA_PROVERKA.md) |
+| 06 | Приёмка: 9 проверок `brain-link verify` | [06_QA_PROVERKA.md](06_QA_PROVERKA.md) |
 
 **Как запустить шаг.** Скажи Claude Code: *«Запусти brain-link, шаг detect»* — дальше он всё делает сам. Ниже команды, которые Claude выполняет у себя. Тебе они нужны только в двух шагах, где команду вводишь ты сам (`keys` и `put-token`):
 
@@ -58,7 +58,7 @@ memory/inbox/, memory/dialogues/ ◄── каждые 5 мин ──  бот 
 | 03B | [Конструктор бота](03B_KONSTRUKTOR_BOTA.md) | Интервью → ТЗ твоего бота, если хочешь второго бота под свою задачу |
 | 04 | [Где что живёт и бэкапы](04_ISTINA_I_BEKAPY.md) | Зоны и хозяева, конфликты, корзина, бэкапы, переход со старой модели |
 | 05 | [Безопасник](05_BEZOPASNIK.md) | `harden` и `lockdown`: ключи, файрвол, fail2ban, обновления, аварийный вход |
-| 06 | [QA-проверка](06_QA_PROVERKA.md) | Приёмка: 8 проверок `verify` |
+| 06 | [QA-проверка](06_QA_PROVERKA.md) | Приёмка: 9 проверок `verify` |
 | 07 | [Доступ (Tailscale/планшет)](07_DOSTUP_Tailscale_i_planshet.md) | Надстройка: доступ с планшета |
 | 08 | [Если не взлетело](08_ESLI_NE_VZLETELO.md) | Поломки связки: симптом → что делать |
 | 09 | [FAQ](09_FAQ.md) | Где память, можно ли править на сервере, поездки |
