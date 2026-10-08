@@ -73,7 +73,7 @@ def cmd_system(args) -> dict:
         port = str(args.ssh_port or 22)
         rc, outp = run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-p", port, args.ssh_host, "true"], timeout=15)
         info["ssh_server_ok"] = (rc == 0)
-        info["ssh_server_note"] = None if rc == 0 else "без пароля не пускает: нужен ssh-ключ (встреча «Новоселье») или Remote-SSH в VS Code"
+        info["ssh_server_note"] = None if rc == 0 else "без пароля не пускает: вход по ключу ставит связка (скилл brain-link); вручную к серверу не подключайся"
     parts = [{"windows": "Windows", "mac": "Mac", "linux": "Linux"}[info["os_branch"]] + f" · python {info['python']}",
              "venv пака есть" if info["venv_ready"] else "venv пака ещё нет (запусти setup_venv.sh)",
              f"claude: {info['claude'] or 'не найден'}",
