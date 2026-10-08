@@ -69,6 +69,11 @@ jobs:
         env:
           WORK: ${{ runner.temp }}\brain-lab
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File brain-link\ci\win_askpass.ps1
+      - name: буфер обмена Windows для put-token claude (clip / Get-Clipboard, функции продукта)
+        if: ${{ !cancelled() }}
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python brain-link/ci/win_clipboard.py
       - name: артефакт (журнал Windows)
         if: always()
         uses: actions/upload-artifact@v4
