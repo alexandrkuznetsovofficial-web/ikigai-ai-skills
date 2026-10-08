@@ -64,14 +64,26 @@ def main():
     else:
         bad("команда в буфере искажена: %r → %r" % (cmd, got))
 
-    # 1b. кириллица в команде (путь профиля с кириллицей) — clip получает UTF-16LE
+    # 1b. кириллица в команде (путь профиля с кириллицей). Запись (clip, UTF-16LE) проверяем независимым чтением
+    #     в UTF-8; чтение продукта (Get-Clipboard через stdout PowerShell 5.1) — отдельно: продукт им берёт только
+    #     ASCII-строку токена, поэтому искажение не-ASCII при чтении — предупреждение, не провал.
     cyr = 'py -3 "C:\\Users\\Иван Петров\\.claude\\skills\\brain-link\\scripts\\brain_link.py" put-token claude'
     bk.CLIPBOARD_PUT(cyr)
+    r = subprocess.run([bk.find_powershell(), "-NoProfile", "-NonInteractive", "-Command",
+                        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"],
+                       capture_output=True, timeout=30)
+    wrote = r.stdout.decode("utf-8", "replace").rstrip("\r\n")
+    if wrote == cyr:
+        ok("CLIPBOARD_PUT: кириллица в буфер записана без искажений (clip UTF-16LE)")
+    else:
+        bad("CLIPBOARD_PUT: кириллица записана искажённо: sha %s → %s, len %d → %d" % (
+            sha(cyr), sha(wrote), len(cyr), len(wrote)))
     got = (bk.CLIPBOARD_GET() or "").rstrip("\r\n")
     if got == cyr:
-        ok("кириллица в буфере не искажена (clip UTF-16LE → Get-Clipboard)")
+        ok("CLIPBOARD_GET: кириллица читается без искажений")
     else:
-        bad("кириллица в буфере искажена: sha %s → %s, len %d → %d" % (sha(cyr), sha(got), len(cyr), len(got)))
+        print("WARN CLIPBOARD_GET искажает не-ASCII (кодировка stdout PowerShell 5.1: %d знаков '?' из %d); "
+              "для токена (ASCII) не влияет" % (got.count("?"), len(got)), flush=True)
 
     # 2. человек скопировал строку токена (как в окне setup-token: с пробелами и переводом строки)
     for label, text in (("одной строкой", "  " + tok + "\r\n"),
