@@ -6,8 +6,16 @@
 # Переменные окружения, которые ждёт скрипт:
 #   WORK      рабочая папка логов/артефактов (по умолчанию $RUNNER_TEMP/brain-lab)
 #   REPO      корень репозитория (по умолчанию два уровня вверх от ci/)
+#   SCENARIO  fresh (по умолчанию) — чистый VPS; upgrade (kit 2.3) — сервер, уже настроенный «по-старому»:
+#             до установки — чужой brain-bot.service (мост claude-code-telegram под brain, токен в Environment=,
+#             владелец в .env), 60-cloudimg-settings.conf с PasswordAuthentication yes, память на сервере.
+#             Ждём: detect видит старого бота, harden его не трогает, put-token bot переносит токен на сервере
+#             (в выводе только маска), bot --yes выключает его и кладёт копию юнита в /var/backups/brain-link,
+#             adopt вместо init, в конце НАСТОЯЩИЙ lockdown и `sshd -T`: passwordauthentication no, permitrootlogin no.
+#             После upgrade вход root закрыт — security_checks.sh в этом job не запускается.
 # Пробрасываются в установщик: BRAIN_LAB_SKIP_UFW_ENABLE=1 (хук harden другого агента).
 set -uo pipefail
+SCENARIO="${SCENARIO:-fresh}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${REPO:-$(cd "$HERE/../.." && pwd)}"
@@ -42,6 +50,13 @@ print("  next:", d.get("next_step"))' 2>/dev/null | tee -a "$LOG" || echo "$out"
 RSSH() { ssh -i "$HOME/.ssh/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -p "$PORT" "$1@127.0.0.1" "$2" 2>>"$LOG"; }
 jget() { echo "$LAST_JSON" | "$PY" -c "import sys,json;print(json.load(sys.stdin).get('$1',''))" 2>/dev/null; }
+# путь через точки: jpath upgrade.old_token
+jpath() { echo "$LAST_JSON" | "$PY" -c "
+import sys,json
+d=json.load(sys.stdin)
+for k in '$1'.split('.'):
+    d=d[int(k)] if isinstance(d,list) else (d or {}).get(k)
+print(d if d is not None else '')" 2>/dev/null; }
 
 PY="$(command -v python3)"
 say "python: $("$PY" --version 2>&1), repo: $REPO"
@@ -69,6 +84,12 @@ printf '%s\n' '# ТОЛЬКО лаборатория (ci/server_e2e.sh): «се�
 chmod 600 "$WORK/tok_rootpw"
 printf 'root:%s\n' "$(cat "$WORK/tok_rootpw")" | sudo chpasswd && say "пароль root на «сервере» задан" || say "ВНИМАНИЕ: chpasswd root не прошёл"
 grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config || say "ВНИМАНИЕ: sshd_config без Include sshd_config.d"
+if [ "$SCENARIO" = upgrade ]; then
+  # как у облачного образа, где хостер включил пароль: этот файл «первым значением» перебивает основной конфиг,
+  # и lockdown обязан его перебить своим 00-brain.conf (проверка sshd -T в конце)
+  printf '%s\n' 'PasswordAuthentication yes' | sudo tee /etc/ssh/sshd_config.d/60-cloudimg-settings.conf >/dev/null
+  say "upgrade: 60-cloudimg-settings.conf с PasswordAuthentication yes положен"
+fi
 sudo install -d -m 0700 /root/.ssh; sudo touch /root/.ssh/authorized_keys; sudo chmod 600 /root/.ssh/authorized_keys
 sudo mkdir -p /run/sshd && sudo chmod 0755 /run/sshd   # privilege separation dir (сервис сам создаёт, на всякий случай)
 sudo "$SSHD" -t 2>&1 | tee -a "$LOG"
@@ -109,8 +130,9 @@ cat > "$BRAIN_CONFIG_DIR/server_access" <<ACC
 SERVER_IP=127.0.0.1
 SERVER_USER=root
 SERVER_PORT=$PORT
-USER_ID=111111111
 ACC
+# upgrade: ни BOT_TOKEN, ни USER_ID в файле доступа — их даёт старый бот
+[ "$SCENARIO" = upgrade ] || echo "USER_ID=111111111" >> "$BRAIN_CONFIG_DIR/server_access"
 chmod 600 "$BRAIN_CONFIG_DIR/server_access"
 
 # ---------------------------------------------------------------- 3. keys (доверие при первом входе + ключ по паролю, SSH_ASKPASS)
@@ -184,10 +206,50 @@ if [ -n "$REP" ]; then
   grep -qF -- "$ROOTPW" "$LOG" && bad "журнал e2e содержит пароль" || ok "журнал e2e без пароля"
 else bad "report не создал файл (rc=$rrc)"; fi
 
+# токены лаборатории (нужны upgrade-сценарию уже здесь: токен старого бота = токен, который потом проверит бот)
+"$PY" - <<PYGEN
+import secrets, string
+a = string.ascii_letters + string.digits
+open("$WORK/tok_claude","w").write("sk-ant-oat01-" + "".join(secrets.choice(a) for _ in range(40)))
+open("$WORK/tok_bot","w").write("8" + "".join(secrets.choice("0123456789") for _ in range(8)) + ":" + "".join(secrets.choice(a) for _ in range(35)))
+PYGEN
+
+if [ "$SCENARIO" = upgrade ]; then
+  # ------------------------------------------------------------ 3f. «сервер по-старому» (kit 2.3, апгрейд)
+  say "upgrade: старый сервер — brain, память, мост claude-code-telegram как brain-bot.service"
+  RSSH root 'id brain >/dev/null 2>&1 || useradd -m -s /bin/bash brain
+    install -d -o brain -g brain /home/brain/memory /home/brain/bridge/venv/bin
+    printf "# старая заметка на сервере\nLAB-OLD-SERVER-NOTE-41c2\n" > /home/brain/memory/old_server_note.md
+    printf "#!/bin/sh\n# ТОЛЬКО лаборатория: фейковый мост claude-code-telegram\nexec sleep 100000\n" > /home/brain/bridge/venv/bin/claude-telegram-bot
+    chmod 755 /home/brain/bridge/venv/bin/claude-telegram-bot; chown -R brain:brain /home/brain/memory /home/brain/bridge'
+  printf 'TELEGRAM_BOT_USERNAME=lab_brain_bot\nALLOWED_USERS=[111111111]\nAPPROVED_DIRECTORY=/home/brain\n' \
+    | RSSH root "cat > /home/brain/bridge/.env && chown brain:brain /home/brain/bridge/.env && chmod 600 /home/brain/bridge/.env"
+  printf '%s\n' '# ТОЛЬКО лаборатория: «старый бот» с нашим именем (мост claude-code-telegram)' '[Unit]' 'Description=old bridge' \
+    '[Service]' 'User=brain' 'WorkingDirectory=/home/brain/bridge' 'ExecStart=/home/brain/bridge/venv/bin/claude-telegram-bot' \
+    "Environment=TELEGRAM_BOT_TOKEN=$(cat "$WORK/tok_bot")" 'Restart=always' '[Install]' 'WantedBy=multi-user.target' \
+    | RSSH root "cat > /etc/systemd/system/brain-bot.service"
+  RSSH root 'install -d /etc/systemd/system/brain-bot.service.d
+    printf "[Service]\nEnvironment=BRIDGE_OLD_DROPIN=1\n" > /etc/systemd/system/brain-bot.service.d/override.conf
+    systemctl daemon-reload && systemctl enable --now brain-bot.service' >/dev/null 2>&1
+  [ "$(RSSH root 'systemctl is-active brain-bot.service')" = active ] && ok "upgrade: старый бот (мост) работает как brain-bot.service" \
+    || bad "upgrade: старый бот не поднялся"
+fi
+
 # sync-ключ на сервер ставит harden (в /home/brain/.ssh/authorized_keys).
 # detect
 LINK -- detect; assert_rc 0 $? "detect отвечает"
 say "ветка/next: $(jget branch) / $(jget next_step)"
+if [ "$SCENARIO" = upgrade ]; then
+  [ "$(jget branch)" = B ] && ok "upgrade: detect → ветка B" || bad "upgrade: ветка $(jget branch), ждали B"
+  [ "$(jpath upgrade.old_bots.0.unit)" = brain-bot.service ] && ok "upgrade: detect видит чужой brain-bot.service" \
+    || bad "upgrade: detect не видит старого бота: $(jpath upgrade.old_bots)"
+  [ "$(jpath upgrade.old_token)" = one ] && ok "upgrade: detect нашёл токен старого бота (маска $(jpath upgrade.old_token_mask))" \
+    || bad "upgrade: old_token=$(jpath upgrade.old_token)"
+  [ "$(jpath upgrade.ssh_password_login)" = open ] && ok "upgrade: detect — вход по паролю открыт" \
+    || bad "upgrade: ssh_password_login=$(jpath upgrade.ssh_password_login)"
+  printf '%s' "$LAST_JSON" | grep -qF -- "$(cat "$WORK/tok_bot")" && bad "upgrade: токен старого бота в JSON detect" \
+    || ok "upgrade: токена старого бота в выводе detect нет"
+fi
 
 # ---------------------------------------------------------------- 4. harden (brain, swap, ufw-правила без enable, brain-admin)
 # Нормализация раннера (не «сервера участника»): у образа GitHub /etc/sudoers.d/runner с режимом 0644 —
@@ -199,6 +261,11 @@ if sudo visudo -c >/dev/null 2>&1; then say "раннер: visudo -c чисто 
 else say "раннер: visudo -c ругается ещё ДО harden:"; sudo visudo -c 2>&1 | grep -v "parsed OK" | sed 's/^/   /' | tee -a "$LOG"; fi
 export BRAIN_LAB_SKIP_UFW_ENABLE=1   # хук harden другого агента: правила задать, enable пропустить
 LINK -- harden; rc=$?; assert_rc 0 $rc "harden прошёл"
+if [ "$SCENARIO" = upgrade ]; then
+  ex="$(RSSH root 'systemctl show -p ExecStart --value brain-bot.service; systemctl is-active brain-bot.service' | tr '\n' ' ')"
+  case "$ex" in *claude-telegram-bot*active*) ok "upgrade: harden не тронул чужой brain-bot (юнит и процесс на месте)" ;;
+    *) bad "upgrade: harden изменил/остановил старого бота: $ex" ;; esac
+fi
 if [ "$rc" != 0 ]; then
   echo "$LAST_JSON" | "$PY" -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");[print("   ❌",x) for x in (d.get("lines") or {}).get("bad",[])]' 2>/dev/null | tee -a "$LOG"
   say "диагностика: visudo -c и /etc/sudoers.d"
@@ -250,19 +317,34 @@ bw="$(RSSH root 'for u in brain brainbot; do for f in /usr/local/lib/brain-bot /
 [ -z "$bw" ] && ok "brain и brainbot не могут писать в /usr/local/lib/brain-bot (код и claude бота)" || bad "запись в /usr/local/lib/brain-bot: $bw"
 
 # ---------------------------------------------------------------- 6. put-token claude|bot (через GETPASS-инъекцию)
-"$PY" - <<PYGEN
-import secrets, string
-a = string.ascii_letters + string.digits
-open("$WORK/tok_claude","w").write("sk-ant-oat01-" + "".join(secrets.choice(a) for _ in range(40)))
-open("$WORK/tok_bot","w").write("8" + "".join(secrets.choice("0123456789") for _ in range(8)) + ":" + "".join(secrets.choice(a) for _ in range(35)))
-PYGEN
 LINK --getpass-file "$WORK/tok_claude" -- put-token claude --no-setup; assert_rc 0 $? "put-token claude"
-LINK --getpass-file "$WORK/tok_bot" -- put-token bot; assert_rc 0 $? "put-token bot"
+[ "$(jget verified)" = True ] && ok "put-token claude: контрольная сумма на сервере совпала" || bad "put-token claude: verified=$(jget verified)"
+if [ "$SCENARIO" = upgrade ]; then
+  # токена бота нет ни в файле доступа, ни на вводе: он у старого бота — перенос на сервере по «да»
+  LINK -- put-token bot; assert_rc 3 $? "upgrade: put-token bot — стоп-точка «перенести токен старого бота?»"
+  LINK -- put-token bot --yes; assert_rc 0 $? "upgrade: put-token bot --yes — токен перенесён на сервере"
+  [ "$(jget owner_moved)" = True ] && ok "upgrade: владелец взят из ALLOWED_USERS старого бота" || bad "upgrade: owner_moved=$(jget owner_moved)"
+  printf '%s' "$LAST_JSON" | grep -qF -- "$(cat "$WORK/tok_bot")" && bad "upgrade: токен в JSON put-token" || ok "upgrade: токена в выводе нет, только маска $(jget token_mask)"
+  grep -qF -- "$(cat "$WORK/tok_bot")" "$LOG" && bad "upgrade: токен в журнале e2e" || ok "upgrade: токена в журнале e2e нет"
+  same="$(RSSH root "sha256sum /etc/brain-bot/credentials/bot_token | cut -c1-64")"
+  [ "$same" = "$(printf '%s' "$(cat "$WORK/tok_bot")" | sha256sum | cut -c1-64)" ] && ok "upgrade: на сервере ровно токен старого бота (sha256)" \
+    || bad "upgrade: токен на сервере не тот"
+  [ "$(RSSH root 'cat /etc/brain-bot/owner_id; stat -c "%a %U" /etc/brain-bot/owner_id' | tr '\n' ' ')" = "111111111 600 root " ] \
+    && ok "upgrade: владелец на сервере в /etc/brain-bot/owner_id (0600 root)" || bad "upgrade: owner_id не тот"
+else
+  LINK --getpass-file "$WORK/tok_bot" -- put-token bot; assert_rc 0 $? "put-token bot"
+fi
 tok_c_perm="$(RSSH root 'stat -c "%a %U" /etc/brain-bot/credentials/claude_token 2>/dev/null')"
 [ "$tok_c_perm" = "600 root" ] && ok "claude_token 0600 root" || bad "claude_token: $tok_c_perm"
 
-# ---------------------------------------------------------------- 7. init (первая выгрузка памяти)
-LINK -- init --yes; assert_rc 0 $? "init: память и скилл выгружены"
+# ---------------------------------------------------------------- 7. init (первая выгрузка памяти) / adopt (upgrade)
+if [ "$SCENARIO" = upgrade ]; then
+  LINK -- adopt --yes; assert_rc 0 $? "upgrade: adopt — переход со старой модели"
+  grep -rqs LAB-OLD-SERVER-NOTE-41c2 "$WS/memory" && ok "upgrade: заметка с сервера приехала на компьютер" \
+    || bad "upgrade: старая заметка с сервера не приехала"
+else
+  LINK -- init --yes; assert_rc 0 $? "init: память и скилл выгружены"
+fi
 sv_mem="$(RSSH root 'find /home/brain/memory -name MEMORY.md 2>/dev/null | head -1')"
 [ -n "$sv_mem" ] && ok "MEMORY.md доехал на сервер" || bad "MEMORY.md на сервере нет"
 sv_priv="$(RSSH root 'ls -d /home/brain/memory/personal /home/brain/*.session 2>/dev/null')"
@@ -270,19 +352,39 @@ sv_priv="$(RSSH root 'ls -d /home/brain/memory/personal /home/brain/*.session 2>
 
 # ---------------------------------------------------------------- 8. bot (фейковый Telegram, lab drop-in)
 # lab-only drop-in: разрешить localhost и указать адрес фейкового Bot API (см. ci/README.md)
-RSSH root "install -d -m0755 /etc/systemd/system/brain-bot.service.d"
+# upgrade: в /run (а не /etc): шаг bot целиком уносит /etc/…/brain-bot.service.d чужого бота в бэкап
+LABDD=/etc/systemd/system/brain-bot.service.d
+[ "$SCENARIO" = upgrade ] && LABDD=/run/systemd/system/brain-bot.service.d
+RSSH root "install -d -m0755 $LABDD"
 printf '%s\n' \
   '# ТОЛЬКО лаборатория (ci/server_e2e.sh). В прод не едет.' \
   '[Service]' 'IPAddressAllow=127.0.0.1/32' 'Environment=TELEGRAM_API_BASE=http://127.0.0.1:18081' \
-  | RSSH root "cat > /etc/systemd/system/brain-bot.service.d/zz-lab.conf"
+  | RSSH root "cat > $LABDD/zz-lab.conf"
 RSSH root "systemctl daemon-reload 2>/dev/null || true"
 # миграция ранней установки (бот был под brain, состояние в ~/.local/state/brain-bot): шаг bot переносит
 # состояние в /var/lib/brain-bot и убирает старую папку. Безвредный файл — watch_state.json.
 # Эмуляция ранней установки: юнит brain-bot ещё под User=brain и метки переноса нет (harden свежей версии
 # уже поставил юнит под brainbot и метку — на свежей установке перенос запрещён, это проверяет RT-11c).
+if [ "$SCENARIO" != upgrade ]; then
 RSSH root "sed -i 's/^User=brainbot\$/User=brain/' /etc/systemd/system/brain-bot.service && rm -f /var/lib/brain-bot/.migrated-from-brain && systemctl daemon-reload"
 printf '{"lab": 1}\n' | RSSH root "runuser -u brain -- sh -c 'mkdir -p /home/brain/.local/state/brain-bot/claude-config && cat > /home/brain/.local/state/brain-bot/watch_state.json'"
+else
+  LINK -- bot; assert_rc 3 $? "upgrade: bot без --yes — стоп-точка «выключить старый бот»"
+  echo "$LAST_JSON" | grep -q 'brain-bot.service' && ok "upgrade: стоп-точка называет brain-bot.service" || bad "upgrade: стоп-точка без имени бота"
+fi
 LINK -- bot --yes; rc=$?
+if [ "$SCENARIO" = upgrade ]; then
+  bk="$(RSSH root 'ls -d /var/backups/brain-link/old-bot.brain-bot.service.* 2>/dev/null | head -1')"
+  [ -n "$bk" ] && RSSH root "grep -q claude-telegram-bot $bk/brain-bot.service" && ok "upgrade: копия юнита старого бота — $bk" \
+    || bad "upgrade: копии юнита старого бота нет"
+  RSSH root "test -f $bk/brain-bot.service.d/override.conf && test ! -e /etc/systemd/system/brain-bot.service.d/override.conf" \
+    && ok "upgrade: drop-in старого бота унесён в бэкап (не смешался с нашим юнитом)" || bad "upgrade: drop-in старого бота не перенесён"
+  RSSH root 'systemctl show -p ExecStart --value brain-bot.service' | grep -qF /usr/local/lib/brain-bot/brain_bot.py \
+    && ok "upgrade: brain-bot.service теперь наш" || bad "upgrade: brain-bot.service не заменён"
+  [ -z "$(RSSH root 'pgrep -f claude-telegram-bot')" ] && ok "upgrade: процесс старого моста остановлен" || bad "upgrade: старый мост ещё работает"
+  RSSH root 'test -f /home/brain/bridge/.env && test -x /home/brain/bridge/venv/bin/claude-telegram-bot' \
+    && ok "upgrade: файлы старого бота не удалены" || bad "upgrade: файлы старого бота пропали"
+fi
 say "bot rc=$rc"
 say "права для бота (диагностика):"
 RSSH root 'stat -c "%A %U:%G %n" /home/brain /home/brain/memory /home/brain/memory/inbox /home/brain/memory/dialogues /var/lib/brain-bot
@@ -302,8 +404,10 @@ if [ "$rc" != 0 ]; then
   bot_rc=skip
 else
 mig="$(RSSH root 'cat /var/lib/brain-bot/watch_state.json 2>/dev/null; test -e /home/brain/.local/state/brain-bot && echo LEGACY_LEFT || echo LEGACY_GONE')"
+if [ "$SCENARIO" != upgrade ]; then
 case "$mig" in *'"lab": 1'*LEGACY_GONE*) ok "миграция: состояние ранней установки перенесено в /var/lib/brain-bot, старая папка убрана" ;;
   *) bad "миграция состояния не сработала: $(echo "$mig" | tr '\n' ' ')" ;; esac
+fi
 bu="$(RSSH root 'systemctl show -p User --value brain-bot.service; ps -o user= -p "$(systemctl show -p MainPID --value brain-bot.service)"' | tr '\n' ' ')"
 [ "$bu" = "brainbot brainbot " ] && ok "бот работает под brainbot (юнит и процесс)" || bad "бот не под brainbot: $bu"
 sudo "$PY" "$HERE/bot_scenario.py" full --tg http://127.0.0.1:18081 --owner 111111111 \
@@ -356,8 +460,27 @@ else
   [ "$lrc" != 0 ] && ok "lockdown с битым ключом вернул ошибку (rc=$lrc)" || bad "lockdown с битым ключом вернул rc=0"
 fi
 
+# ---------------------------------------------------------------- 11. upgrade: НАСТОЯЩИЙ lockdown и sshd -T
+if [ "$SCENARIO" = upgrade ]; then
+  LINK -- lockdown --confirm --confirm-again; lrc=$?
+  case "$lrc" in 0|2) ok "upgrade: lockdown включён (rc=$lrc)" ;; *) bad "upgrade: lockdown rc=$lrc" ;; esac
+  for u in root brain; do
+    eff="$(sudo "$SSHD" -T -C "user=$u,host=lab.invalid,addr=127.0.0.1" 2>/dev/null | awk '$1=="passwordauthentication"||$1=="permitrootlogin"||$1=="kbdinteractiveauthentication"{print $1"="$2}' | sort | tr '\n' ' ')"
+    say "sshd -T ($u): $eff"
+    [ "$eff" = "kbdinteractiveauthentication=no passwordauthentication=no permitrootlogin=no " ] \
+      && ok "upgrade: sshd -T ($u) — пароль и root закрыты, 60-cloudimg и лабораторный 10- перебиты" \
+      || bad "upgrade: sshd -T ($u): $eff"
+  done
+  [ "$(RSSH root true >/dev/null 2>&1; echo $?)" != 0 ] && ok "upgrade: root по ключу больше не входит" || bad "upgrade: root всё ещё входит"
+  [ "$(RSSH brain true >/dev/null 2>&1; echo $?)" = 0 ] && ok "upgrade: brain по ключу входит" || bad "upgrade: brain не входит"
+  pw="$(ssh -o BatchMode=yes -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive \
+        -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p "$PORT" root@127.0.0.1 true 2>&1)"
+  echo "$pw" | grep -q 'Permission denied (publickey)' && ok "upgrade: сервер больше не предлагает вход по паролю" \
+    || bad "upgrade: ответ на вход по паролю: $pw"
+fi
+
 say "----"
-say "server-e2e: $PASS PASS, $FAIL FAIL"
+say "server-e2e ($SCENARIO): $PASS PASS, $FAIL FAIL"
 # прибраться
 # sshd и фейковый Telegram НЕ гасим: следующий шаг job (security_checks.sh) работает по тому же «серверу»
 echo "$TG_PID" > "$WORK/tg.pid"

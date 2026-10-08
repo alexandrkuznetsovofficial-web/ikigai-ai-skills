@@ -148,3 +148,58 @@ jobs:
           path: ${{ runner.temp }}/brain-lab/artifacts
           if-no-files-found: ignore
           retention-days: 7
+
+  # 5 — kit 2.3: апгрейд уже настроенного сервера (чужой brain-bot, токен старого бота, 60-cloudimg с паролем)
+  #     и НАСТОЯЩИЙ lockdown с проверкой sshd -T. После lockdown root закрыт — RT-проверки здесь не идут.
+  server-upgrade:
+    name: server-upgrade (старый сервер → связка, lockdown)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      REPO: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: рабочая папка лаборатории
+        run: echo "WORK=$RUNNER_TEMP/brain-lab" >> "$GITHUB_ENV"
+      - name: апгрейд «старого» сервера против локального sshd:2222
+        env:
+          SCENARIO: upgrade
+        run: bash brain-link/ci/server_e2e.sh
+      - name: очистка артефактов от секретов
+        if: always()
+        run: |
+          set -u
+          OUT="$WORK/artifacts"; mkdir -p "$OUT"
+          # токены, что лаборатория сгенерировала сама (точные значения вычищаем из логов)
+          REDACT=()
+          for f in "$WORK/tok_claude" "$WORK/tok_bot" "$WORK/tok_rootpw"; do
+            [ -f "$f" ] && REDACT+=("$(cat "$f")")
+          done
+          scrub() { # файл -> в OUT с заменой точных токенов и похожих паттернов
+            local src="$1" dst="$OUT/$(basename "$1")"
+            cp "$src" "$dst" 2>/dev/null || return 0
+            for v in "${REDACT[@]:-}"; do [ -n "$v" ] && sed -i "s#$(printf '%s' "$v" | sed 's/[&/\]/\\&/g')#<redacted>#g" "$dst"; done
+            # на всякий случай — любые строки, похожие на токены
+            sed -i -E 's#sk-ant-[A-Za-z0-9_-]{10,}#<redacted-anthropic>#g; s#[0-9]{8,10}:[A-Za-z0-9_-]{30,}#<redacted-tg>#g' "$dst"
+          }
+          for f in "$WORK"/*.log "$WORK"/*.json; do [ -f "$f" ] && scrub "$f"; done
+          # удаляем сами файлы токенов и ключи из набора артефактов
+          rm -f "$OUT/tok_claude" "$OUT/tok_bot" "$OUT/tok_rootpw" 2>/dev/null || true
+          # контроль: в артефактах не осталось ни одного сгенерированного токена
+          bad=0
+          for v in "${REDACT[@]:-}"; do
+            [ -n "$v" ] || continue
+            if grep -rqF "$v" "$OUT" 2>/dev/null; then echo "СТОП: токен остался в артефактах"; bad=1; fi
+          done
+          [ "$bad" = 0 ] && echo "артефакты очищены от секретов" || exit 1
+      - name: артефакт (очищенные логи e2e и redteam)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-upgrade-logs
+          path: ${{ runner.temp }}/brain-lab/artifacts
+          if-no-files-found: ignore
+          retention-days: 7
