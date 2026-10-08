@@ -63,6 +63,12 @@ jobs:
         env:
           WORK: ${{ runner.temp }}\brain-lab
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File brain-link\ci\win_integration.ps1
+      - name: keys по паролю через SSH_ASKPASS (askpass.cmd + встроенный ssh.exe, локальный sshd Windows)
+        if: ${{ !cancelled() }}
+        shell: powershell
+        env:
+          WORK: ${{ runner.temp }}\brain-lab
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File brain-link\ci\win_askpass.ps1
       - name: артефакт (журнал Windows)
         if: always()
         uses: actions/upload-artifact@v4
@@ -114,7 +120,7 @@ jobs:
           OUT="$WORK/artifacts"; mkdir -p "$OUT"
           # токены, что лаборатория сгенерировала сама (точные значения вычищаем из логов)
           REDACT=()
-          for f in "$WORK/tok_claude" "$WORK/tok_bot"; do
+          for f in "$WORK/tok_claude" "$WORK/tok_bot" "$WORK/tok_rootpw"; do
             [ -f "$f" ] && REDACT+=("$(cat "$f")")
           done
           scrub() { # файл -> в OUT с заменой точных токенов и похожих паттернов
@@ -126,7 +132,7 @@ jobs:
           }
           for f in "$WORK"/*.log "$WORK"/*.json; do [ -f "$f" ] && scrub "$f"; done
           # удаляем сами файлы токенов и ключи из набора артефактов
-          rm -f "$OUT/tok_claude" "$OUT/tok_bot" 2>/dev/null || true
+          rm -f "$OUT/tok_claude" "$OUT/tok_bot" "$OUT/tok_rootpw" 2>/dev/null || true
           # контроль: в артефактах не осталось ни одного сгенерированного токена
           bad=0
           for v in "${REDACT[@]:-}"; do

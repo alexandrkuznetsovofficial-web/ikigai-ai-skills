@@ -17,6 +17,7 @@
 | `bot_scenario.py` | сценарий «владелец и чужой пишут боту»: молчание чужому и группе, режимы файлы/веб с полной проверкой argv и окружения, модель sonnet/opus, фильтр секретов, «запомни»→inbox, ни одного токена в исходящих. |
 | `drive_link.py` | запускает `brain_link.py` с подменой внедряемых зависимостей: `--getpass-file` (put-token без терминала), `--sync-shim` (расписание через local-транспорт), `--lockdown-bad-key` (проверка автоотката lockdown). |
 | `sync_shim.py` | запасной вариант: настоящий `brain_sync.main` с транспортом из `BRAIN_SYNC_TRANSPORT` или `~/.config/brain/ci_transport.txt`. Интеграционные сценарии его больше не используют — `schedule` сам передаёт транспорт (см. ниже). |
+| `askpass_probe.py` / `win_askpass.ps1` | вход по паролю через `SSH_ASKPASS` (помощник `make_askpass`): probe зовёт ssh напрямую с askpass.cmd/askpass.sh, `win_askpass.ps1` поднимает локальный OpenSSH Server Windows с пользователем `root` по паролю и гоняет настоящий `keys` (неверный пароль → `password_rejected`, верный → `key_installed=password`, утечки пароля нет). Ubuntu-вариант — шаг 3 `server_e2e.sh`. |
 | `smoke_json.py` | смоук «один JSON в UTF-8 и ожидаемый код», в т.ч. под `PYTHONIOENCODING=cp1251` и в фейковом HOME с пробелом и кириллицей. |
 | `cmdline_watch.py` | сторож RT-12: токен не появляется в `/proc/*/cmdline` во время audit/verify (пишет только pid/comm/метку). |
 | `hostile_tar.py` | враждебные архивы для RT-10 (симлинк, hardlink, `..`, абсолютный путь, вне зоны, >20 МБ, gzip-бомба, план-бомба) + честный контроль. |

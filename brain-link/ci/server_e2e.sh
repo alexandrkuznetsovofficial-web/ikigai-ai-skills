@@ -61,8 +61,13 @@ HOSTKEY=/etc/ssh/ssh_host_ed25519_key
 # 10- : после 00-brain.conf (lockdown должен перебивать лабораторию), до 50-cloud-init.conf раннера
 LABCONF=/etc/ssh/sshd_config.d/10-brain-lab.conf
 printf '%s\n' '# ТОЛЬКО лаборатория (ci/server_e2e.sh): «сервер участника» на 127.0.0.1:2222. В прод не едет.' \
-  "Port $PORT" 'ListenAddress 127.0.0.1' 'PermitRootLogin prohibit-password' 'PubkeyAuthentication yes' \
-  'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'LogLevel VERBOSE' | sudo tee "$LABCONF" >/dev/null
+  "Port $PORT" 'ListenAddress 127.0.0.1' 'PermitRootLogin yes' 'PubkeyAuthentication yes' \
+  'PasswordAuthentication yes' 'KbdInteractiveAuthentication no' 'LogLevel VERBOSE' | sudo tee "$LABCONF" >/dev/null
+# как у свежего VPS: root входит по паролю из письма хостера (keys кладёт ключ сам через SSH_ASKPASS),
+# lockdown (00-brain.conf) потом перебивает это. Пароль — случайный, только в $WORK/tok_rootpw (вычищается из артефактов).
+"$(command -v python3)" -c 'import secrets,string;a=string.ascii_letters+string.digits;print("Lab%!^&@-"+"".join(secrets.choice(a) for _ in range(20)))' > "$WORK/tok_rootpw"
+chmod 600 "$WORK/tok_rootpw"
+printf 'root:%s\n' "$(cat "$WORK/tok_rootpw")" | sudo chpasswd && say "пароль root на «сервере» задан" || say "ВНИМАНИЕ: chpasswd root не прошёл"
 grep -q '^Include /etc/ssh/sshd_config.d' /etc/ssh/sshd_config || say "ВНИМАНИЕ: sshd_config без Include sshd_config.d"
 sudo install -d -m 0700 /root/.ssh; sudo touch /root/.ssh/authorized_keys; sudo chmod 600 /root/.ssh/authorized_keys
 sudo mkdir -p /run/sshd && sudo chmod 0755 /run/sshd   # privilege separation dir (сервис сам создаёт, на всякий случай)
@@ -108,22 +113,76 @@ USER_ID=111111111
 ACC
 chmod 600 "$BRAIN_CONFIG_DIR/server_access"
 
-# ---------------------------------------------------------------- 3. keys (с отпечатком хоста, вход по ключу)
+# ---------------------------------------------------------------- 3. keys (доверие при первом входе + ключ по паролю, SSH_ASKPASS)
 FP="$(sudo ssh-keygen -lf "$HOSTKEY.pub" | awk '{print $2}')"
 say "fingerprint хоста: $FP"
-LINK -- keys --fingerprint "$FP"; rc=$?
-# admin-ключ сгенерирован — кладём его в authorized_keys сервера (эмуляция ssh-copy-id вручную)
-if [ -f "$HOME/.ssh/id_ed25519.pub" ]; then
-  cat "$HOME/.ssh/id_ed25519.pub" | sudo tee -a /root/.ssh/authorized_keys >/dev/null
-  ok "admin-ключ добавлен в authorized_keys сервера"
-else
-  bad "keys не создал admin-ключ"
-fi
-LINK -- keys --fingerprint "$FP"; rc=$?; assert_rc 0 $rc "keys: вход по ключу работает"
+ROOTPW="$(cat "$WORK/tok_rootpw")"
+WRONGPW="Wrong%!-$(date +%s)-nope"
+KLOG="$WORK/keys_stderr.log"; : > "$KLOG"
+KEYS() { # запуск keys: JSON → LAST_JSON, stderr → KLOG (отдельно, для проверки утечки)
+  local rc
+  LAST_JSON="$("$PY" "$HERE/drive_link.py" -- keys "$@" 2>>"$KLOG")"; rc=$?
+  echo "$LAST_JSON" | "$PY" -c 'import sys,json;d=json.loads(sys.stdin.read() or "{}");print("  human:",d.get("human","")[:300]);print("  key_install:",d.get("key_install"),"key_installed:",d.get("key_installed"),"host_key:",d.get("host_key"),"check:",d.get("host_key_check"))' 2>/dev/null | tee -a "$LOG"
+  return $rc
+}
+set_pw() { # PASSWORD в файле доступа: set_pw <значение> | set_pw (убрать)
+  grep -v '^PASSWORD=' "$BRAIN_CONFIG_DIR/server_access" > "$BRAIN_CONFIG_DIR/server_access.tmp"
+  [ -n "${1:-}" ] && printf 'PASSWORD=%s\n' "$1" >> "$BRAIN_CONFIG_DIR/server_access.tmp"
+  mv "$BRAIN_CONFIG_DIR/server_access.tmp" "$BRAIN_CONFIG_DIR/server_access"; chmod 600 "$BRAIN_CONFIG_DIR/server_access"
+}
+no_leak() { # <пароль> <метка>: пароля нет ни в JSON, ни в stderr keys
+  if printf '%s' "$LAST_JSON" | grep -qF -- "$1" || grep -qF -- "$1" "$KLOG"; then bad "$2: пароль утёк в вывод keys"
+  else ok "$2: пароля нет ни в JSON, ни в stderr keys"; fi
+}
+ak_count() { local n; n="$(sudo grep -cxF "$(cat "$HOME/.ssh/id_ed25519.pub" 2>/dev/null)" /root/.ssh/authorized_keys 2>/dev/null)"; echo "${n:-0}"; }
+
+# 3a. без PASSWORD — ключ сервера закреплён (first_use), команда для человека, rc=2
+set_pw
+KEYS; rc=$?; assert_rc 2 $rc "keys без PASSWORD: команда для человека"
+[ "$(jget host_key_check)" = first_use ] && ok "keys: ключ сервера закреплён при первом входе (first_use)" \
+  || bad "keys: host_key_check=$(jget host_key_check)"
+[ -f "$HOME/.ssh/id_ed25519.pub" ] && ok "keys создал admin-ключ" || bad "keys не создал admin-ключ"
+[ -n "$(jget command)" ] && ok "keys без PASSWORD отдал command" || bad "keys без PASSWORD не отдал command"
+
+# 3b. неверный PASSWORD — одна попытка, rc=2, key_install=password_rejected, ключ не положен, пароля в выводе нет
+set_pw "$WRONGPW"
+KEYS; rc=$?; assert_rc 2 $rc "keys с неверным паролем"
+[ "$(jget key_install)" = password_rejected ] && ok "keys: неверный пароль → password_rejected" \
+  || bad "keys: неверный пароль → key_install=$(jget key_install)"
+[ "$(ak_count)" = 0 ] && ok "неверный пароль: ключ на сервер не попал" || bad "неверный пароль, а ключ в authorized_keys"
+no_leak "$WRONGPW" "неверный пароль"
+fails="$(sudo journalctl -u ssh --since '-2min' --no-pager 2>/dev/null | grep -c 'Failed password for root')"
+say "журнал sshd: неудачных паролей root за 2 мин: $fails"
+[ "${fails:-0}" -le 1 ] && ok "неверный пароль: ровно одна попытка (fail2ban-бережно)" || bad "попыток пароля: $fails (ждали ≤1)"
+
+# 3c. верный PASSWORD — ключ кладётся сам, rc=0, key_installed=password, пароля в выводе нет
+set_pw "$ROOTPW"
+KEYS; rc=$?; assert_rc 0 $rc "keys кладёт ключ по паролю (SSH_ASKPASS)"
+[ "$(jget key_installed)" = password ] && ok "keys: key_installed=password" || bad "keys: key_installed=$(jget key_installed)"
+grep -q '^PASSWORD=' "$BRAIN_CONFIG_DIR/server_access" && bad "строка PASSWORD осталась в файле доступа" \
+  || ok "строка PASSWORD убрана из файла доступа (password_line_removed=$(jget password_line_removed))"
+ls "$BRAIN_CONFIG_DIR"/server_access.bak* >/dev/null 2>&1 && grep -lqF -- "$ROOTPW" "$BRAIN_CONFIG_DIR"/server_access.bak* \
+  && bad "пароль остался в копии .bak файла доступа" || ok "копии файла доступа с паролем нет"
+[ "$(ak_count)" = 1 ] && ok "admin-ключ в /root/.ssh/authorized_keys ровно один раз" || bad "admin-ключ в authorized_keys: $(ak_count) раз"
+no_leak "$ROOTPW" "верный пароль"
+ls -d "${TMPDIR:-/tmp}"/brain-askpass-* >/dev/null 2>&1 && bad "временная папка askpass не убрана" || ok "временная папка askpass убрана"
+
+# 3d. повторный keys — уже вход по ключу (без пароля), идемпотентно
+KEYS; rc=$?; assert_rc 0 $rc "keys повторно: вход по ключу работает"
+[ -z "$(jget key_installed)" ] && ok "повторный keys пароль не трогал" || bad "повторный keys снова шёл по паролю"
+[ "$(ak_count)" = 1 ] && ok "повторный keys не задвоил ключ" || bad "ключ задвоен: $(ak_count)"
 if [ "$rc" != 0 ]; then
   say "без входа по ключу остальные шаги бессмысленны — журнал ssh:"; sudo journalctl -u ssh -n 25 --no-pager | tee -a "$LOG"
   echo "ИТОГ: $PASS PASS, $FAIL FAIL"; exit 1
 fi
+# 3e. report (диагностика куратору) не содержит пароля
+LINK -- report; rrc=$?
+REP="$(ls -t "$HOME"/brain-link-report-*.txt 2>/dev/null | head -1)"
+if [ -n "$REP" ]; then
+  cp "$REP" "$WORK/brain-link-report.log"
+  grep -qF -- "$ROOTPW" "$REP" && bad "report: пароль root в отчёте" || ok "report: пароля root в отчёте нет"
+  grep -qF -- "$ROOTPW" "$LOG" && bad "журнал e2e содержит пароль" || ok "журнал e2e без пароля"
+else bad "report не создал файл (rc=$rrc)"; fi
 
 # sync-ключ на сервер ставит harden (в /home/brain/.ssh/authorized_keys).
 # detect

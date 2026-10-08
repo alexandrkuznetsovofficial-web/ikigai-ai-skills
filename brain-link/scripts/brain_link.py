@@ -1164,6 +1164,24 @@ def make_askpass(tmpdir):
     return helper, {}
 
 
+def _askpass_exec_path(helper):
+    """Путь помощника для SSH_ASKPASS. Win32-OpenSSH 9.5 не запускает помощник, если в пути не-ASCII
+    («C:\\Users\\Анна Ли\\AppData\\Local\\Temp\\…» → CreateProcessW error 2; проверено в лаборатории CI) —
+    тогда даём короткое имя 8.3 (ASCII). Нет 8.3 на диске — путь как есть: keys честно скажет askpass_failed."""
+    p = str(helper)
+    if os_name() != "windows" or all(ord(c) < 128 for c in p):
+        return p
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(1024)
+        n = ctypes.windll.kernel32.GetShortPathNameW(p, buf, 1024)
+        if 0 < n < 1024 and all(ord(c) < 128 for c in buf.value):
+            return buf.value
+    except Exception:
+        pass
+    return p
+
+
 def run_askpass_ssh(argv, input_bytes=None, access_path=None, timeout=60):
     """Запускает ssh (argv) так, что пароль root ssh получает из строки PASSWORD файла доступа через SSH_ASKPASS.
     Общая для keys и лаборатории CI. Делает: папку brain-askpass-* (mkdtemp, 0700) → одноразовый нонс
@@ -1184,7 +1202,7 @@ def run_askpass_ssh(argv, input_bytes=None, access_path=None, timeout=60):
         helper, extra = make_askpass(tmp)
         env = dict(os.environ)
         env.update(extra)
-        env.update({"SSH_ASKPASS": str(helper), "SSH_ASKPASS_REQUIRE": "force", ASKPASS_NONCE_ENV: nonce})
+        env.update({"SSH_ASKPASS": _askpass_exec_path(helper), "SSH_ASKPASS_REQUIRE": "force", ASKPASS_NONCE_ENV: nonce})
         if access_path:
             env[ASKPASS_ACCESS_ENV] = str(access_path)
         else:
