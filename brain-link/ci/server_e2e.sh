@@ -220,7 +220,7 @@ if [ "$SCENARIO" = upgrade ]; then
   RSSH root 'id brain >/dev/null 2>&1 || useradd -m -s /bin/bash brain
     install -d -o brain -g brain /home/brain/memory /home/brain/bridge/venv/bin
     printf "# старая заметка на сервере\nLAB-OLD-SERVER-NOTE-41c2\n" > /home/brain/memory/old_server_note.md
-    printf "#!/bin/sh\n# ТОЛЬКО лаборатория: фейковый мост claude-code-telegram\nexec sleep 100000\n" > /home/brain/bridge/venv/bin/claude-telegram-bot
+    printf "#!/bin/sh\n# ТОЛЬКО лаборатория: фейковый мост claude-code-telegram\nwhile :; do sleep 60; done\n" > /home/brain/bridge/venv/bin/claude-telegram-bot
     chmod 755 /home/brain/bridge/venv/bin/claude-telegram-bot; chown -R brain:brain /home/brain/memory /home/brain/bridge'
   printf 'TELEGRAM_BOT_USERNAME=lab_brain_bot\nALLOWED_USERS=[111111111]\nAPPROVED_DIRECTORY=/home/brain\n' \
     | RSSH root "cat > /home/brain/bridge/.env && chown brain:brain /home/brain/bridge/.env && chmod 600 /home/brain/bridge/.env"
@@ -233,6 +233,9 @@ if [ "$SCENARIO" = upgrade ]; then
     systemctl daemon-reload && systemctl enable --now brain-bot.service' >/dev/null 2>&1
   [ "$(RSSH root 'systemctl is-active brain-bot.service')" = active ] && ok "upgrade: старый бот (мост) работает как brain-bot.service" \
     || bad "upgrade: старый бот не поднялся"
+  sleep 1
+  [ -n "$(RSSH root 'pgrep -u brain -f claude-telegram-bot')" ] && ok "upgrade: процесс моста виден (pgrep -u brain)" \
+    || bad "upgrade: процесса моста не видно — проверка «мост остановлен» была бы пустой"
 fi
 
 # sync-ключ на сервер ставит harden (в /home/brain/.ssh/authorized_keys).
@@ -381,7 +384,9 @@ if [ "$SCENARIO" = upgrade ]; then
     && ok "upgrade: drop-in старого бота унесён в бэкап (не смешался с нашим юнитом)" || bad "upgrade: drop-in старого бота не перенесён"
   RSSH root 'systemctl show -p ExecStart --value brain-bot.service' | grep -qF /usr/local/lib/brain-bot/brain_bot.py \
     && ok "upgrade: brain-bot.service теперь наш" || bad "upgrade: brain-bot.service не заменён"
-  [ -z "$(RSSH root 'pgrep -f claude-telegram-bot')" ] && ok "upgrade: процесс старого моста остановлен" || bad "upgrade: старый мост ещё работает"
+  # процесс моста — под brain (pgrep -u brain), иначе pgrep -f совпадает с bash -c самой ssh-команды root
+  left="$(RSSH root 'pgrep -u brain -af claude-telegram-bot')"
+  [ -z "$left" ] && ok "upgrade: процесс старого моста остановлен" || bad "upgrade: старый мост ещё работает: $left"
   RSSH root 'test -f /home/brain/bridge/.env && test -x /home/brain/bridge/venv/bin/claude-telegram-bot' \
     && ok "upgrade: файлы старого бота не удалены" || bad "upgrade: файлы старого бота пропали"
 fi
