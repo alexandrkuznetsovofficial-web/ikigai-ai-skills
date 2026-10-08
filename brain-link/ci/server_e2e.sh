@@ -322,6 +322,38 @@ bw="$(RSSH root 'for u in brain brainbot; do for f in /usr/local/lib/brain-bot /
 # ---------------------------------------------------------------- 6. put-token claude|bot (через GETPASS-инъекцию)
 LINK --getpass-file "$WORK/tok_claude" -- put-token claude --no-setup; assert_rc 0 $? "put-token claude"
 [ "$(jget verified)" = True ] && ok "put-token claude: контрольная сумма на сервере совпала" || bad "put-token claude: verified=$(jget verified)"
+# kit 2.3: тот же шаг путём участника на Mac/Linux — настоящий pty (script), локальный фейковый
+# `claude setup-token` печатает строку токена в цвете; brain_link обязан поймать её сам, на экран — только маска.
+mkdir -p "$WORK/fakebin"
+cat > "$WORK/fakebin/claude" <<'FAKECL'
+#!/usr/bin/env python3
+# ТОЛЬКО лаборатория: локальный `claude setup-token` (печатает токен как настоящий — цветом, отдельной строкой)
+import os, sys, shutil
+if sys.argv[1:2] != ["setup-token"]:
+    sys.exit(2)
+print("Opening browser to sign in… cols=%d tty=%s" % (shutil.get_terminal_size().columns, sys.stdout.isatty()))
+print("\x1b[33m" + open(os.environ["LAB_TOKEN_FILE"]).read().strip() + "\x1b[39m")
+print("Store this token securely. You won't be able to see it again.")
+FAKECL
+chmod 755 "$WORK/fakebin/claude"
+if command -v script >/dev/null 2>&1; then
+  LAB_TOKEN_FILE="$WORK/tok_claude" PATH="$WORK/fakebin:$PATH" \
+    script -qec "\"$PY\" \"$HERE/drive_link.py\" -- put-token claude >\"$WORK/pty_put.json\" 2>\"$WORK/pty_put_screen.log\"" /dev/null \
+    </dev/null >/dev/null 2>&1; prc=$?
+  LAST_JSON="$(cat "$WORK/pty_put.json" 2>/dev/null)"
+  echo "  human: $(jget human | cut -c1-300)" | tee -a "$LOG"
+  assert_rc 0 "$prc" "put-token claude под pty (фейковый claude setup-token)"
+  case "$(jget human)" in *"поймана автоматически"*) ok "pty: строка токена поймана автоматически" ;;
+    *) bad "pty: токен не пойман автоматически"; sed 's/sk-ant-oat[0-9A-Za-z_-]*/<tok>/g' "$WORK/pty_put_screen.log" | tail -5 | tee -a "$LOG" ;; esac
+  [ "$(jget verified)" = True ] && ok "pty: контрольная сумма на сервере совпала" || bad "pty: verified=$(jget verified)"
+  grep -qF -- "$(cat "$WORK/tok_claude")" "$WORK/pty_put_screen.log" "$WORK/pty_put.json" \
+    && bad "pty: токен виден на экране или в JSON" || ok "pty: токена нет ни на экране, ни в JSON"
+  grep -qF 'sk-ant-oat•••' "$WORK/pty_put_screen.log" && ok "pty: на экране маска sk-ant-oat•••" || bad "pty: маски на экране нет"
+  grep -qE "cols=[0-9]{3}" "$WORK/pty_put_screen.log" && ok "pty: широкий терминал для setup-token ($(grep -oE 'cols=[0-9]+' "$WORK/pty_put_screen.log"))" \
+    || bad "pty: ширина терминала не выставлена"
+else
+  say "SKIP pty: нет util-linux script"
+fi
 if [ "$SCENARIO" = upgrade ]; then
   # токена бота нет ни в файле доступа, ни на вводе: он у старого бота — перенос на сервере по «да»
   LINK -- put-token bot; assert_rc 3 $? "upgrade: put-token bot — стоп-точка «перенести токен старого бота?»"
