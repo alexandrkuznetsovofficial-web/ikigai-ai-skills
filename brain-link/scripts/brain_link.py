@@ -982,13 +982,14 @@ def cmd_keys(ctx):
             raise LinkExit(EXIT_HUMAN, "ключ сервера НЕ совпал с закреплённым. Если сервер переустанавливали — "
                                        "keys --replace (только с «да» человека). Если нет — не продолжай: это "
                                        "может быть подмена", next_step="keys --replace", **res)
-    if same_as_pinned and st.get("host_key_confirmed"):
+    unverified = bool(st.get("host_key_unverified"))
+    given = norm_fp(getattr(a, "fingerprint", None))
+    if same_as_pinned and st.get("host_key_confirmed") and not given:
         pinned = "kept"
     else:
         # по умолчанию — доверие при первом входе (как ssh accept-new): ключ, отданный сервером, закрепляется сразу.
         # Отпечаток из письма хостера / VNC (--fingerprint) — необязательная сверка; дан — обязан совпасть.
         # Смена уже закреплённого ключа без --replace остаётся стоп-точкой выше.
-        given = norm_fp(getattr(a, "fingerprint", None))
         if given:
             match = [l for l, f, _ in scanned if f and f.rstrip("=") == given]
             if not match:
@@ -996,6 +997,7 @@ def cmd_keys(ctx):
                                          "закреплён. Проверь, что строка скопирована целиком; если всё верно — это "
                                          "может быть подмена, дальше не идём" % (given, ", ".join(seen_fps)), **res)
             res["host_key_check"] = "fingerprint"
+            unverified = False                                   # сверка совпала — снимает флаг
         else:
             match = lines
             res["host_key_check"] = "first_use"
@@ -1005,12 +1007,19 @@ def cmd_keys(ctx):
                 res["old_fingerprints"] = fingerprint()             # было → стало, чтобы человеку было с чем сравнить
             write_file_safe(known_hosts(), data, replace=True)
             pinned = "confirmed" if same_as_pinned else "replaced"
+            if pinned == "replaced" and not given:
+                unverified = True       # сменённый ключ без сверки: пароль не шлём, пока не совпадёт --fingerprint
         else:
             bl.atomic_write_bytes(known_hosts(), data)
             pinned = "created"
     fps = fingerprint()
-    save_state(host_fingerprints=fps, host_key_confirmed=True)
+    # host_key_unverified — постоянный флаг: держится между запусками, снимает только совпавший --fingerprint
+    old_fps = (res.get("old_fingerprints") or st.get("host_key_old_fingerprints") or []) if unverified else []
+    save_state(host_fingerprints=fps, host_key_confirmed=not unverified, host_key_unverified=unverified,
+               host_key_old_fingerprints=old_fps)
     res.update(host_key=pinned, fingerprints=fps)
+    if unverified:
+        res["host_key_unverified"] = True
     # вход по ключу работает?
     user = ctx.admin_user()
     rc, o, e = ctx.ssh(["true"], timeout=40, user=user)
@@ -1018,15 +1027,18 @@ def cmd_keys(ctx):
         finish(EXIT_OK, "вход по ключу работает (%s), ключ сервера закреплён: %s"
                % (user, ", ".join(fps) or "?"), warnings=ctx.warnings, **res)
     if not ctx.locked() and access.get("PASSWORD"):
-        if pinned == "replaced" and res.get("host_key_check") != "fingerprint":
-            # ключ сервера только что сменился (--replace без сверки) — пароль на такой сервер не отправляем
+        if unverified:
+            # ключ сервера сменился (--replace) и не сверен — пароль на такой сервер не отправляем, в т.ч. в
+            # следующих запусках keys, пока совпавший --fingerprint не снимет флаг host_key_unverified
             res["command"] = copy_id_command(access)
             res["key_install"] = "host_key_replaced"
             finish(EXIT_HUMAN, "сервер сменил ключ — пароль не отправляю, пока не сверим отпечаток из письма хостера "
                                "(keys --fingerprint SHA256:…). Отпечатки: было %s, стало %s. Если сверять не с чем — "
-                               "запасной путь: команда из поля command в своём терминале (пароль root вводишь ты)"
-                   % (", ".join(res.get("old_fingerprints") or []) or "?", ", ".join(fps) or "?"),
+                               "запасной путь: команда из поля command в своём терминале (пароль root вводишь ты). "
+                               "%s" % (", ".join(res.get("old_fingerprints") or st.get("host_key_old_fingerprints") or [])
+                                       or "?", ", ".join(fps) or "?", PW_MANAGER_NOTE),
                    warnings=ctx.warnings, next_step="keys --fingerprint", **res)
+        say(PW_MANAGER_NOTE)                         # напоминание ДО отправки пароля
         push_key_by_password(ctx, res)               # кладёт ключ сам или выходит с понятным human
         rc, o, e = ctx.ssh(["true"], timeout=40, user=user)
         if rc == 0:
@@ -1045,6 +1057,7 @@ def cmd_keys(ctx):
     res["command"] = copy_id_command(access)
     finish(EXIT_HUMAN, "ключ сервера закреплён, осталось положить твой ключ на сервер. Проще всего — впиши пароль "
                        "root в файл доступа (строка PASSWORD) — тогда я сделаю это сам, просто запусти keys снова. "
+                       + PW_MANAGER_NOTE + " "
                        "Или выполни команду из поля command сама в своём терминале — она спросит «yes/no» (ответь "
                        "yes: отпечаток тот же, %s) и пароль root (вводишь ты, в чат не пиши). Ключ создан без "
                        "пароль-фразы; хочешь фразу — ssh-keygen -p -f ~/.ssh/id_ed25519 (на Mac затем ssh-add "
@@ -1052,6 +1065,8 @@ def cmd_keys(ctx):
 
 
 # ---------- keys: ключ на сервер по паролю из файла доступа (SSH_ASKPASS) ----------
+PW_MANAGER_NOTE = ("Важно: пароль root должен лежать в твоём менеджере паролей — положив ключ, я удалю его из файла "
+                   "доступа; без менеджера паролей вернуть его можно будет только сбросом в панели хостера.")
 ASKPASS_SUB = "_askpass"
 ASKPASS_PREFIX = "brain-askpass-"
 ASKPASS_NONCE_ENV = "BRAIN_ASKPASS_NONCE"
@@ -1207,9 +1222,10 @@ def push_key_by_password(ctx, res):
     if methods and not any("password" in m.split(",") for m in methods):
         res["command"] = copy_id_command(access)
         res["key_install"] = "password_auth_disabled"
-        raise LinkExit(EXIT_HUMAN, "сервер не принимает вход по паролю (разрешено только: %s) — значит, ключ туда "
-                                   "кладут иначе: через панель хостера (поле «SSH-ключ» при установке сервера) или "
-                                   "командой из поля command, если хостер включит пароль. Покажи это куратору"
+        raise LinkExit(EXIT_HUMAN, "сервер не принимает вход по паролю (разрешено только: %s). Запасной путь: "
+                                   "выполни команду из поля command сама в своём терминале (пароль root вводишь ты), "
+                                   "потом keys снова. Не получилось — brain_link.py report и к куратору: ключ тогда "
+                                   "кладут через панель хостера"
                        % methods[-1], next_step="keys", **res)
     if not r["askpass_called"]:
         # помощник не запускался (сборка ssh его не приняла) — что бы ни писал ssh, пароль не проверялся

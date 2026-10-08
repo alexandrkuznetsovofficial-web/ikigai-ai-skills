@@ -663,6 +663,44 @@ class TestKeysByPassword(Base):
         self.assertEqual(self.push_calls(), [])
         self.assert_no_password_leak(raw)
 
+    def test_replace_then_plain_keys_still_does_not_send_password(self):
+        (self.cfg / "known_hosts").write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
+        code, res, _ = self.call(["keys", "--replace"])
+        self.assertEqual(res["key_install"], "host_key_replaced")
+        st = json.loads((self.cfg / "link_state.json").read_text())
+        self.assertTrue(st["host_key_unverified"])
+        self.assertFalse(st["host_key_confirmed"])
+        for _ in range(2):                                             # флаг держится между запусками
+            code, res, raw = self.call(["keys"])
+            self.assertEqual(code, 2, res)
+            self.assertEqual(res["key_install"], "host_key_replaced")
+            self.assertNotIn("?", res["human"].split("было ")[1].split(",")[0][:1])   # старый отпечаток помним
+        self.assertEqual(self.push_calls(), [])
+        # совпавший --fingerprint снимает флаг — тогда пароль уходит
+        code, res, _ = self.call(["keys", "--fingerprint", FP])
+        self.assertEqual(code, 0, res)
+        self.assertEqual(len(self.push_calls()), 1)
+        st = json.loads((self.cfg / "link_state.json").read_text())
+        self.assertFalse(st["host_key_unverified"])
+        self.assertTrue(st["host_key_confirmed"])
+
+    def test_wrong_fingerprint_keeps_flag(self):
+        (self.cfg / "known_hosts").write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
+        self.call(["keys", "--replace"])
+        code, res, _ = self.call(["keys", "--fingerprint", FP_OTHER])
+        self.assertEqual(code, 1, res)
+        self.assertTrue(json.loads((self.cfg / "link_state.json").read_text())["host_key_unverified"])
+        self.assertEqual(self.push_calls(), [])
+
+    def test_reminder_about_password_manager_before_push(self):
+        err = io.StringIO()
+        buf = io.StringIO()
+        with mock.patch.object(sys, "stdout", buf), mock.patch.object(sys, "stderr", err):
+            with self.assertRaises(SystemExit):
+                bk.main(["keys"])
+        self.assertIn("менеджере паролей", err.getvalue())
+        self.assertLess(err.getvalue().index("менеджере паролей"), err.getvalue().index("кладу твой ключ"))
+
     def test_replaced_host_key_with_matching_fingerprint_sends_password(self):
         (self.cfg / "known_hosts").write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
         code, res, _ = self.call(["keys", "--replace", "--fingerprint", FP])
