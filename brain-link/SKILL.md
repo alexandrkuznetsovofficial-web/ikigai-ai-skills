@@ -153,9 +153,12 @@ kit_version: 2.3
 - **`bot`** со старым ботом: код 3 с его именем, пользователем и программой; «он называется так же, как наш» — значит,
   это чужой `brain-bot.service`. После «да» `bot --yes`: копия юнита и drop-in'ов → `/var/backups/brain-link/old-bot.<юнит>.<время>/`
   (`old_bot_backups`), `disable --now`, drop-in'ы чужого `brain-bot.service.d` переносятся туда же целиком, потом
-  ставится наш юнит. Файлы, где лежал токен старого бота (`.env`, EnvironmentFile, юнит), закрываются 0600 root
-  (`old_token_files`) — скажи: «по желанию перевыпусти токен у @BotFather (/revoke) и пройди put-token bot».
-  Вернуть старого — скопировать юнит из бэкапа обратно и `systemctl enable --now` (только с куратором).
+  ставится наш юнит. Файлы, где лежит **именно токен этого бота** (`.env` проекта, EnvironmentFile, юнит), закрываются
+  0600 root — только если на файл не ссылается другая активная служба (её EnvironmentFile или WorkingDirectory);
+  исходные права пишутся в `perms.txt` в папке бэкапа. В `old_token_files` — `путь|closed` или `путь|shared` (общий
+  файл, права не трогали). Скажи: «по желанию перевыпусти токен у @BotFather (/revoke) и пройди put-token bot».
+  Вернуть старого (только с куратором) — скопировать юнит из бэкапа обратно, **вернуть права файлов по `perms.txt`**
+  (`chown <владелец:группа> <файл>; chmod <права> <файл>` — было: значения из строки файла) и `systemctl enable --now`.
 - **`lockdown`** проверяет `sshd -T` для root и brain: если пароль или root остались открыты (облачный
   `60-cloudimg-settings.conf`, `PasswordAuthentication yes` в основном конфиге до `Include`, нет `Include` вовсе), один раз
   ставит `Include /etc/ssh/sshd_config.d/*.conf` первой строкой (копия — в `/var/backups/brain-link`), снова проверяет;

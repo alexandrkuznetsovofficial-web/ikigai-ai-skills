@@ -158,39 +158,100 @@ PTY_COLS = 400
 
 
 CAPTURE_TIMEOUT = 900          # вход в браузере + строка токена: дольше 15 минут не ждём
-_RISKY_TAIL_RE = re.compile(r"(?:s|sk|sk-[A-Za-z0-9_-]*|[A-Za-z0-9_-]{20,})$")
-_LONG_RUN_RE = re.compile(r"[A-Za-z0-9_-]{30,}")
+_TOKEN_CHARS_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# придерживаем хвост без перевода строки, если он может оказаться началом токена (s, sk, sk-…)
+_RISKY_TAIL_RE = re.compile(r"(?:^|[^A-Za-z0-9_-])(?:s|sk|sk-[A-Za-z0-9_-]*)$")
 
 
-def _mask_line(line):
-    """Строка вывода для экрана человека. Есть «sk-ant» или длинная строка-хвост (перенос токена) — печатаем
-    текст БЕЗ управляющих кодов (их могли вставить посреди токена) и с маской; иначе — как есть."""
+def _ends_with_token(plain):
+    """Строка заканчивается токеном sk-ant… (возможно, перенесённым на следующую строку)."""
+    m = None
+    for m in TOKEN_ANY_RE.finditer(plain):
+        pass
+    return bool(m) and plain[m.end():].strip() == ""
+
+
+def _mask_line(line, state=None):
+    """Строка вывода для экрана человека. state["cont"] — предыдущая строка кончилась токеном sk-ant (перенос).
+    - есть «sk-ant» → строка целиком без управляющих кодов (их могли вставить посреди токена), токен замаскирован;
+    - продолжение перенесённого токена (сразу после такой строки, только символы токена, без «://») → «•••»;
+    - всё остальное, в т.ч. ссылка входа claude setup-token (OAuth: client_id, code_challenge, state), — как есть."""
+    state = state if state is not None else {}
     plain = ANSI_RE.sub("", line)
-    if "sk-ant" in plain or _LONG_RUN_RE.search(plain):
-        plain = TOKEN_ANY_RE.sub("sk-ant-oat•••", plain)
-        return _LONG_RUN_RE.sub("•••", plain)
+    body = plain.strip()
+    if "sk-ant" in plain:
+        state["cont"] = _ends_with_token(plain)
+        state["width"] = len(plain.rstrip("\r\n"))   # ширина строки, на которой терминал перенёс токен
+        return TOKEN_ANY_RE.sub("sk-ant-oat•••", plain)
+    if state.get("cont") and body and "://" not in body and _TOKEN_CHARS_RE.match(body):
+        # продолжение переноса: строка полной ширины — перенос идёт дальше; короче — это последний кусок токена
+        state["cont"] = len(plain.rstrip("\r\n")) >= state.get("width", 0)
+        return plain.replace(body, "•••")
+    state["cont"] = False
     return line
 
 
-def _screen_filter(pending, final=False, idle=False):
+def _screen_filter(pending, final=False, idle=False, state=None):
     """-> (что показать, что придержать). Полные строки — через _mask_line; хвост без перевода строки
     показываем только на паузе вывода и только если он не похож на начало токена."""
+    state = state if state is not None else {}
     out = []
     while True:
         k = pending.find("\n")
         if k < 0:
             break
-        out.append(_mask_line(pending[:k + 1]))
+        out.append(_mask_line(pending[:k + 1], state))
         pending = pending[k + 1:]
     if pending and (final or idle):
         plain = ANSI_RE.sub("", pending)
         if final:
-            out.append(_mask_line(pending))
+            out.append(_mask_line(pending, state))
             pending = ""
-        elif not _RISKY_TAIL_RE.search(plain) and "sk-ant" not in plain:
+        elif ("sk-ant" not in plain and not _RISKY_TAIL_RE.search(plain)
+              and not (state.get("cont") and _TOKEN_CHARS_RE.match(plain.strip() or "-"))):
             out.append(pending)
             pending = ""
     return "".join(out), pending
+
+
+def _glue_wrapped_token(text):
+    """Второй проход поиска токена: к строке, которая кончается токеном sk-ant…, приклеиваем следующие строки,
+    только если они целиком из символов токена (без пробелов и слов)."""
+    raw_lines = text.replace("\r", "").split("\n")
+    found = []
+    for n, l in enumerate(raw_lines):
+        if not _ends_with_token(l):
+            continue
+        width = len(l.rstrip())
+        tok = list(TOKEN_ANY_RE.finditer(l))[-1].group(0)
+        for nxt in raw_lines[n + 1:]:
+            if not nxt or not _TOKEN_CHARS_RE.match(nxt):
+                break
+            tok += nxt
+            if len(nxt) < width:     # строка короче ширины переноса — это последний кусок
+                break
+        found.append(tok)
+    return found
+
+
+def _stop_child(pid, grace=5.0):
+    """SIGTERM → до grace с → SIGKILL; ждём без вечной блокировки. -> код выхода или None."""
+    import signal
+    for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 2.0)):
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+        end = time.time() + wait
+        while time.time() < end:
+            try:
+                done, status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return 1
+            if done == pid:
+                return os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+            time.sleep(0.1)
+    return None
 
 
 def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
@@ -200,7 +261,6 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
     import termios
     import fcntl
     import struct
-    import signal
     pid, fd = pty.fork()
     if pid == 0:   # ребёнок: широкий терминал — длинная строка токена не переносится
         try:
@@ -222,7 +282,7 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
             tty.setraw(in_fd)
     except (OSError, ValueError, termios.error):
         in_fd = None
-    raw, pending, rc, deadline = [], "", None, time.time() + timeout
+    raw, pending, rc, deadline, scr = [], "", None, time.time() + timeout, {}
 
     def show(text):
         if text:
@@ -242,10 +302,9 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
                     rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
             if time.time() > deadline:
                 if rc is None:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except OSError:
-                        pass
+                    rc = _stop_child(pid)
+                    if rc is None:
+                        rc = 1
                 break
             fds = [fd] + ([in_fd] if in_fd is not None else [])
             try:
@@ -253,7 +312,7 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
             except (OSError, ValueError):
                 break
             if not r:
-                text, pending = _screen_filter(pending, idle=True)
+                text, pending = _screen_filter(pending, idle=True, state=scr)
                 show(text)
                 if rc is not None:
                     break      # ребёнок вышел и всё прочитано
@@ -266,7 +325,7 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
                 if not data:
                     break
                 raw.append(data)
-                text, pending = _screen_filter(pending + data.decode("utf-8", "replace"))
+                text, pending = _screen_filter(pending + data.decode("utf-8", "replace"), state=scr)
                 show(text)
             if in_fd is not None and in_fd in r:
                 try:
@@ -275,7 +334,7 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
                         os.write(fd, data)
                 except OSError:
                     pass
-        text, pending = _screen_filter(pending, final=True)
+        text, pending = _screen_filter(pending, final=True, state=scr)
         show(text)
     finally:
         if old_attr is not None:
@@ -287,17 +346,27 @@ def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
             os.close(fd)
         except OSError:
             pass
-    if rc is None:
-        try:
-            _, status = os.waitpid(pid, 0)
-            rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
-        except OSError:
+    if rc is None:   # вывод кончился, а ребёнок ещё жив: даём 5 с выйти самому, потом SIGTERM/SIGKILL
+        end = time.time() + 5
+        while rc is None and time.time() < end:
+            try:
+                done, status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                rc = 1
+                break
+            if done == pid:
+                rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+            else:
+                time.sleep(0.1)
+        if rc is None:
+            rc = _stop_child(pid)
+        if rc is None:
             rc = 1
     text = ANSI_RE.sub("", b"".join(raw).decode("utf-8", "replace"))
     raw = None
     found = [t for t in TOKEN_ANY_RE.findall(text) if CLAUDE_TOKEN_RE.match(t)]
     if not found:   # строку всё же перенесло: склеиваем строки и ищем ещё раз
-        found = [t for t in TOKEN_ANY_RE.findall(re.sub(r"\s*\r?\n\s*", "", text)) if CLAUDE_TOKEN_RE.match(t)]
+        found = [t for t in _glue_wrapped_token(text) if CLAUDE_TOKEN_RE.match(t)]
     text = ""
     return rc, (found[-1] if found else "")
 
@@ -306,7 +375,9 @@ def default_clipboard_get():
     """Текст из буфера обмена (только Windows/Mac; для поиска строки токена — в вывод не идёт)."""
     try:
         if os_name() == "windows":
-            rc, o, _ = run([find_powershell(), "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"], timeout=20)
+            # PowerShell 5.1 отдаёт вывод в OEM-кодировке — без UTF8 кириллица в буфере превращается в «?»
+            rc, o, _ = run([find_powershell(), "-NoProfile", "-NonInteractive", "-Command",
+                            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw"], timeout=20)
         elif os_name() == "mac":
             rc, o, _ = run(["pbpaste"], timeout=20)
         else:
@@ -621,7 +692,8 @@ def kv(text):
 
 
 # секрет аргументом командной строки старого бота: --pw=…, --token …, -p … и т.п.
-ARG_SECRET_RE = re.compile(r"(?i)(--?(?:pw|pass\w*|token|secret|key|api[-_]?key|auth)(?:=|\s+))(?!•)[^\s|]+")
+ARG_SECRET_RE = re.compile(r"(?i)((?<![\w-])(?:--?(?:pw|pass\w*|token|secret|key|api[-_]?key|auth)|-p)(?:=|\s+))"
+                           r"(?!•)[^\s|]+")
 
 
 def parse_old_bots(text):
@@ -693,7 +765,13 @@ def it_team_status(skills_dir):
         same_name = re.search(r"(?m)^name:\s*[\"']?%s[\"']?\s*$" % re.escape(name), fm) is not None
         m = re.search(r"(?m)^description:\s*[\"']?(.*)$", fm)
         same_sign = any(l.strip().startswith(title) for l in body.splitlines()[:15]) or bool(m and m.group(1).startswith(desc))
-        res[name] = "kit" if (KV_OLD_RE.search(fm) and same_name and same_sign) else "own"
+        same_title = any(l.strip().startswith(title) for l in body.splitlines()[:15])
+        same_desc = bool(m and m.group(1).startswith(desc))
+        if "kit_version:" in fm:
+            ours = bool(KV_OLD_RE.search(fm)) and same_name and same_sign
+        else:   # июльский team-kit и audit/skills без строки версии: имя, заголовок и description — все как в ките
+            ours = same_name and same_title and same_desc
+        res[name] = "kit" if ours else "own"
     return res
 
 
@@ -808,14 +886,17 @@ old_bot_info() {
 # kit 2.3: окружение старого бота — Environment=, EnvironmentFile= и .env в WorkingDirectory / рядом с программой
 # (мост claude-code-telegram читает .env из папки проекта). Только обычные файлы (не симлинки), до 64 КБ.
 # Значения (в т.ч. токен) остаются в переменных оболочки на сервере: наружу — только маска и счётчики.
-# Файлы окружения старого бота: EnvironmentFile= (их и так читает systemd от root) и .env в WorkingDirectory /
-# папке программы (и на уровень выше …/venv/bin). Для .env: путь после readlink -f обязан остаться внутри своей папки,
-# сам файл — не симлинк. Печатает настоящие пути, по одному в строке.
+# Файлы окружения старого бота, по одному в строке «вид<TAB>путь»:
+#   E — EnvironmentFile= юнита: его и так читает systemd от root, читаем от root (обычный файл, не симлинк);
+#   D — .env в WorkingDirectory / папке программы (и на уровень выше …/venv/bin): путь после readlink -f обязан
+#       остаться внутри своей папки, сам файл — не симлинк.
+# Пути с пробелами: EnvironmentFiles режем по « (ignore_errors=…)», читаем построчно; шаблоны не раскрываем (set -f).
 bl_env_files() {
   local u=$1 f d a wd ex base real
   set -f
-  systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null | tr ' ' '\n' | sed -n 's#^-\{0,1\}\(/.*\)#\1#p' \
-    | while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && echo "$f"; done
+  systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null \
+    | awk '{gsub(/ \(ignore_errors=[a-z]+\) ?/, "\n"); printf "%s", $0}' | sed -n 's#^-\{0,1\}\(/.*\)#\1#p' \
+    | while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && printf 'E\t%s\n' "$f"; done
   {
     wd=$(systemctl show -p WorkingDirectory --value "$u" 2>/dev/null); wd=${wd#-}
     [ -n "$wd" ] && printf '%s\n' "$wd"
@@ -829,17 +910,28 @@ bl_env_files() {
     [ -f "$f" ] && [ ! -L "$f" ] || continue
     real=$(readlink -f -- "$f" 2>/dev/null) || continue
     base=$(readlink -f -- "$base" 2>/dev/null) || continue
-    case "$real" in "$base"/*) echo "$real" ;; esac
+    case "$real" in "$base"/*) printf 'D\t%s\n' "$real" ;; esac
   done
   set +f
 }
+# Пользователь, чьими правами читать .env (вид D): существующий по имени и не root. Числовой uid, DynamicUser,
+# несуществующее имя, root — пусто: тогда читаем от root (проверки readlink и «внутри папки» уже сделаны).
+bl_env_reader() {
+  local us
+  us=$(systemctl show -p User --value "$1" 2>/dev/null)
+  case "$us" in ''|root|*[!A-Za-z0-9_.-]*) return 0 ;; esac
+  case "$us" in [0-9]*) return 0 ;; esac
+  [ "$(systemctl show -p DynamicUser --value "$1" 2>/dev/null)" = yes ] && return 0
+  id -u "$us" >/dev/null 2>&1 && [ "$(id -u "$us")" != 0 ] && echo "$us"
+}
 bl_env_lines() {
-  local u=$1 f us
-  us=$(systemctl show -p User --value "$u" 2>/dev/null)
+  local u=$1 k f us
+  us=$(bl_env_reader "$u")
   systemctl show -p Environment --value "$u" 2>/dev/null | tr ' ' '\n'
-  bl_env_files "$u" | awk '!s[$0]++' | while IFS= read -r f; do
-    # читаем правами пользователя бота (если он не root): чужой файл через подмену папки так не прочитать
-    if [ -n "$us" ] && [ "$us" != root ] && [ "$(id -u)" = 0 ] && command -v runuser >/dev/null 2>&1; then
+  bl_env_files "$u" | awk '!s[$0]++' | while IFS="$(printf '\t')" read -r k f; do
+    # .env проекта — правами пользователя бота (подменённая папка не уведёт root к чужому файлу);
+    # EnvironmentFile= — от root, как его читает сам systemd
+    if [ "$k" = D ] && [ -n "$us" ] && [ "$(id -u)" = 0 ] && command -v runuser >/dev/null 2>&1; then
       runuser -u "$us" -- head -c 65536 -- "$f" 2>/dev/null
     else head -c 65536 -- "$f" 2>/dev/null; fi
     echo
@@ -1906,7 +1998,13 @@ if [ "__MODE__" = apply ]; then
   if [ "__WANTOWNER__" = 1 ] && [ "$NO" = 1 ]; then
     install -d -m 0755 -o root -g root /etc/brain-bot
     (umask 077; printf '%s\n' "$OW" > __OWNERFILE__.tmp) && chown root:root __OWNERFILE__.tmp \
-      && mv -f __OWNERFILE__.tmp __OWNERFILE__ && ok "владелец бота — со старого бота (__OWNERFILE__, 0600 root)" && echo OWNER=1
+      && mv -f __OWNERFILE__.tmp __OWNERFILE__ && : > __OWNERFILE__.verified && chmod 0600 __OWNERFILE__.verified \
+      && ok "владелец бота — со старого бота, id сверен (__OWNERFILE__, 0600 root)" && echo OWNER=1
+  elif [ -f __OWNERFILE__ ] && [ ! -f __OWNERFILE__.verified ]; then
+    # записан раньше без сверки id (kit 2.3 до --owner-ok) — убираем в бэкап, не удаляем
+    install -d -m 0700 -o root -g root /var/backups/brain-link
+    mv -f __OWNERFILE__ /var/backups/brain-link/owner_id.unverified.$(date +%Y%m%d_%H%M%S) \
+      && echo OWNER_REMOVED=1 && ok "владелец без сверки убран (копия в /var/backups/brain-link): бот возьмёт USER_ID из файла доступа"
   fi
 fi
 exit 0
@@ -1951,6 +2049,9 @@ def windows_token_from_clipboard():
             if CLIPBOARD_PUT(" "):
                 say("Строку токена взял и очистил буфер обмена (чтобы токен там не остался). Журнал буфера "
                     "Win+V, если включён, очисти там же: Win+V → «Очистить всё».")
+            else:
+                say("Строку токена взял, но очистить буфер обмена не вышло — очисти его сама: скопируй любое слово, "
+                    "потом Win+V → «Очистить всё».")
             return m.group(0)
         if waited >= CLIP_WAIT:
             return ""
@@ -2110,7 +2211,9 @@ def cmd_put_token_from_old_bot(ctx, access):
         raise LinkExit(EXIT_ERR, "токен старого бота не перенёсся: %s. Запасной путь — BOT_TOKEN в файле "
                                  "доступа и put-token bot" % bad, **res)
     owner_moved = done.get("OWNER") == "1"
-    save_state(token_bot=bl.now_iso(), token_bot_source="old_bot", **({"owner_on_server": True} if owner_moved else {}))
+    # «не мой» / --yes без --owner-ok: владельца со старого бота не используем (и на компьютере, и на сервере)
+    save_state(token_bot=bl.now_iso(), token_bot_source="old_bot", owner_on_server=owner_moved)
+    res["owner_removed"] = done.get("OWNER_REMOVED") == "1"
     nxt = "adopt или init (по ветке из detect)"
     if need_owner and not owner_moved:
         ctx.warnings.append("владелец не перенесён — до шага bot впиши USER_ID в файл доступа")
@@ -2462,14 +2565,39 @@ for s in __OLD__; do
   for f in $(systemctl show -p DropInPaths --value "$s" 2>/dev/null); do [ -f "$f" ] && cp -p "$f" "$OB/" 2>/dev/null; done
   if systemctl disable --now "$s" >/dev/null 2>&1; then ok "старый бот $s выключен (не удалён; копия юнита — $OB)"
   else warn "старый бот $s не выключился (копия юнита — $OB)"; fi
-  # kit 2.3: файлы с токеном старого бота (.env, EnvironmentFile, юнит с Environment=…TOKEN) — 0600 root, ничего
-  # не удаляя: brain и другие процессы больше не читают старый токен. Наружу — только путь.
-  for f in $(bl_env_files "$s") $FP; do
+  # kit 2.3: файлы, где лежит ИМЕННО токен этого бота (.env проекта, EnvironmentFile, файл юнита), — 0600 root,
+  # ничего не удаляя. Файл, на который ссылается другой активный юнит (его EnvironmentFile или внутри его
+  # WorkingDirectory), не трогаем: только сообщаем. Исходные права — в $OB/perms.txt (для отката).
+  TOKS=$(bl_old_token "$s")
+  SHARED=$(systemctl list-units --type=service --state=active --no-legend --plain 2>/dev/null | awk '{print $1}' \
+    | while IFS= read -r o; do
+        [ "$o" = "$s" ] && continue
+        bl_env_files "$o" | cut -f2
+        w=$(systemctl show -p WorkingDirectory --value "$o" 2>/dev/null); w=${w#-}
+        [ -n "$w" ] && [ "$w" != / ] && printf 'DIR\t%s\n' "$(readlink -f -- "$w" 2>/dev/null || echo "$w")"
+      done)
+  { bl_env_files "$s" | cut -f2; [ -n "$FP" ] && printf '%s\n' "$FP"; } | awk 'NF && !x[$0]++' | while IFS= read -r f; do
     [ -f "$f" ] && [ ! -L "$f" ] || continue
-    if grep -qE '[0-9]{6,12}:[A-Za-z0-9_-]{30,}' "$f" 2>/dev/null; then
-      chown root:root "$f" && chmod 0600 "$f" && echo "OLD_TOKEN_FILE=$f" && ok "файл со старым токеном закрыт (0600 root): $f"
+    hit=0
+    while IFS= read -r t; do [ -n "$t" ] && grep -qF -- "$t" "$f" 2>/dev/null && hit=1; done <<EOT
+$TOKS
+EOT
+    [ "$hit" = 1 ] || continue
+    shared=0
+    while IFS= read -r g; do
+      case "$g" in "DIR	"*) d=${g#DIR	}; case "$f" in "$d"/*) shared=1 ;; esac ;;
+        "$f") shared=1 ;; esac
+    done <<EOT
+$SHARED
+EOT
+    if [ "$shared" = 1 ]; then echo "OLD_TOKEN_FILE=$f|shared"; warn "общий файл с токеном старого бота, права не трогал: $f"
+    else
+      printf '%s\t%s\n' "$(stat -c '%a %U:%G' -- "$f")" "$f" >> "$OB/perms.txt"
+      chown root:root -- "$f" && chmod 0600 -- "$f" && echo "OLD_TOKEN_FILE=$f|closed" \
+        && ok "файл со старым токеном закрыт (0600 root, было — в $OB/perms.txt): $f"
     fi
   done
+  TOKS=""
   if [ "$s" = brain-bot.service ] && [ -d /etc/systemd/system/brain-bot.service.d ]; then
     mv /etc/systemd/system/brain-bot.service.d "$OB/brain-bot.service.d" && ok "drop-in'ы старого brain-bot перенесены в $OB"
   fi
@@ -2592,9 +2720,17 @@ def cmd_bot(ctx):
     res["old_token_files"] = [ln.split("=", 1)[1] for ln in o.splitlines() if ln.startswith("OLD_TOKEN_FILE=")]
     if rc == 0:
         save_state(bot_installed=bl.now_iso(), voice=bool(a.voice))
-        note = (" Токен старого бота лежал открыто (%s) — файл закрыт 0600 root; по желанию перевыпусти токен у "
-                "@BotFather (/revoke) и пройди put-token bot." % ", ".join(res["old_token_files"])
-                if res["old_token_files"] else "")
+        closed = [f.rsplit("|", 1)[0] for f in res["old_token_files"] if f.endswith("|closed")]
+        shared = [f.rsplit("|", 1)[0] for f in res["old_token_files"] if f.endswith("|shared")]
+        note = ""
+        if closed:
+            note += " Токен старого бота лежал открыто (%s) — файл закрыт 0600 root (прежние права — в бэкапе)." % (
+                ", ".join(closed))
+        if shared:
+            note += " Токен старого бота есть в общем файле (%s) — его не трогали, им пользуется другая служба." % (
+                ", ".join(shared))
+        if closed or shared:
+            note += " По желанию перевыпусти токен у @BotFather (/revoke) и пройди put-token bot."
         finish(EXIT_OK, "бот работает под brainbot (не brain), брифинг и сторож включены. Напиши боту /status.%s "
                         "Следующий шаг: verify" % note, lines=m, next_step="verify", **res)
     if rc == 2:

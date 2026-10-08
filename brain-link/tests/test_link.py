@@ -436,6 +436,28 @@ class TestScreenMask(unittest.TestCase):
         shown, pending = bk._screen_filter("Press Enter to continue", idle=True)
         self.assertEqual(shown, "Press Enter to continue")
 
+    def test_oauth_link_passes_untouched(self):
+        url = ("https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+               "&response_type=code&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback"
+               "&scope=user%3Ainference&code_challenge=" + "A1b2C3d4E5" * 4 + "xyz&code_challenge_method=S256&state="
+               + "Zz9_-Yy8Xx" * 4 + "abc\n")
+        st = {}
+        shown, _ = bk._screen_filter("Browser didn't open? Use the url below:\n\n" + url, state=st)
+        self.assertIn(url, shown)
+        bare = "Zz9_-Yy8Xx" * 4 + "abc\n"                            # длинная строка без ссылки и без sk-ant раньше
+        self.assertEqual(bk._screen_filter(bare, state={})[0], bare)
+
+    def test_glue_stops_at_short_piece(self):
+        t = FAKE_CLAUDE_TOKEN
+        text = "x " + t[:60] + "\n" + t[60:] + "\nDone\n"
+        self.assertEqual(bk._glue_wrapped_token(text), [t])
+        self.assertEqual(bk._glue_wrapped_token("x " + t[:60] + "\nStore it safely\n"), [t[:60]])
+
+    def test_arg_secret_mask(self):
+        self.assertEqual(bk.ARG_SECRET_RE.sub(r"\1•••", "/usr/bin/claude setup-token --model x"),
+                         "/usr/bin/claude setup-token --model x")
+        self.assertEqual(bk.ARG_SECRET_RE.sub(r"\1•••", "run -p hunter2 --token=abc"), "run -p ••• --token=•••")
+
     def test_short_token_rejected(self):
         self.assertFalse(bk.CLAUDE_TOKEN_RE.match("sk-ant-oat01-" + "Q" * 40))
         self.assertTrue(bk.CLAUDE_TOKEN_RE.match(FAKE_CLAUDE_TOKEN))
@@ -1271,9 +1293,38 @@ class TestForeignBrainBot(UpgradeShellBase):
         env = self.fake_server(units)
         self.assertEqual(self.bash(bk.OLD_SCAN + '\nbl_old_token x-bot.service', env).strip(), "")
 
-    def test_bot_step_closes_old_token_files(self):
-        self.assertIn('chown root:root "$f" && chmod 0600 "$f"', bk.BOT_ROOT_SH)
-        self.assertIn("OLD_TOKEN_FILE=", bk.BOT_ROOT_SH)
+    def test_bot_step_closes_only_own_token_files(self):
+        sh = bk.BOT_ROOT_SH
+        self.assertIn('chown root:root -- "$f" && chmod 0600 -- "$f"', sh)
+        self.assertIn('grep -qF -- "$t" "$f"', sh)                    # только файл с ИМЕННО этим токеном
+        self.assertIn("|shared", sh)                                   # общий файл — только сообщение
+        self.assertIn("--state=active", sh)
+        self.assertIn('stat -c \'%a %U:%G\' -- "$f")" "$f" >> "$OB/perms.txt"', sh)   # исходные права для отката
+        i = sh.index("TOKS=$(bl_old_token")
+        self.assertLess(sh.index("perms.txt"), sh.index('chmod 0600 -- "$f"'))
+        self.assertNotIn("for f in $(", sh[i:sh.index("TOKS=\"\"")])     # пути с пробелами — построчно
+
+    def test_env_files_kinds_and_spaces(self):
+        """1) EnvironmentFile= — вид E (читается от root), .env проекта — вид D; путь с пробелом не рвётся."""
+        envd = self.tmp / "my env"
+        envd.mkdir()
+        (envd / "bot.env").write_text("BOT_TOKEN=%s\n" % JULY_TOKEN, encoding="utf-8")
+        units = self.bridge()
+        units["brain-bot.service"]["EnvironmentFiles"] = "%s/bot.env (ignore_errors=no)" % envd
+        env = self.fake_server(units)
+        out = self.bash(bk.OLD_SCAN + "\nbl_env_files brain-bot.service", env)
+        kinds = dict(l.split("\t", 1)[::-1] for l in out.splitlines() if "\t" in l)
+        self.assertEqual(kinds.get(str(envd / "bot.env")), "E")
+        self.assertIn("D", kinds.values())
+        toks = self.bash(bk.OLD_SCAN + "\nbl_old_token brain-bot.service", env).split()
+        self.assertEqual(sorted(toks), sorted([BRIDGE_TOKEN, JULY_TOKEN]))
+
+    def test_env_reader_fallbacks(self):
+        self.assertIn('[ "$k" = D ] && [ -n "$us" ]', bk.OLD_SCAN)         # runuser — только для .env проекта
+        for user, dyn in (("1001", ""), ("", ""), ("root", ""), ("nosuchuser-xyz", ""), ("brain", "yes")):
+            units = {"x-bot.service": {"User": user, "DynamicUser": dyn, "ExecStart": "/usr/bin/x"}}
+            env = self.fake_server(units)
+            self.assertEqual(self.bash(bk.OLD_SCAN + "\nbl_env_reader x-bot.service", env).strip(), "", user)
 
     def test_two_owners_counted(self):
         units = self.bridge()
@@ -1351,6 +1402,37 @@ class TestUpgradeFlow(KeysMixin if False else Base):
         (sk / "cto" / "SKILL.md").write_text("---\nname: cto\ndescription: мой\nkit_version: 2.0\n---\n# Мой CTO\n",
                                              encoding="utf-8")
         self.assertEqual(bk.it_team_status(sk)["cto"], "own")     # версия есть, но заголовок и описание чужие
+
+    def test_it_team_july_without_version_is_ours(self):
+        """3) июльский team-kit без kit_version: имя + заголовок + description как в ките — «наш старый»."""
+        sk = self.tmp / "skills-july"
+        title, desc = bk.KIT_TEAM_SIGNS["cto"]
+        (sk / "cto").mkdir(parents=True)
+        (sk / "cto" / "SKILL.md").write_text("---\nname: cto\ndescription: %s …\n---\n\n%s\n" % (desc, title),
+                                             encoding="utf-8")
+        self.assertEqual(bk.it_team_status(sk)["cto"], "kit")
+        (sk / "cto" / "SKILL.md").write_text("---\nname: cto\ndescription: свой\n---\n\n%s\n" % title,
+                                             encoding="utf-8")
+        self.assertEqual(bk.it_team_status(sk)["cto"], "own")     # без версии нужны все три признака
+
+    def test_yes_without_owner_ok_resets_owner_state(self):
+        """5) раньше владелец был записан без сверки → --yes без --owner-ok сбрасывает его и на компьютере."""
+        self.access("SERVER_IP=10.20.30.40\n")
+        bk.save_state(owner_on_server=True)
+        applied = self.SCAN_ONE + "✅ перенесён\nMIGRATED=1\nOWNER_REMOVED=1\n".encode()
+        self.runner.rules = [('"apply" = apply', (0, applied, b"")), ("bl_old_token", (0, self.SCAN_ONE, b""))]
+        code, res, raw = self.call(["put-token", "bot", "--yes"])
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["owner_removed"])
+        self.assertFalse(json.loads((self.cfg / "link_state.json").read_text())["owner_on_server"])
+        body = [c["body"] for c in self.runner.calls if '"apply" = apply' in c["body"]][0]
+        self.assertIn("owner_id.verified", body)
+        self.assertIn("owner_id.unverified", body)
+
+    def test_windows_clipboard_reads_utf8(self):
+        import inspect
+        self.assertIn("[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard -Raw",
+                      inspect.getsource(bk.default_clipboard_get))
 
     def test_it_team_status(self):
         sk = self.tmp / "skills"
