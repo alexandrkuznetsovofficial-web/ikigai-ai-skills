@@ -87,32 +87,52 @@
 
 Скажи человеку простыми словами, что уже есть, а чего нет. Ничего не чини на этом этапе.
 
-## Этап 2. Скачать актуальные скиллы
+## Этап 2. Скачать актуальные скиллы с GitHub
 
-Скрипт скачивает кит с GitHub Александра (если GitHub недоступен — с витрины Икигай), ставит «Пробник»
-(`ikigai-preflight`), «Связку» (`brain-link`) и «Аудит второго мозга» (`second-brain-audit`) в `~/.claude/skills/`, старые версии переносит в `~/.claude/skills_old/`.
+Скачиваешь архив кита с GitHub Александра — это файлы, а не программа: **ничего скачанного не запускаешь**
+(защита Claude Code справедливо блокирует «скачать и сразу выполнить»). Распаковываешь встроенным модулем Python
+и сам раскладываешь три скилла: «Пробник» (`ikigai-preflight`), «Связку» (`brain-link`) и «Аудит второго мозга»
+(`second-brain-audit`). Ниже `py -3` — для Windows (Git Bash), `python3` — для Mac. `<метка>` — дата-время, например `20261008-1700`.
 
-Mac:
-```bash
-cd ~/Downloads && curl -fsSL -o kit_fetch.py https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/start/kit_fetch.py || curl -fsSL -o kit_fetch.py https://ikigai-community.com/aipotok/skills/start/kit_fetch.py
-head -1 kit_fetch.py   # должно быть: #!/usr/bin/env python3 — иначе скачалась веб-страница, не запускай
-python3 kit_fetch.py
-```
-Windows (Git Bash):
-```bash
-cd ~/Downloads && curl -fsSL -o kit_fetch.py https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/start/kit_fetch.py || curl -fsSL -o kit_fetch.py https://ikigai-community.com/aipotok/skills/start/kit_fetch.py
-head -1 kit_fetch.py   # должно быть: #!/usr/bin/env python3 — иначе скачалась веб-страница, не запускай
-py -3 kit_fetch.py
-```
+1. **Скачать** (одна команда, Mac и Windows одинаково):
+   `cd ~/Downloads && curl -fL --max-time 120 -o ikigai-kit.zip https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/archive/refs/heads/main.zip`
+2. **Проверить, что это архив:** `head -c 2 ikigai-kit.zip` → должно быть `PK`. Иначе — запасной путь ниже.
+3. **Распаковать в новую папку** (старые распаковки не трогаешь):
+   `python3 -m zipfile -e ikigai-kit.zip ikigai-kit-<метка>` (Windows: `py -3 -m zipfile -e …`).
+   Запомни полный путь: `<unpacked_to>` = `~/Downloads/ikigai-kit-<метка>/ikigai-ai-skills-main` (для Этапов 5, 7 и 8),
+   `<источник>` = тот же путь (откуда берёшь скиллы в шаге 5).
+4. **Проверить версию:** `grep -m1 kit_version <unpacked_to>/brain-link/SKILL.md` → `kit_version: 2.1`.
+5. **Поставить три скилла, ничего не удаляя.** Для каждого имени из трёх:
+   - **сначала проверь**, что `<источник>/<имя>/SKILL.md` существует. Нет — стоп, ничего не переноси;
+   - уже есть `~/.claude/skills/<имя>` → `mkdir -p ~/.claude/skills_old && mv ~/.claude/skills/<имя> ~/.claude/skills_old/<имя>-<метка>`;
+   - копия без служебных папок:
+     `python3 -c "import shutil,sys;shutil.copytree(sys.argv[1],sys.argv[2],ignore=shutil.ignore_patterns('ci','tests','__pycache__'))" <источник>/<имя> ~/.claude/skills/<имя>`
+     (Windows: `py -3 -c …` — на Windows `python3` часто открывает Microsoft Store);
+   - для `brain-link` ещё `cp <unpacked_to>/KIT_CONVENTIONS.md ~/.claude/skills/brain-link/`.
+6. **Сверка остальных скиллов:** для каждой папки в `~/.claude/skills/`, у которой есть такая же папка в `<unpacked_to>`,
+   сравни строку `kit_version`. Старее — назови человеку («их можно обновить потом выпускным паком»), сейчас не трогай.
 
-Обе ссылки не дали скрипт → скажи человеку скачать «Пробник», «Связку» и «Аудит второго мозга» в кабинете
-(https://ikigai-community.com/cabinet/academy/skills), распакуй их в `~/.claude/skills/` и переходи к Этапу 3.
+**Запасной путь** (GitHub не открылся или пришёл не архив): попроси человека скачать в кабинете
+(https://ikigai-community.com/cabinet/academy/skills) «Пробник», «Связку» и «Аудит второго мозга» в «Загрузки» и сказать
+«готово». Распакуй их тем же `python3 -m zipfile -e` в `~/Downloads/ikigai-cabinet-<метка>` (Safari мог распаковать сам —
+тогда в «Загрузках» уже папки `ikigai-preflight`, `brain-link`, `second-brain-audit`). `<источник>` для шага 5 — папка,
+где лежат эти три папки. `<unpacked_to>` — новая папка `~/Downloads/ikigai-kit-<метка>/ikigai-ai-skills-main`: скачай
+в неё с витрины `https://ikigai-community.com/aipotok/skills/start/` `KIT_CONVENTIONS.md` и три гайда по тем же путям —
+`novoselie-server-kit/audit/server_access.example`, `meeting-2-3/auto-commit-backup.md`, `SETUP_MORNING_BRIEF.md`
+(на витрине они лежат плоско: `start/server_access.example`, `start/auto-commit-backup.md`, `start/SETUP_MORNING_BRIEF.md`).
+После скачивания проверь, что первая строка — не `<!DOCTYPE` (витрина на несуществующий файл отдаёт веб-страницу).
 
-Скрипт печатает JSON. Перескажи поле `human`. Запомни `unpacked_to` — там лежат гайды для Этапов 7–8.
-`older_skills` не пустой — назови эти скиллы человеку («их можно обновить потом выпускным паком»), сейчас не трогай.
-**Признак «готово»:** `ok: true`, в `installed` есть `ikigai-preflight`, `brain-link` (`kit_version` 2.1) и `second-brain-audit`.
+**Признак «готово»:** в `~/.claude/skills/` есть `ikigai-preflight`, `brain-link` (`kit_version: 2.1`) и `second-brain-audit`;
+старые версии — в `~/.claude/skills_old/`. Скажи человеку одной строкой, откуда взят кит (GitHub или кабинет).
 
 ## Этап 3. Пробник: свежий профиль компьютера
+
+**Правило для всех скриптов скиллов (пробник, `brain_link.py`).** Перед первым запуском скажи человеку одной-двумя
+строками, что это за скрипт и что он делает (пробник — «только читает настройки компьютера, ничего не меняет»;
+`brain_link.py` — «настраивает связь с твоим сервером по шагам скилла»), и спроси: «Запускаю?». После «да» — запускай.
+Claude Code всё равно заблокировал запуск — не обходи: не переписывай скрипт в команды, не копируй его содержимое,
+не меняй режим разрешений. Скажи: «Защита Claude Code просит подтверждения — нажми «Разрешить» в окне запроса».
+Не получилось — стоп, напиши в журнал и попроси человека отправить скриншот в чат потока.
 
 Запусти пробник **заново, даже если профиль уже есть** (старый может не знать про ssh и Python):
 Mac `bash ~/.claude/skills/ikigai-preflight/scripts/probe.sh`; Windows — по `SKILL.md` пробника (`probe.ps1`).
