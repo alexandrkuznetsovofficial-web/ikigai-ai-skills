@@ -141,9 +141,9 @@ https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills
 Отвечают живые люди, это не мгновенно. Напомни мне: пароль root — в менеджер паролей,
 IP и пароль никуда не пересылаю, только в Файл доступа.
 
-Я САМА (2) — один раз вхожу на сервер через VNC-консоль хостера (логин root,
-пароль из менеджера паролей). Это аварийный вход: без проверенного VNC lockdown
-не делаем.
+Я САМА (2) — только перед lockdown: один раз вхожу на сервер через VNC-консоль
+хостера (логин root, пароль из менеджера паролей). Это аварийный вход: без
+проверенного VNC lockdown не делаем. Для остальных шагов VNC не нужен.
 
 Я САМА (3) — создаю бота. @BotFather → /newbot → имя → username на «bot» → токен.
 Токен я вписываю в Файл доступа, не в чат.
@@ -191,7 +191,7 @@ IP и пароль никуда не пересылаю, только в Фай�
 Инструкции — модули кита, читай модуль ПЕРЕД шагом:
 https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/tree/main/novoselie-server-kit
 
-  01_ZAKAZ_VPS.md         — сервер вне РФ, VNC, Файл доступа
+  01_ZAKAZ_VPS.md         — сервер вне РФ, Файл доступа
   02_YADRO_PEREEZD.md      — что делают keys, harden, claude, put-token, init
   03A_BOT_S_NULYA.md       — стандартный бот: brain-link bot
   04_ISTINA_I_BEKAPY.md    — где что живёт, конфликты, бэкапы, adopt, пауза синка

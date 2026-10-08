@@ -29,7 +29,7 @@ memory/inbox/, memory/dialogues/ ◄── каждые 5 мин ──  бот 
 | Шаг | Что | Где |
 |---|---|---|
 | 00 | Аудит: какая у тебя ветка (A, B или C) | [00_START_I_AUDIT.md](00_START_I_AUDIT.md) |
-| 01 | Заказать сервер, войти один раз через VNC, заполнить Файл доступа | [01_ZAKAZ_VPS.md](01_ZAKAZ_VPS.md) |
+| 01 | Заказать сервер, заполнить Файл доступа | [01_ZAKAZ_VPS.md](01_ZAKAZ_VPS.md) |
 | brain-link | `detect → keys → harden → claude → put-token → init/adopt → schedule → bot → verify → lockdown` | скилл `brain-link`; объяснение шагов — модули 02, 03A, 04, 05 |
 | 06 | Приёмка: 8 проверок `brain-link verify` | [06_QA_PROVERKA.md](06_QA_PROVERKA.md) |
 
@@ -51,7 +51,7 @@ memory/inbox/, memory/dialogues/ ◄── каждые 5 мин ──  бот 
 | # | Модуль | Про что |
 |---|--------|---------|
 | 00 | [Старт и аудит](00_START_I_AUDIT.md) | Точка входа: схема, ветка A / B / C, персональный план |
-| 01 | [Заказ VPS](01_ZAKAZ_VPS.md) | Сервер вне РФ, вход через VNC, Файл доступа |
+| 01 | [Заказ VPS](01_ZAKAZ_VPS.md) | Сервер вне РФ, Файл доступа |
 | 02 | [Ядро переезда](02_YADRO_PEREEZD.md) | Что делают `harden`, `claude`, `put-token`, `init`: пользователь brain, Claude Code, токен подписки, первая копия |
 | 03 | [Интеграция бота](03_INTEGRATSIYA_BOTA.md) | Бот уже есть — что с ним делать (обновление модуля — следующим заходом) |
 | 03A | [Стандартный бот](03A_BOT_S_NULYA.md) | BotFather + `brain-link bot`: что бот умеет и как проверить |

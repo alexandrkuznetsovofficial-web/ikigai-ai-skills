@@ -7,8 +7,8 @@ brain_link.py — установщик связки «компьютер — м�
 без --replace ничего чужого не перезаписывает):
   detect                        ОС, ssh, python, файл доступа, состояние сервера → ветка A / B / C и следующий шаг
   keys [--fingerprint SHA256:…] [--replace]
-                                ключи ed25519; ключ сервера закрепляется только после сверки отпечатка в VNC
-                                (без --fingerprint — стоп-точка, код 2); потом ОДНА команда для человека
+                                ключи ed25519; ключ сервера закрепляется при первом входе (как ssh accept-new),
+                                --fingerprint — необязательная сверка; потом ОДНА команда для человека
   harden                        сервер: пользователь brain, swap, ufw, fail2ban, автообновления, часы, brain-admin
   claude                        Claude Code под brain официальным установщиком, проверка «API-ключа нет»
   put-token claude|bot          токен уходит на сервер со скрытого ввода, нигде не печатается
@@ -292,6 +292,30 @@ def find_tool(name):
             if cand.exists():
                 return str(cand)
     return shutil.which(name)
+
+
+def keyscan_tools():
+    """ssh-keyscan по очереди. Встроенный в Windows OpenSSH 9.5 падает на Ubuntu 24.04
+    («choose_kex: unsupported KEX method sntrup761x25519-sha512») — запасной из Git for Windows."""
+    tools = [find_tool("ssh-keyscan")]
+    if os_name() == "windows":
+        roots = [Path(b) / "Git" for b in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432"),
+                                            r"C:\Program Files") if b]
+        if os.environ.get("LOCALAPPDATA"):
+            roots.append(Path(os.environ["LOCALAPPDATA"]) / "Programs" / "Git")   # Git «только для меня»
+        git = shutil.which("git")
+        if git:
+            roots.append(Path(git).resolve().parent.parent)                       # ...\Git\cmd\git.exe → ...\Git
+        for root in roots:
+            cand = root / "usr" / "bin" / "ssh-keyscan.exe"
+            if cand.exists():
+                tools.append(str(cand))
+        tools.append(shutil.which("ssh-keyscan"))
+    out = []
+    for t in tools:
+        if t and t.lower() not in [x.lower() for x in out]:
+            out.append(t)
+    return out
 
 
 def find_powershell():
@@ -880,7 +904,7 @@ def fingerprint():
 
 
 def scanned_fingerprints(lines):
-    """Отпечаток каждой строки ssh-keyscan отдельно: закрепим ровно те ключи, чей отпечаток подтвердил человек."""
+    """Отпечаток каждой строки ssh-keyscan отдельно: при --fingerprint закрепим ровно совпавшие ключи."""
     tmp = cfg_dir() / "known_hosts.scan"
     res = []
     try:
@@ -920,22 +944,31 @@ def cmd_keys(ctx):
     created = []
     ensure_keypair(admin_key(), "brain-link-admin", created)
     ensure_keypair(sync_key(), "brain-sync", created)
-    # ключ сервера: ssh-keyscan → сверка отпечатка человеком через VNC → только потом ~/.config/brain/known_hosts
+    # ключ сервера: ssh-keyscan → (необязательная сверка --fingerprint) → ~/.config/brain/known_hosts
     cfg_dir()
     ip, port = access["SERVER_IP"], access.get("SERVER_PORT", "22")
-    rc, o, e = run([find_tool("ssh-keyscan"), "-T", "10", "-p", port, "-t", "ed25519", ip], timeout=40)
-    lines = [l.strip() for l in o.splitlines() if l.strip() and not l.startswith("#")]
+    lines, errs = [], []
+    for scan in keyscan_tools():
+        for extra in (["-t", "ed25519"], []):
+            rc, o, e = run([scan, "-T", "10", "-p", port] + extra + [ip], timeout=40)
+            lines = [l.strip() for l in o.splitlines() if l.strip() and not l.startswith("#")]
+            if lines:
+                break
+            if e and e.strip():
+                errs.append(e.strip().splitlines()[-1][:200])
+        if lines:
+            break
     if not lines:
-        rc, o, e = run([find_tool("ssh-keyscan"), "-T", "10", "-p", port, ip], timeout=40)
-        lines = [l.strip() for l in o.splitlines() if l.strip() and not l.startswith("#")]
-    if not lines:
+        if any("unsupported KEX" in x for x in errs):
+            raise LinkExit(EXIT_ERR, "встроенный ssh-keyscan Windows не договорился с сервером (%s). Поставь Git for "
+                                     "Windows (git-scm.com) и запусти keys снова — возьму ssh-keyscan из Git" % errs[-1])
         raise LinkExit(EXIT_ERR, "сервер не отдал свой ключ (ssh-keyscan) — проверь SERVER_IP, SERVER_PORT, "
-                                 "интернет/VPN и что сервер включён")
+                                 "интернет/VPN и что сервер включён" + (" [%s]" % errs[-1] if errs else ""))
     scanned = scanned_fingerprints(lines)
     seen_fps = ["%s (%s)" % (f, t) for _, f, t in scanned if f]
     if not seen_fps:
         raise LinkExit(EXIT_ERR, "не смог посчитать отпечаток ключа сервера (ssh-keygen -l)")
-    res = {"step": "keys", "created_keys": created, "fingerprints": seen_fps, "vnc_command": VNC_FP_CMD}
+    res = {"step": "keys", "created_keys": created, "fingerprints": seen_fps}
     st = load_state()
     same_as_pinned = False
     if known_hosts().exists():
@@ -943,26 +976,29 @@ def cmd_keys(ctx):
         same_as_pinned = bool(_hostkey_set("\n".join(lines)) & _hostkey_set(old))
         if not same_as_pinned and not a.replace:
             raise LinkExit(EXIT_HUMAN, "ключ сервера НЕ совпал с закреплённым. Если сервер переустанавливали — "
-                                       "keys --replace (и сверка отпечатка через VNC). Если нет — не продолжай: это "
+                                       "keys --replace (только с «да» человека). Если нет — не продолжай: это "
                                        "может быть подмена", next_step="keys --replace", **res)
     if same_as_pinned and st.get("host_key_confirmed"):
         pinned = "kept"
     else:
-        # стоп-точка: без отпечатка, сверенного человеком в VNC, ключ не закрепляем и команду с паролем не даём
+        # по умолчанию — доверие при первом входе (как ssh accept-new): ключ, отданный сервером, закрепляется сразу.
+        # Отпечаток из письма хостера / VNC (--fingerprint) — необязательная сверка; дан — обязан совпасть.
+        # Смена уже закреплённого ключа без --replace остаётся стоп-точкой выше.
         given = norm_fp(getattr(a, "fingerprint", None))
-        if not given:
-            raise LinkExit(EXIT_HUMAN, "стоп-точка: сверь ключ сервера. Открой VNC-консоль в кабинете хостера, войди "
-                                       "root и выполни: %s. Сравни SHA256 с этим: %s. Совпадает — пришли мне строку "
-                                       "SHA256:… из VNC, я запущу keys --fingerprint SHA256:… . Не совпадает — "
-                                       "стоп, напиши в чат потока" % (VNC_FP_CMD, ", ".join(seen_fps)),
-                           next_step="keys --fingerprint SHA256:…", **res)
-        match = [l for l, f, _ in scanned if f and f.rstrip("=") == given]
-        if not match:
-            raise LinkExit(EXIT_ERR, "отпечаток из VNC (%s) НЕ совпал с тем, что отдаёт сервер по сети (%s). Ключ не "
-                                     "закреплён. Проверь, что скопировала строку целиком; если всё верно — это "
-                                     "может быть подмена, дальше не идём" % (given, ", ".join(seen_fps)), **res)
+        if given:
+            match = [l for l, f, _ in scanned if f and f.rstrip("=") == given]
+            if not match:
+                raise LinkExit(EXIT_ERR, "отпечаток (%s) НЕ совпал с тем, что отдаёт сервер по сети (%s). Ключ не "
+                                         "закреплён. Проверь, что строка скопирована целиком; если всё верно — это "
+                                         "может быть подмена, дальше не идём" % (given, ", ".join(seen_fps)), **res)
+            res["host_key_check"] = "fingerprint"
+        else:
+            match = lines
+            res["host_key_check"] = "first_use"
         data = ("\n".join(match) + "\n").encode("utf-8")
         if known_hosts().exists():
+            if not same_as_pinned:
+                res["old_fingerprints"] = fingerprint()             # было → стало, чтобы человеку было с чем сравнить
             write_file_safe(known_hosts(), data, replace=True)
             pinned = "confirmed" if same_as_pinned else "replaced"
         else:
@@ -975,10 +1011,10 @@ def cmd_keys(ctx):
     user = ctx.admin_user()
     rc, o, e = ctx.ssh(["true"], timeout=40, user=user)
     if rc == 0:
-        finish(EXIT_OK, "вход по ключу работает (%s), ключ сервера сверен и закреплён: %s"
+        finish(EXIT_OK, "вход по ключу работает (%s), ключ сервера закреплён: %s"
                % (user, ", ".join(fps) or "?"), warnings=ctx.warnings, **res)
     res["command"] = copy_id_command(access)
-    finish(EXIT_HUMAN, "ключ сервера сверен и закреплён. Теперь ОДИН раз сама в своём терминале выполни команду из "
+    finish(EXIT_HUMAN, "ключ сервера закреплён. Теперь ОДИН раз сама в своём терминале выполни команду из "
                        "поля command — она спросит «yes/no» (ответь yes: отпечаток тот же, %s) и пароль root "
                        "(вводишь ты, в чат не пиши). Потом снова запусти keys — он проверит вход. Ключ создан без "
                        "пароль-фразы; хочешь фразу — ssh-keygen -p -f ~/.ssh/id_ed25519 (на Mac затем ssh-add "

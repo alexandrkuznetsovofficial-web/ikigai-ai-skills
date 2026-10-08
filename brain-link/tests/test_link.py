@@ -398,7 +398,7 @@ SCAN_LINE = b"10.20.30.40 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBrainLinkTestHost
 
 
 class TestKeys(Base):
-    """keys: ключ сервера закрепляется только после сверки отпечатка человеком в VNC (не TOFU)."""
+    """keys: ключ сервера закрепляется при первом входе; --fingerprint — необязательная сверка."""
 
     def setUp(self):
         super().setUp()
@@ -414,16 +414,21 @@ class TestKeys(Base):
     def kh(self):
         return self.cfg / "known_hosts"
 
-    def test_without_fingerprint_stops_and_pins_nothing(self):
+    def test_without_fingerprint_trusts_first_use(self):
         code, res, raw = self.call(["keys"])
-        self.assertEqual(code, 2, res)
-        self.assertFalse(self.kh().exists())                  # ключ НЕ закреплён на веру
-        self.assertNotIn("command", res)                       # команды с паролем root ещё нет
-        self.assertIn("ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub", raw)
-        self.assertIn(FP, raw)
-        self.assertIn("--fingerprint", res["next_step"])
-        self.assertFalse(any(c["line"].endswith(" true") for c in self.runner.calls))
+        self.assertEqual(code, 2, res)                         # ключ закреплён, ждём ssh-copy-id от человека
+        self.assertEqual(self.kh().read_bytes(), SCAN_LINE)   # как ssh accept-new: без VNC
+        self.assertEqual(res["host_key_check"], "first_use")
+        self.assertIn("ssh-copy-id", res["command"])
         self.assertNotIn(FAKE_PW, raw)
+
+    def test_windows_keyscan_falls_back_to_git(self):
+        git = self.home / "PF" / "Git" / "usr" / "bin"
+        git.mkdir(parents=True)
+        (git / "ssh-keyscan.exe").write_text("", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"BRAIN_LINK_OS": "windows", "ProgramFiles": str(self.home / "PF")}):
+            tools = bk.keyscan_tools()
+        self.assertIn(str(git / "ssh-keyscan.exe"), tools)
 
     def test_wrong_fingerprint_refused(self):
         code, res, _ = self.call(["keys", "--fingerprint", FP_OTHER])
@@ -437,17 +442,18 @@ class TestKeys(Base):
         self.assertEqual(self.kh().read_bytes(), SCAN_LINE)
         self.assertIn("ssh-copy-id", res["command"])
         self.assertEqual(res["host_key"], "created")
+        self.assertEqual(res["host_key_check"], "fingerprint")
         # человек выполнил команду → повтор keys уже без --fingerprint: ключ подтверждён ранее
         self.runner.rules[-1] = (" true", (0, b"", b""))
         code, res, _ = self.call(["keys"])
         self.assertEqual(code, 0, res)
         self.assertEqual(res["host_key"], "kept")
 
-    def test_pinned_without_confirmation_asks_once(self):
-        self.kh().write_bytes(SCAN_LINE)                       # закреплён старой версией, отпечаток не сверяли
+    def test_pinned_without_confirmation_confirms_silently(self):
+        self.kh().write_bytes(SCAN_LINE)                       # закреплён старой версией, тот же ключ
         code, res, _ = self.call(["keys"])
-        self.assertEqual(code, 2)
-        self.assertIn("--fingerprint", res["next_step"])
+        self.assertEqual(code, 2, res)
+        self.assertEqual(res["host_key"], "confirmed")
 
     def test_changed_server_key_needs_replace(self):
         self.kh().write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
@@ -455,6 +461,30 @@ class TestKeys(Base):
         self.assertEqual(code, 2)
         self.assertEqual(res["next_step"], "keys --replace")
         self.assertIn("OTHERKEY", self.kh().read_text())
+
+    def test_replace_without_fingerprint_shows_old_and_new(self):
+        self.kh().write_text("10.20.30.40 ssh-ed25519 AAAAOTHERKEY\n", encoding="utf-8")
+        code, res, _ = self.call(["keys", "--replace"])
+        self.assertEqual(code, 2, res)
+        self.assertEqual(res["host_key"], "replaced")
+        self.assertEqual(res["host_key_check"], "first_use")
+        self.assertIn("old_fingerprints", res)
+        self.assertEqual(self.kh().read_bytes(), SCAN_LINE)
+
+    def test_keyscan_tries_next_tool_when_first_empty(self):
+        with mock.patch.object(bk, "keyscan_tools", return_value=["/bad/ssh-keyscan", "/git/ssh-keyscan"]):
+            self.runner.rules = [("/bad/ssh-keyscan", (255, b"", b"choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com")),
+                                 ("/git/ssh-keyscan", (0, SCAN_LINE, b""))] + self.runner.rules[1:]
+            code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 2, res)
+        self.assertEqual(self.kh().read_bytes(), SCAN_LINE)
+
+    def test_keyscan_kex_failure_explained(self):
+        with mock.patch.object(bk, "keyscan_tools", return_value=["/bad/ssh-keyscan"]):
+            self.runner.rules = [("/bad/ssh-keyscan", (255, b"", b"choose_kex: unsupported KEX method sntrup761x25519-sha512@openssh.com"))]
+            code, res, raw = self.call(["keys"])
+        self.assertEqual(code, 1, res)
+        self.assertIn("Git for Windows", raw)
 
     def test_windows_copy_id_quotes_path(self):
         with mock.patch.dict(os.environ, {"BRAIN_LINK_OS": "windows"}):
