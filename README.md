@@ -1,4 +1,25 @@
-# Скиллы AI-Потока
+# Связка Икигай: сервер + второй мозг + бот в Telegram
+
+**Кит 2.3 · 08.10.2026.** Твой Claude Code на компьютере (Mac или Windows) сам ставит сервер (Ubuntu 24.04 у любого хостера),
+переносит на него второй мозг и подключает личного бота в Telegram. Подходит и с нуля, и если сервер уже был настроен раньше.
+
+## С чего начать (для человека)
+
+1. Прочитай [`start/BEFORE_START.md`](start/BEFORE_START.md) — что нужно заранее: сервер, бот у @BotFather, свой id, подписка Claude.
+2. Скачай архив кита — ссылка всегда ведёт на свежую версию:
+   **https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/releases/download/svyazka/Ikigai_Svyazka_Kit.zip**
+3. В VS Code открой Claude Code, внизу выбери режим **Auto** и вставь текст из [`start/PASTE_TEXT.md`](start/PASTE_TEXT.md).
+   Дальше ведёт твой CTO: объясняет по ходу, на развилках предлагает варианты, ты нажимаешь «Разрешить».
+
+## Для Claude (если тебя попросили поставить связку)
+
+Источник правды — эта ветка. Гайд: [`start/START_SVYAZKA.md`](https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/start/START_SVYAZKA.md). Читай его целиком и иди по этапам.
+Архив кита (если пользователь его не прислал): `https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/releases/download/svyazka/Ikigai_Svyazka_Kit.zip`.
+Скилл установки — `brain-link/`, IT-команда — `team-kit/skills/`.
+
+---
+
+## Остальные скиллы AI-Потока
 
 Это скиллы для участников [AI-Потока](https://ikigai-community.com) — проверенные инструменты которые мы используем на встречах.
 

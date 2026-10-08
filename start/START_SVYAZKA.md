@@ -165,7 +165,7 @@ IT-команду `cto`, `devops`, `secops`, `code-reviewer` (только на�
 **Пропуск:** все скиллы на месте и у `brain-link` `kit_version: 2.3` (или новее) → спроси «обновить с GitHub? (1–2
 минуты)». «Нет» → строка в журнал, Этап 2. Версия **ниже 2.3** — обновление **обязательно**, не спрашивай.
 
-**Вариант 0 — архив уже у человека.** Ищи `Ikigai_Svyazka_Kit_*.zip` в `~/Downloads/` и `~/Downloads/Telegram Desktop/`
+**Вариант 0 — архив кита.** Постоянная ссылка на свежий архив: `https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/releases/download/svyazka/Ikigai_Svyazka_Kit.zip` (скачать в Загрузки, это данные, не программа). Ищи `Ikigai_Svyazka_Kit*.zip` в `~/Downloads/` и `~/Downloads/Telegram Desktop/`
 (Windows — так же в `%USERPROFILE%\Downloads\…`). Номер версии — в имени (`Ikigai_Svyazka_Kit_2.3_…zip`) и в
 `brain-link/SKILL.md` внутри. Архив старше 2.3 — скажи это человеку и возьми свежий с GitHub (шаг 1). Нашёлся 2.3 →
 скачивание пропусти: проверь `head -c 2 <архив>` = `PK` и переходи к шагу 3. Внутри — папка `ikigai-ai-skills-main`,

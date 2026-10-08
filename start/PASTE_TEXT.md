@@ -13,7 +13,7 @@
 Прочитай его целиком и веди меня по этапам, по одному шагу за раз.
 
 Если GitHub не открывается, а у меня в Загрузках (или в папке Загрузки/Telegram Desktop) есть архив
-Ikigai_Svyazka_Kit_2.3*.zip — распакуй его командой python3 -m zipfile -e (на Windows: py -3 -m zipfile -e)
+Ikigai_Svyazka_Kit*.zip (если нет — попроси меня открыть в браузере https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/releases/download/svyazka/Ikigai_Svyazka_Kit.zip или взять архив у куратора) — распакуй его командой python3 -m zipfile -e (на Windows: py -3 -m zipfile -e)
 в новую папку и читай ikigai-ai-skills-main/start/START_SVYAZKA.md оттуда. Архив старше 2.3 — скажи мне и возьми свежий.
 
 Если у меня уже есть журнал установки (~/.config/brain/install_journal.md) — продолжи по нему.
