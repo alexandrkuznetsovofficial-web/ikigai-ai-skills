@@ -2434,11 +2434,11 @@ def _tail_lines(path, n=REPORT_LINES):
 def cmd_report(ctx):
     """Диагностика для куратора: один текстовый файл в домашней папке, секреты и адреса замаскированы."""
     stamp = time.strftime("%Y-%m-%d_%H%M")
-    parts = ["brain-link report · kit 2.1 · %s" % time.strftime("%Y-%m-%d %H:%M:%S %z")]
+    parts = ["brain-link report · kit 2.2 · %s" % time.strftime("%Y-%m-%d %H:%M:%S %z")]
     parts.append(_section("версии и ОС", "\n".join([
         "os: %s · %s %s" % (os_name(), platform.system(), platform.release()),
         "python: %s (%s)" % (platform.python_version(), sys.executable),
-        "kit: 2.1"])))
+        "kit: 2.2"])))
     parts.append(_section("возможности компьютера", json.dumps(local_capabilities(), ensure_ascii=False, indent=1)))
     # detect — отдельным процессом: он сам решает, как ходить на сервер, и печатает один JSON
     rc, o, e = run([sys.executable, str(Path(__file__).resolve()), "detect"], timeout=180, env=child_env())
