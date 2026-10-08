@@ -1192,6 +1192,19 @@ class TestForeignBrainBot(UpgradeShellBase):
         env = self.fake_server(units)
         self.assertEqual(self.bash(bk.OLD_SCAN + '\nbl_old_token brain-bot.service', env).strip(), "")
 
+    def harden_foreign(self, units):
+        text = (KIT / "server" / "harden.sh").read_text(encoding="utf-8")
+        i = text.index("FOREIGN_BOT=0")
+        j = text.index("\nfi\n", i) + 4
+        env = self.fake_server(units)
+        return self.bash("set -euo pipefail\n" + text[i:j] + 'echo "FOREIGN=$FOREIGN_BOT"\n', env).strip()
+
+    def test_harden_keeps_foreign_brain_bot(self):
+        self.assertEqual(self.harden_foreign(self.bridge()), "FOREIGN=1")
+        self.assertEqual(self.harden_foreign(self.july()), "FOREIGN=1")
+        self.assertEqual(self.harden_foreign(self.ours()), "FOREIGN=0")
+        self.assertEqual(self.harden_foreign({}), "FOREIGN=0")
+
     def test_two_owners_counted(self):
         units = self.bridge()
         (self.tmp / "bridge" / ".env").write_text("TOKEN=%s\nALLOWED_USERS=111222333,444555666\n" % BRIDGE_TOKEN,

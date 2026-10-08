@@ -194,9 +194,12 @@ rm -f /tmp/brain-botuser.$$
 # kit 2.3: brain-bot.service может быть ЧУЖИМ (мост claude-code-telegram, бот июльского кита, «настроил свой
 # Claude»). Свой — только если ExecStart запускает /usr/local/lib/brain-bot/brain_bot.py. Чужой harden не
 # перезаписывает и не перезапускает: его выключит шаг `brain-link bot` по «да» человека (копия юнита — в $BAK_DIR).
+# (без пайпов: под pipefail SIGPIPE от `grep -q` выдал бы наш юнит за чужой)
 FOREIGN_BOT=0
-if [ "$(systemctl show -p LoadState --value brain-bot.service 2>/dev/null)" = loaded ] \
-   && ! systemctl show -p ExecStart --value brain-bot.service 2>/dev/null | grep -qF /usr/local/lib/brain-bot/brain_bot.py; then
+BB_LOAD=$(systemctl show -p LoadState --value brain-bot.service 2>/dev/null || true)
+BB_EXEC=$(systemctl show -p ExecStart --value brain-bot.service 2>/dev/null || true)
+case "$BB_EXEC" in *"/usr/local/lib/brain-bot/brain_bot.py"*) BB_OURS=1 ;; *) BB_OURS=0 ;; esac
+if [ "$BB_LOAD" = loaded ] && [ "$BB_OURS" = 0 ]; then
   FOREIGN_BOT=1
 elif [ -f /etc/systemd/system/brain-bot.service ] && ! grep -qF /usr/local/lib/brain-bot/brain_bot.py /etc/systemd/system/brain-bot.service; then
   FOREIGN_BOT=1
@@ -207,7 +210,7 @@ put "$HERE/brain_bot.py" /usr/local/lib/brain-bot/brain_bot.py 0755 root:root
 put "$HERE/claude_settings.json" "/etc/brain-bot/claude_settings.json" 0644 root:root
 for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.service brain-watch.timer; do
   if [ "$u" = brain-bot.service ] && [ "$FOREIGN_BOT" = 1 ]; then
-    warn "brain-bot.service — чужой бот ($(systemctl show -p ExecStart --value brain-bot.service 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1)): не трогаю, его выключит шаг bot по «да»"
+    warn "brain-bot.service — чужой бот ($(printf '%s\n' "$BB_EXEC" | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1)): не трогаю, его выключит шаг bot по «да»"
     continue
   fi
   TMPU=$(mktemp)
