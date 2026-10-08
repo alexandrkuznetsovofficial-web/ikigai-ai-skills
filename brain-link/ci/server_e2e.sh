@@ -357,8 +357,17 @@ fi
 if [ "$SCENARIO" = upgrade ]; then
   # токена бота нет ни в файле доступа, ни на вводе: он у старого бота — перенос на сервере по «да»
   LINK -- put-token bot; assert_rc 3 $? "upgrade: put-token bot — стоп-точка «перенести токен старого бота?»"
-  LINK -- put-token bot --yes; assert_rc 0 $? "upgrade: put-token bot --yes — токен перенесён на сервере"
-  [ "$(jget owner_moved)" = True ] && ok "upgrade: владелец взят из ALLOWED_USERS старого бота" || bad "upgrade: owner_moved=$(jget owner_moved)"
+  [ "$(jget owner_mask)" = "11…11" ] && ok "upgrade: стоп-точка показывает маску id владельца (11…11) для сверки" \
+    || bad "upgrade: owner_mask=$(jget owner_mask)"
+  [ "$(jget next_step)" = "put-token bot --yes --owner-ok" ] && ok "upgrade: стоп-точка предлагает --owner-ok" \
+    || bad "upgrade: next_step=$(jget next_step)"
+  # без --owner-ok владелец НЕ переносится (человек не сверил id с @userinfobot)
+  LINK -- put-token bot --yes; assert_rc 0 $? "upgrade: put-token bot --yes (без --owner-ok) — токен перенесён"
+  [ "$(jget owner_moved)" = False ] && ok "upgrade: без --owner-ok владелец не перенесён" || bad "upgrade: без --owner-ok owner_moved=$(jget owner_moved)"
+  RSSH root 'test ! -e /etc/brain-bot/owner_id' && ok "upgrade: owner_id на сервере не появился без --owner-ok" \
+    || bad "upgrade: owner_id записан без --owner-ok"
+  LINK -- put-token bot --yes --owner-ok; assert_rc 0 $? "upgrade: put-token bot --yes --owner-ok (повтор шага) — токен перенесён на сервере"
+  [ "$(jget owner_moved)" = True ] && ok "upgrade: с --owner-ok владелец взят из ALLOWED_USERS старого бота" || bad "upgrade: owner_moved=$(jget owner_moved)"
   printf '%s' "$LAST_JSON" | grep -qF -- "$(cat "$WORK/tok_bot")" && bad "upgrade: токен в JSON put-token" || ok "upgrade: токена в выводе нет, только маска $(jget token_mask)"
   grep -qF -- "$(cat "$WORK/tok_bot")" "$LOG" && bad "upgrade: токен в журнале e2e" || ok "upgrade: токена в журнале e2e нет"
   same="$(RSSH root "sha256sum /etc/brain-bot/credentials/bot_token | cut -c1-64")"
