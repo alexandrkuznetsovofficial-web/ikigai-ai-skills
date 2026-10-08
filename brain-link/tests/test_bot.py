@@ -191,7 +191,7 @@ class TestModes(Base):
                           ("--settings", self.cfg.settings)):
             self.assertEqual(args[args.index(flag) + 1], val)
         self.assertIn("--strict-mcp-config", args)
-        self.assertEqual(call["timeout"], 180)
+        self.assertEqual(call["timeout"], 300)   # kit 2.3: Opus — 5 минут
 
     def test_default_is_opus_fast_is_sonnet(self):
         """kit 2.3: по умолчанию Opus; /fast — Sonnet; /fast без вопроса — подсказка, claude не зовём."""
@@ -205,6 +205,17 @@ class TestModes(Base):
         self.assertTrue(any("/fast" in m for m in self.api.sent()))
         self.assertIn("/fast", bb.HELP)
         self.assertIn("Opus", bb.HELP)
+
+    def test_fast_has_short_timeout_brief_and_selfcheck_are_sonnet(self):
+        self.bot.handle_update(upd("/fast коротко"))
+        self.assertEqual(self.claude.calls[-1]["timeout"], 180)
+        self.assertEqual((self.cfg.model_brief, self.cfg.model_selfcheck), ("sonnet", "sonnet"))
+        self.bot.ask_claude("брифинг", deep=False, model=self.cfg.model_brief)
+        c = self.claude.calls[-1]
+        self.assertEqual((c["args"][c["args"].index("--model") + 1], c["timeout"]), ("sonnet", 180))
+        src = open(bb.__file__, encoding="utf-8").read()
+        self.assertIn("model=cfg.model_brief", src)
+        self.assertIn("cfg.model_selfcheck, token", src)
 
     def test_models_overridable_by_env(self):
         cfg = bb.Config({"OWNER_ID": "42", "MODEL_DEFAULT": "sonnet", "MODEL_FAST": "haiku"})
@@ -339,7 +350,7 @@ class TestLimitsAndErrors(Base):
             raise bb.subprocess.TimeoutExpired("claude", 180)
         self.bot.exec_claude = boom
         self.bot.handle_update(upd("вопрос 2"))
-        self.assertIn(bb.MSG_TIMEOUT, self.api.sent())
+        self.assertIn(bb.MSG_TIMEOUT.format(minutes=5), self.api.sent())
 
     def test_no_claude_token(self):
         self.bot.secrets = {"bot_token": BOT_TOKEN}.get

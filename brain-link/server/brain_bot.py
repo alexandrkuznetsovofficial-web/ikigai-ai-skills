@@ -31,6 +31,7 @@ Python 3.9+ и только стандартная библиотека (urllib)
   BOT_TZ                часовой пояс владельца (по умолчанию Europe/Moscow)
   MODEL_DEFAULT/MODEL_DEEP/MODEL_FAST  модели (kit 2.3: opus / opus / sonnet). По умолчанию отвечает Opus;
                         /fast — Sonnet: быстрее и бережнее к лимиту подписки
+  MODEL_BRIEF/MODEL_SELFCHECK  утренний брифинг и самопроверка безопасности (по умолчанию sonnet — экономия лимита)
   TELEGRAM_API_BASE     адрес Bot API (по умолчанию https://api.telegram.org) — для фейкового Telegram
                         в CI. Только https:// или http://127.0.0.1|localhost; иное — выход (fail-closed)
 
@@ -81,7 +82,8 @@ log = logging.getLogger("brain-bot")
 
 # ---------------------------------------------------------------- константы
 MAX_TURNS = 25
-CLAUDE_TIMEOUT = 180
+CLAUDE_TIMEOUT = 180          # Sonnet (/fast, брифинг) и каждый вызов самопроверки
+CLAUDE_TIMEOUT_OPUS = 300     # kit 2.3: Opus думает дольше — ответам на вопросы даём 5 минут
 CALLS_PER_HOUR = 30
 FILE_CAP = 12_000
 TOTAL_CAP = 30_000
@@ -179,7 +181,7 @@ MSG_BUSY = "Думаю над прошлым сообщением — пришл
 MSG_LIMIT = ("Упёрлись в лимит подписки Claude. Подожди немного (обычно до нескольких часов) "
              "или спроси короче через /fast … — ответит Sonnet, он быстрее и бережнее к лимиту. "
              "По умолчанию я отвечаю Opus: он умнее, но на Pro лимит кончается быстрее.")
-MSG_TIMEOUT = "Не уложился в 3 минуты. Попробуй сузить вопрос или разбить его на части."
+MSG_TIMEOUT = "Не уложился в {minutes} мин. Попробуй сузить вопрос, разбить его на части или спроси через /fast …"
 MSG_AUTH = ("Claude не принял токен подписки. На компьютере: `claude setup-token`, "
             "затем `brain-link put-token claude`.")
 MSG_NO_TOKEN = "На сервере нет токена подписки. На компьютере: `brain-link put-token claude`."
@@ -277,6 +279,8 @@ class Config:
         self.model_default = env.get("MODEL_DEFAULT") or "opus"
         self.model_deep = env.get("MODEL_DEEP") or "opus"
         self.model_fast = env.get("MODEL_FAST") or "sonnet"
+        self.model_brief = env.get("MODEL_BRIEF") or "sonnet"
+        self.model_selfcheck = env.get("MODEL_SELFCHECK") or "sonnet"
         self.voice = env.get("VOICE", "0") == "1"
         self.dialogues = env.get("DIALOGUES", "1") != "0"
         self.lang = env.get("LANG") or "C.UTF-8"
@@ -1396,7 +1400,7 @@ def bot_selfcheck_calls(bot, item, res, canaries, secrets, token, caps=None, bef
         if stop:
             item(iid, "unverified", title, "не дошли: %s" % stop)
             continue
-        args, stdin, env, cwd = build_claude_call(cfg, prompt, mode, cfg.model_default, token, caps=caps)
+        args, stdin, env, cwd = build_claude_call(cfg, prompt, mode, cfg.model_selfcheck, token, caps=caps)
         args = stream_json_args(args)
         if before_call:
             before_call()
@@ -1575,11 +1579,12 @@ class Bot:
             append_dialogue(self.cfg, self.now(), text, reply, meta)
         self.send(reply)
 
-    def ask_claude(self, text, deep, mode=None, fast=False):
+    def ask_claude(self, text, deep, mode=None, fast=False, model=None):
         """-> (ответ для владельца, метка режима, ok). Вызывать под self.lock.
         Модель: /fast → model_fast (Sonnet), /deep → model_deep, иначе model_default (kit 2.3: Opus)."""
         mode = mode or pick_mode(text)
-        model = self.cfg.model_fast if fast else (self.cfg.model_deep if deep else self.cfg.model_default)
+        model = model or (self.cfg.model_fast if fast else (self.cfg.model_deep if deep else self.cfg.model_default))
+        timeout = CLAUDE_TIMEOUT_OPUS if "opus" in model.lower() else CLAUDE_TIMEOUT
         meta = "%s, %s" % (mode, model)
         blocked = integrity_block(self.cfg)
         if blocked:
@@ -1591,10 +1596,10 @@ class Bot:
         args, prompt, env, cwd = build_claude_call(self.cfg, text, mode, model, token, caps=self.caps)
         log.info("claude call mode=%s model=%s prompt_len=%d", mode, model, len(prompt))
         try:
-            rc, out, err = self.exec_claude(args, prompt, env, cwd, CLAUDE_TIMEOUT)
+            rc, out, err = self.exec_claude(args, prompt, env, cwd, timeout)
         except subprocess.TimeoutExpired:
             log.warning("claude timeout")
-            return MSG_TIMEOUT, meta, False
+            return MSG_TIMEOUT.format(minutes=timeout // 60), meta, False
         except FileNotFoundError:
             return "На сервере не найден claude. Установщик: `brain-link claude`.", meta, False
         if rc != 0 or not out.strip():
@@ -1806,7 +1811,8 @@ def brief(bot):
         try:
             ok, _ = bot.rate.take()
             if ok:
-                answer, _, good = bot.ask_claude(task, deep=False, mode="safe" if read_safe_mode(cfg) else "files")
+                answer, _, good = bot.ask_claude(task, deep=False, mode="safe" if read_safe_mode(cfg) else "files",
+                                                 model=cfg.model_brief)
                 if good:
                     text = answer
         finally:

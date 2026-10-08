@@ -74,7 +74,8 @@ BOT_CLAUDE_CONFIG = BOT_STATE + "/claude-config"
 VERIFY_FILE = "brain_link_verify.md"
 WAIT_DEFAULT = 360
 
-CLAUDE_TOKEN_RE = re.compile(r"^sk-ant-oat[0-9A-Za-z_-]{20,}$")
+# токен подписки `claude setup-token`: sk-ant-oat01-… около 108 знаков; меньше 80 — обрезок, не токен
+CLAUDE_TOKEN_RE = re.compile(r"^sk-ant-oat[0-9A-Za-z_-]{70,}$")
 BOT_TOKEN_RE = re.compile(r"^[0-9]{6,12}:[A-Za-z0-9_-]{30,}$")
 PUBKEY_RE = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/=]{40,} ?[A-Za-z0-9@._-]*$")
 UNIT_RE = re.compile(r"^[A-Za-z0-9@._-]{1,80}\.service$")
@@ -156,13 +157,50 @@ TOKEN_TAIL_RE = re.compile(r"(?:s|sk|sk-|sk-a|sk-an|sk-ant|sk-ant-|sk-ant-o|sk-a
 PTY_COLS = 400
 
 
-def default_capture_token(argv):
+CAPTURE_TIMEOUT = 900          # вход в браузере + строка токена: дольше 15 минут не ждём
+_RISKY_TAIL_RE = re.compile(r"(?:s|sk|sk-[A-Za-z0-9_-]*|[A-Za-z0-9_-]{20,})$")
+_LONG_RUN_RE = re.compile(r"[A-Za-z0-9_-]{30,}")
+
+
+def _mask_line(line):
+    """Строка вывода для экрана человека. Есть «sk-ant» или длинная строка-хвост (перенос токена) — печатаем
+    текст БЕЗ управляющих кодов (их могли вставить посреди токена) и с маской; иначе — как есть."""
+    plain = ANSI_RE.sub("", line)
+    if "sk-ant" in plain or _LONG_RUN_RE.search(plain):
+        plain = TOKEN_ANY_RE.sub("sk-ant-oat•••", plain)
+        return _LONG_RUN_RE.sub("•••", plain)
+    return line
+
+
+def _screen_filter(pending, final=False, idle=False):
+    """-> (что показать, что придержать). Полные строки — через _mask_line; хвост без перевода строки
+    показываем только на паузе вывода и только если он не похож на начало токена."""
+    out = []
+    while True:
+        k = pending.find("\n")
+        if k < 0:
+            break
+        out.append(_mask_line(pending[:k + 1]))
+        pending = pending[k + 1:]
+    if pending and (final or idle):
+        plain = ANSI_RE.sub("", pending)
+        if final:
+            out.append(_mask_line(pending))
+            pending = ""
+        elif not _RISKY_TAIL_RE.search(plain) and "sk-ant" not in plain:
+            out.append(pending)
+            pending = ""
+    return "".join(out), pending
+
+
+def default_capture_token(argv, timeout=CAPTURE_TIMEOUT):
     """argv под pty: вывод → stderr человека (токен замаскирован), ввод человека → в pty. -> (код, токен|"")."""
     import pty
     import select
     import termios
     import fcntl
     import struct
+    import signal
     pid, fd = pty.fork()
     if pid == 0:   # ребёнок: широкий терминал — длинная строка токена не переносится
         try:
@@ -184,42 +222,52 @@ def default_capture_token(argv):
             tty.setraw(in_fd)
     except (OSError, ValueError, termios.error):
         in_fd = None
-    raw, pending = [], ""
+    raw, pending, rc, deadline = [], "", None, time.time() + timeout
 
-    def flush(text, final=False):
-        text = TOKEN_ANY_RE.sub("sk-ant-oat•••", text)
-        keep = ""
-        if not final:
-            m = TOKEN_TAIL_RE.search(text)
-            if m:
-                text, keep = text[:m.start()], text[m.start():]
+    def show(text):
         if text:
             try:
                 os.write(out_fd, text.encode("utf-8", "replace"))
             except OSError:
                 pass
-        return keep
 
     try:
         while True:
+            if rc is None:
+                try:
+                    done, status = os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    done, status = pid, 0
+                if done == pid:
+                    rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+            if time.time() > deadline:
+                if rc is None:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                break
             fds = [fd] + ([in_fd] if in_fd is not None else [])
             try:
                 r, _, _ = select.select(fds, [], [], 0.4)
             except (OSError, ValueError):
                 break
             if not r:
-                if pending:
-                    pending = flush(pending, final=True)
+                text, pending = _screen_filter(pending, idle=True)
+                show(text)
+                if rc is not None:
+                    break      # ребёнок вышел и всё прочитано
                 continue
             if fd in r:
                 try:
                     data = os.read(fd, 4096)
                 except OSError:
-                    break
+                    data = b""
                 if not data:
                     break
                 raw.append(data)
-                pending = flush(pending + data.decode("utf-8", "replace"))
+                text, pending = _screen_filter(pending + data.decode("utf-8", "replace"))
+                show(text)
             if in_fd is not None and in_fd in r:
                 try:
                     data = os.read(in_fd, 1024)
@@ -227,8 +275,8 @@ def default_capture_token(argv):
                         os.write(fd, data)
                 except OSError:
                     pass
-        if pending:
-            flush(pending, final=True)
+        text, pending = _screen_filter(pending, final=True)
+        show(text)
     finally:
         if old_attr is not None:
             try:
@@ -239,14 +287,18 @@ def default_capture_token(argv):
             os.close(fd)
         except OSError:
             pass
-    try:
-        _, status = os.waitpid(pid, 0)
-        rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
-    except OSError:
-        rc = 1
+    if rc is None:
+        try:
+            _, status = os.waitpid(pid, 0)
+            rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+        except OSError:
+            rc = 1
     text = ANSI_RE.sub("", b"".join(raw).decode("utf-8", "replace"))
     raw = None
     found = [t for t in TOKEN_ANY_RE.findall(text) if CLAUDE_TOKEN_RE.match(t)]
+    if not found:   # строку всё же перенесло: склеиваем строки и ищем ещё раз
+        found = [t for t in TOKEN_ANY_RE.findall(re.sub(r"\s*\r?\n\s*", "", text)) if CLAUDE_TOKEN_RE.match(t)]
+    text = ""
     return rc, (found[-1] if found else "")
 
 
@@ -281,6 +333,8 @@ def default_clipboard_put(text):
 RUNNER = default_runner
 INTERACTIVE = default_interactive
 CAPTURE_TOKEN = default_capture_token
+WAIT_ENTER = lambda prompt: input(prompt)   # noqa: E731 — Windows: «нажми Enter здесь» (тесты подменяют)
+CLIP_WAIT = 120                              # сколько опрашивать буфер обмена после Enter, с
 CLIPBOARD_GET = default_clipboard_get
 CLIPBOARD_PUT = default_clipboard_put
 POPEN = subprocess.Popen
@@ -566,12 +620,19 @@ def kv(text):
     return res
 
 
+# секрет аргументом командной строки старого бота: --pw=…, --token …, -p … и т.п.
+ARG_SECRET_RE = re.compile(r"(?i)(--?(?:pw|pass\w*|token|secret|key|api[-_]?key|auth)(?:=|\s+))(?!•)[^\s|]+")
+
+
 def parse_old_bots(text):
     """OLDINFO / OLDTOK / OLDOWN из серверного скана → [{unit, user, exec, unit_file, token, owners}].
     token — {"count": N, "mask": "12…34:•••"} или None; owners — сколько разных id в ALLOWED_USERS и т.п.
     Самих токенов и id здесь нет и быть не может: сервер печатает только маску и счётчики."""
     bots = {}
     for line in (text or "").splitlines():
+        if line.startswith(("OLDINFO=", "OLDTOK=", "OLDOWN=")):
+            line = mask_report(line)   # sk-ant…, токены, пароли в ExecStart/пути — маской ещё до разбора
+            line = ARG_SECRET_RE.sub(r"\1•••", line)
         for key in ("OLDINFO=", "OLDTOK=", "OLDOWN="):
             if not line.startswith(key):
                 continue
@@ -583,7 +644,7 @@ def parse_old_bots(text):
                                        "token": None, "owners": None})
             if key == "OLDINFO=" and len(parts) >= 4:
                 b["user"] = parts[1].strip() or "root"
-                b["exec"] = mask_report(parts[2].strip())[:200] or None
+                b["exec"] = parts[2].strip()[:200] or None
                 b["unit_file"] = parts[3].strip() or None
             elif key == "OLDTOK=" and len(parts) >= 3 and parts[1].strip().isdigit():
                 mask = parts[2].strip()
@@ -601,21 +662,38 @@ def old_bot_line(b):
 
 IT_TEAM = ("cto", "devops", "secops", "code-reviewer")
 AUTHOR_RE = re.compile(r"(?m)^author:\s*[\"']?ikigai\b")
+# Признаки скиллов IT-команды из кита до 2.3 (там ещё не было author: ikigai): заголовок и начало description.
+KIT_TEAM_SIGNS = {
+    "cto": ("# CTO — твой технический директор", "Технический директор — единая точка входа"),
+    "devops": ("# DevOps-инженер — дежурный по твоему серверу", "Вызывай когда «сервер не отвечает», «бот упал»"),
+    "secops": ("# 🛡️ Офицер безопасности (SecOps)", "Офицер безопасности твоего сервера и «второго мозга»"),
+    "code-reviewer": ("# Код-ревьюер — свежий взгляд ПЕРЕД запуском", "Независимый ревьюер кода перед запуском"),
+}
+KV_OLD_RE = re.compile(r"(?m)^kit_version:\s*[\"']?2\.[0-3]\b")
 
 
 def it_team_status(skills_dir):
-    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai в шапке), own — свой/чужой (не трогаем),
-    missing — нет. Читаем только шапку SKILL.md."""
+    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai, или kit_version 2.0–2.3 + то же имя + заголовок
+    или description как в ките — такие обновляем, старое в skills_old), own — реально чужой (не трогаем),
+    missing — нет. Читаем только начало SKILL.md."""
     res = {}
     for name in IT_TEAM:
         f = Path(skills_dir) / name / "SKILL.md"
         try:
-            head = f.read_text(encoding="utf-8", errors="replace")[:3000]
+            head = f.read_text(encoding="utf-8", errors="replace")[:4000]
         except OSError:
             res[name] = "missing"
             continue
-        fm = head.split("---", 2)[1] if head.startswith("---") and head.count("---") >= 2 else ""
-        res[name] = "kit" if AUTHOR_RE.search(fm) and "kit_version:" in fm else "own"
+        parts = head.split("---", 2) if head.startswith("---") else []
+        fm, body = (parts[1], parts[2]) if len(parts) == 3 else ("", head)
+        if AUTHOR_RE.search(fm) and "kit_version:" in fm:
+            res[name] = "kit"
+            continue
+        title, desc = KIT_TEAM_SIGNS[name]
+        same_name = re.search(r"(?m)^name:\s*[\"']?%s[\"']?\s*$" % re.escape(name), fm) is not None
+        m = re.search(r"(?m)^description:\s*[\"']?(.*)$", fm)
+        same_sign = any(l.strip().startswith(title) for l in body.splitlines()[:15]) or bool(m and m.group(1).startswith(desc))
+        res[name] = "kit" if (KV_OLD_RE.search(fm) and same_name and same_sign) else "own"
     return res
 
 
@@ -730,21 +808,41 @@ old_bot_info() {
 # kit 2.3: окружение старого бота — Environment=, EnvironmentFile= и .env в WorkingDirectory / рядом с программой
 # (мост claude-code-telegram читает .env из папки проекта). Только обычные файлы (не симлинки), до 64 КБ.
 # Значения (в т.ч. токен) остаются в переменных оболочки на сервере: наружу — только маска и счётчики.
-bl_env_lines() {
-  local u=$1 f d a wd ex
-  systemctl show -p Environment --value "$u" 2>/dev/null | tr ' ' '\n'
+# Файлы окружения старого бота: EnvironmentFile= (их и так читает systemd от root) и .env в WorkingDirectory /
+# папке программы (и на уровень выше …/venv/bin). Для .env: путь после readlink -f обязан остаться внутри своей папки,
+# сам файл — не симлинк. Печатает настоящие пути, по одному в строке.
+bl_env_files() {
+  local u=$1 f d a wd ex base real
+  set -f
+  systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null | tr ' ' '\n' | sed -n 's#^-\{0,1\}\(/.*\)#\1#p' \
+    | while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && echo "$f"; done
   {
-    systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null | tr ' ' '\n' | sed -n 's#^-\{0,1\}\(/.*\)#\1#p'
     wd=$(systemctl show -p WorkingDirectory --value "$u" 2>/dev/null); wd=${wd#-}
-    [ -n "$wd" ] && echo "$wd/.env"
+    [ -n "$wd" ] && printf '%s\n' "$wd"
     ex=$(systemctl show -p ExecStart --value "$u" 2>/dev/null | sed -n 's/.*argv\[\]=\([^;]*\);.*/\1/p' | head -1)
-    for a in $ex; do
-      case "$a" in /*) d=$(dirname "$a"); echo "$d/.env"
-        case "$d" in */bin) echo "$(dirname "$(dirname "$d")")/.env" ;; esac ;; esac
+    printf '%s\n' "$ex" | tr ' ' '\n' | while IFS= read -r a; do
+      case "$a" in /*) d=$(dirname -- "$a"); printf '%s\n' "$d"
+        case "$d" in */bin) dirname -- "$(dirname -- "$d")" ;; esac ;; esac
     done
-  } | awk 'NF && !s[$0]++' | while read -r f; do
+  } | awk 'NF && !s[$0]++' | while IFS= read -r base; do
+    f="$base/.env"
     [ -f "$f" ] && [ ! -L "$f" ] || continue
-    head -c 65536 -- "$f" 2>/dev/null; echo
+    real=$(readlink -f -- "$f" 2>/dev/null) || continue
+    base=$(readlink -f -- "$base" 2>/dev/null) || continue
+    case "$real" in "$base"/*) echo "$real" ;; esac
+  done
+  set +f
+}
+bl_env_lines() {
+  local u=$1 f us
+  us=$(systemctl show -p User --value "$u" 2>/dev/null)
+  systemctl show -p Environment --value "$u" 2>/dev/null | tr ' ' '\n'
+  bl_env_files "$u" | awk '!s[$0]++' | while IFS= read -r f; do
+    # читаем правами пользователя бота (если он не root): чужой файл через подмену папки так не прочитать
+    if [ -n "$us" ] && [ "$us" != root ] && [ "$(id -u)" = 0 ] && command -v runuser >/dev/null 2>&1; then
+      runuser -u "$us" -- head -c 65536 -- "$f" 2>/dev/null
+    else head -c 65536 -- "$f" 2>/dev/null; fi
+    echo
   done
 }
 bl_env_get() { # $1 — имена ключей (ERE): значения из bl_env_lines на stdin
@@ -758,6 +856,7 @@ bl_old_owners() { bl_env_lines "$1" \
   | tr -c '0-9\n' '\n' | grep -E '^[0-9]{3,15}$' | awk '!s[$0]++'; }
 # маска токена: две первые и две последние цифры номера бота, хвост скрыт целиком
 bl_tok_mask() { sed -E 's/^([0-9]{2})[0-9]*([0-9]{2}):.*/\1…\2:•••/'; }
+bl_id_mask() { sed -E 's/^([0-9]{2})[0-9]*([0-9]{2})$/\1…\2/'; }
 # root, до lockdown: по каждому старому боту — OLDTOK=юнит|сколько токенов|маска первого, OLDOWN=юнит|сколько id
 old_bot_secrets() {
   local u t n
@@ -1798,6 +1897,7 @@ echo "UNITS=${U# }"; echo "COUNT=$N"
 OW=$(for u in $U; do bl_old_owners "$u"; done | awk '!s[$0]++')
 NO=$(printf '%s\n' "$OW" | grep -c .)
 echo "OWNERS=$NO"
+[ "$NO" = 1 ] && echo "OWNER_MASK=$(printf '%s\n' "$OW" | bl_id_mask)"
 if [ "__MODE__" = apply ]; then
   if [ "$N" != 1 ]; then ALLT=""; echo "❌ токенов у старых ботов: $N — переносить нечего или неясно какой"; exit 3; fi
   if printf '%s\n' "$ALLT" | /usr/local/sbin/brain-admin set-token bot >/dev/null 2>&1; then
@@ -1813,9 +1913,10 @@ exit 0
 """.replace("__OLDSCAN__", OLD_SCAN).replace("__OWNERFILE__", OWNER_FILE)
 
 
-def migrate_old_bot_token(ctx, access, apply):
-    """None — переносить нечего (идём обычным путём). Иначе — dict с ответом сервера (без токена)."""
-    want_owner = "0" if re.match(r"^[0-9]{3,15}$", (access.get("USER_ID") or "").strip()) else "1"
+def migrate_old_bot_token(ctx, access, apply, owner_ok=False):
+    """None — переносить нечего (идём обычным путём). Иначе — dict с ответом сервера (без токена).
+    Владельца пишем только после того, как человек сверил маску id с @userinfobot (owner_ok)."""
+    want_owner = "1" if (owner_ok and not re.match(r"^[0-9]{3,15}$", (access.get("USER_ID") or "").strip())) else "0"
     script = (MIGRATE_TOKEN_SH.replace("__MODE__", "apply" if apply else "scan")
               .replace("__WANTOWNER__", want_owner))
     rc, o, e = ctx.sh(script, timeout=120, user="root")
@@ -1832,6 +1933,32 @@ def migrate_old_bot_token(ctx, access, apply):
     if rc not in (0, 3) or count == 0:
         return None if not apply else info
     return info
+
+
+def windows_token_from_clipboard():
+    """Windows: человек выделяет строку токена, Ctrl+C, Enter здесь; затем буфер опрашивается до CLIP_WAIT с.
+    Нашли токен — буфер очищается (с предупреждением). Не нашли — "" (дальше скрытый ввод)."""
+    try:
+        WAIT_ENTER("Вход закончен? Выдели строку sk-ant-oat… в окне выше мышью, нажми Ctrl+C, затем Enter здесь: ")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    waited, told = 0, False
+    while True:
+        clip = (CLIPBOARD_GET() or "")
+        m = TOKEN_ANY_RE.search(re.sub(r"\s+", "", clip))
+        clip = ""
+        if m and CLAUDE_TOKEN_RE.match(m.group(0)):
+            if CLIPBOARD_PUT(" "):
+                say("Строку токена взял и очистил буфер обмена (чтобы токен там не остался). Журнал буфера "
+                    "Win+V, если включён, очисти там же: Win+V → «Очистить всё».")
+            return m.group(0)
+        if waited >= CLIP_WAIT:
+            return ""
+        if not told:
+            say("Жду строку токена в буфере обмена (до %d с): выдели её мышью и нажми Ctrl+C…" % CLIP_WAIT)
+            told = True
+        SLEEP(2)
+        waited += 2
 
 
 def human_command(step):
@@ -1852,18 +1979,27 @@ def cmd_put_token(ctx):
         token, source = access["BOT_TOKEN"].strip(), "файл доступа"
     if which == "bot" and not token and not ctx.locked():
         cmd_put_token_from_old_bot(ctx, access)   # нашёлся ровно один токен — завершает шаг сам (код 0 или 3)
+    if which == "bot" and not token and not interactive:
+        # kit 2.3: токен бота человек вписывает в блокнот, не в терминал; буфер обмена не трогаем
+        raise LinkExit(EXIT_HUMAN, "токена бота нет ни в файле доступа, ни у старого бота на сервере. Впиши BOT_TOKEN "
+                                   "(строка от @BotFather) в файл доступа — Claude откроет его в блокноте — сохрани и "
+                                   "повтори шаг put-token bot. В терминал ничего вводить не нужно",
+                       next_step="put-token bot", need_access_key="BOT_TOKEN", **({"warnings": ctx.warnings}
+                                                                                  if ctx.warnings else {}))
     if not token:
         if not interactive:
             cmd_line = human_command("put-token %s" % which)
             copied = CLIPBOARD_PUT(cmd_line)
             raise LinkExit(EXIT_HUMAN, "этот шаг запускаешь ТЫ САМА в своём терминале (не агент): %s Откроется "
                                        "вход в Claude в браузере, строку токена скрипт поймает сам%s." % (
-                                           "команда уже в буфере обмена — открой новое окно терминала, вставь "
-                                           "(Cmd+V / правая кнопка мыши) и нажми Enter." if copied else
+                                           "команда уже в буфере обмена (то, что было в буфере до неё, заменено) — "
+                                           "открой новую вкладку терминала, вставь (Cmd+V / правая кнопка мыши) и "
+                                           "нажми Enter." if copied else
                                            "команда — в поле command.",
                                            "" if which == "claude" and os_name() != "windows" else
-                                           " (на Windows — выдели строку sk-ant-oat… мышью и нажми Ctrl+C, "
-                                           "скрипт возьмёт её из буфера сам)" if which == "claude" else ""),
+                                           " (на Windows — когда вход закончится, выдели строку sk-ant-oat… мышью, "
+                                           "нажми Ctrl+C, потом Enter в терминале — скрипт возьмёт её из буфера сам)"
+                                           if which == "claude" else ""),
                            command=cmd_line, clipboard_copied=copied, next_step="put-token %s" % which)
         if which == "claude" and not a.no_setup:
             claude = shutil.which("claude")
@@ -1881,16 +2017,13 @@ def cmd_put_token(ctx):
                     say("Строку токена поймать не вышло. Выдели её в окне выше (sk-ant-oat…), скопируй и вставь "
                         "ниже — ввод скрыт.")
             elif claude:
-                say("Сейчас откроется вход в Claude (claude setup-token). Войди своей подпиской. В конце будет "
-                    "строка sk-ant-oat… — выдели её мышью и нажми Ctrl+C (вставлять никуда не нужно, я возьму её "
-                    "из буфера обмена). В чат её не вставляй.")
+                say("Сейчас откроется вход в Claude (claude setup-token). Войди своей подпиской. В чат ничего не вставляй.")
                 INTERACTIVE([claude, "setup-token"])
-                clip = (CLIPBOARD_GET() or "").strip()
-                m = TOKEN_ANY_RE.search(clip.replace("\r", "").replace("\n", ""))
-                clip = ""
-                if m and CLAUDE_TOKEN_RE.match(m.group(0)):
-                    token, source = m.group(0), "claude setup-token (строка из буфера обмена)"
-                    CLIPBOARD_PUT(" ")   # токен в буфере не оставляем
+                token = windows_token_from_clipboard()
+                if token:
+                    source = "claude setup-token (строка из буфера обмена)"
+                else:
+                    say("В буфере обмена строки токена нет. Вставь её ниже вручную (правая кнопка мыши), ввод скрыт.")
             else:
                 say("claude на этом компьютере не найден в PATH. Выполни в другом окне терминала: claude setup-token")
     if not token:
@@ -1940,27 +2073,38 @@ def cmd_put_token_from_old_bot(ctx, access):
     units, mask = scan.get("UNITS") or "?", scan.get("MASK") or "•••"
     if not re.match(r"^\d\d…\d\d:•••$", mask):
         mask = "•••"
+    id_mask = scan.get("OWNER_MASK") or ""
+    if not re.match(r"^\d\d…\d\d$", id_mask):
+        id_mask = ""
     owners = int(scan.get("OWNERS") or 0) if (scan.get("OWNERS") or "").isdigit() else 0
     need_owner = not re.match(r"^[0-9]{3,15}$", (access.get("USER_ID") or "").strip())
     res = {"step": "put-token", "which": "bot", "source": "old_bot", "old_bot_units": units.split(),
-           "token_mask": mask, "old_bot_owners": owners}
+           "token_mask": mask, "old_bot_owners": owners, "owner_mask": id_mask or None}
     if scan["count"] > 1:
         ctx.warnings.append("у старых ботов (%s) нашлось несколько разных токенов — какой переносить, решаешь ты: "
                             "впиши нужный BOT_TOKEN в файл доступа" % units)
         return
-    if need_owner:
-        owner_note = (" Владельца (твой Telegram id из ALLOWED_USERS старого бота) перенесу туда же." if owners == 1
-                      else " Владельца у старого бота %s — впиши USER_ID в файл доступа (у @userinfobot)."
-                      % ("нет" if owners == 0 else "несколько (%d)" % owners))
+    owner_ok = bool(getattr(a, "owner_ok", False))
+    if need_owner and owners == 1 and id_mask:
+        owner_note = (" Владелец у старого бота один: id %s. Сверь с @userinfobot — это твой id? Да → подтверди "
+                      "put-token bot --yes --owner-ok; не твой → put-token bot --yes и впиши свой USER_ID в файл "
+                      "доступа." % id_mask)
+        cmd = "put-token bot --yes --owner-ok"
+    elif need_owner:
+        owner_note = " Владельца у старого бота %s — впиши USER_ID в файл доступа (у @userinfobot)." % (
+            "нет" if owners == 0 else "несколько (%d)" % owners)
+        cmd = "put-token bot --yes"
+        owner_ok = False
     else:
         owner_note = " Владелец — USER_ID из файла доступа."
+        cmd = "put-token bot --yes"
+        owner_ok = False
     if not a.yes:
         raise LinkExit(EXIT_CONFIRM, "стоп-точка: у старого бота (%s) нашёлся токен Telegram %s. Перенесу его в "
                                      "хранилище связки прямо на сервере — токен не покидает сервер, в чат и на "
                                      "компьютер не попадает, BOT_TOKEN в файл доступа вписывать не нужно.%s "
-                                     "Подтверди: put-token bot --yes" % (units, mask, owner_note),
-                       next_step="put-token bot --yes", **res)
-    done = migrate_old_bot_token(ctx, access, apply=True)
+                                     "Подтверди: %s" % (units, mask, owner_note, cmd), next_step=cmd, **res)
+    done = migrate_old_bot_token(ctx, access, apply=True, owner_ok=owner_ok)
     if not done or done.get("MIGRATED") != "1":
         bad = "; ".join(((done or {}).get("lines") or {}).get("bad") or []) or "сервер не подтвердил перенос"
         raise LinkExit(EXIT_ERR, "токен старого бота не перенёсся: %s. Запасной путь — BOT_TOKEN в файле "
@@ -2287,6 +2431,7 @@ old_bots all | while read -r u; do echo "OLD=$u"; old_bot_info "$u"; done
 
 BOT_ROOT_SH = r"""
 set -u
+__OLDSCAN__
 D=__UP__
 F=0
 OWNER_ID=__OWNER__
@@ -2317,6 +2462,14 @@ for s in __OLD__; do
   for f in $(systemctl show -p DropInPaths --value "$s" 2>/dev/null); do [ -f "$f" ] && cp -p "$f" "$OB/" 2>/dev/null; done
   if systemctl disable --now "$s" >/dev/null 2>&1; then ok "старый бот $s выключен (не удалён; копия юнита — $OB)"
   else warn "старый бот $s не выключился (копия юнита — $OB)"; fi
+  # kit 2.3: файлы с токеном старого бота (.env, EnvironmentFile, юнит с Environment=…TOKEN) — 0600 root, ничего
+  # не удаляя: brain и другие процессы больше не читают старый токен. Наружу — только путь.
+  for f in $(bl_env_files "$s") $FP; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    if grep -qE '[0-9]{6,12}:[A-Za-z0-9_-]{30,}' "$f" 2>/dev/null; then
+      chown root:root "$f" && chmod 0600 "$f" && echo "OLD_TOKEN_FILE=$f" && ok "файл со старым токеном закрыт (0600 root): $f"
+    fi
+  done
   if [ "$s" = brain-bot.service ] && [ -d /etc/systemd/system/brain-bot.service.d ]; then
     mv /etc/systemd/system/brain-bot.service.d "$OB/brain-bot.service.d" && ok "drop-in'ы старого brain-bot перенесены в $OB"
   fi
@@ -2428,7 +2581,7 @@ def cmd_bot(ctx):
     script = (BOT_ROOT_SH.replace("__UP__", UPLOAD_DIR).replace("__OWNER__", owner)
               .replace("__TZ__", shlex.quote(bot_tz()))
               .replace("__COPY__", COPY_KIT_SH).replace("__OLD__", " ".join(old))
-              .replace("__OWNERFILE__", OWNER_FILE)
+              .replace("__OWNERFILE__", OWNER_FILE).replace("__OLDSCAN__", OLD_SCAN)
               .replace("__VOICE__", "1" if a.voice else "0"))
     if a.voice:
         say("bot --voice: ставлю faster-whisper (до 5 минут)…")
@@ -2436,10 +2589,14 @@ def cmd_bot(ctx):
     m = marks(o)
     res["old_bot_backups"] = {ln.split("=", 1)[1].split("|")[0]: ln.split("|", 1)[1] for ln in o.splitlines()
                               if ln.startswith("OLD_BACKUP=") and "|" in ln}
+    res["old_token_files"] = [ln.split("=", 1)[1] for ln in o.splitlines() if ln.startswith("OLD_TOKEN_FILE=")]
     if rc == 0:
         save_state(bot_installed=bl.now_iso(), voice=bool(a.voice))
-        finish(EXIT_OK, "бот работает под brainbot (не brain), брифинг и сторож включены. Напиши боту /status. "
-                        "Следующий шаг: verify", lines=m, next_step="verify", **res)
+        note = (" Токен старого бота лежал открыто (%s) — файл закрыт 0600 root; по желанию перевыпусти токен у "
+                "@BotFather (/revoke) и пройди put-token bot." % ", ".join(res["old_token_files"])
+                if res["old_token_files"] else "")
+        finish(EXIT_OK, "бот работает под brainbot (не brain), брифинг и сторож включены. Напиши боту /status.%s "
+                        "Следующий шаг: verify" % note, lines=m, next_step="verify", **res)
     if rc == 2:
         finish(EXIT_HUMAN, "бот не включён: %s" % "; ".join(m["bad"]), lines=m, next_step="put-token", **res)
     finish(EXIT_ERR, "бот: %s" % "; ".join(m["bad"][:3] or [e.strip()[-200:]]), lines=m, **res)
@@ -3095,6 +3252,7 @@ def build_parser():
     sp.add_argument("--fingerprint")
     sp = common(sub.add_parser("put-token"))
     sp.add_argument("which", choices=("claude", "bot"))
+    sp.add_argument("--owner-ok", dest="owner_ok", action="store_true")
     sp.add_argument("--no-setup", dest="no_setup", action="store_true")
     sp = common(sub.add_parser("adopt"))
     sp.add_argument("--pull-private", dest="pull_private", action="store_true")

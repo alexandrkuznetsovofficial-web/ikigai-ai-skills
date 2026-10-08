@@ -22,7 +22,7 @@ KIT = HERE.parent
 sys.path.insert(0, str(KIT / "scripts"))
 import brain_link as bk  # noqa: E402
 
-FAKE_CLAUDE_TOKEN = "sk-ant-oat01-" + "Q" * 40 + "-test"
+FAKE_CLAUDE_TOKEN = "sk-ant-oat01-" + "Q" * 90 + "-test"
 FAKE_BOT_TOKEN = "1234567:" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 FAKE_PW = "S3cret" + "Passw0rd"   # собираем на лету: в исходнике не должно быть «пароля значением»
 
@@ -370,9 +370,32 @@ class TestPutTokenClaudeWindows(TestPutTokenClaudeCapture):
     def test_wrapped_paste_is_joined(self):
         pass
 
+    def test_windows_empty_clipboard_waits_then_token(self):
+        """R2: после Enter буфер пуст → опрос → человек скопировал → токен взят, getpass не нужен."""
+        clips = iter(["", "что-то другое", "  " + FAKE_CLAUDE_TOKEN[:50] + "\r\n" + FAKE_CLAUDE_TOKEN[50:] + "\r\n"])
+        entered = []
+        with mock.patch.object(bk, "INTERACTIVE", lambda argv: 0), \
+                mock.patch.object(bk, "WAIT_ENTER", lambda p: entered.append(p) or ""), \
+                mock.patch.object(bk, "CLIPBOARD_GET", lambda: next(clips, "")), \
+                mock.patch.object(bk, "CLIPBOARD_PUT", lambda t: True):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 0, res)
+        self.assertEqual(len(entered), 1)
+        self.assertIn("Ctrl+C", entered[0])
+        self.assertEqual(self.getpass_called, [])
+
+    def test_windows_clipboard_never_gets_token_falls_back_to_getpass(self):
+        with mock.patch.object(bk, "INTERACTIVE", lambda argv: 0), \
+                mock.patch.object(bk, "WAIT_ENTER", lambda p: ""), \
+                mock.patch.object(bk, "CLIPBOARD_GET", lambda: ""):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(self.getpass_called, [1])
+        self.assertEqual(code, 1)
+
     def test_windows_token_taken_from_clipboard(self):
         cleared = []
         with mock.patch.object(bk, "INTERACTIVE", lambda argv: 0), \
+                mock.patch.object(bk, "WAIT_ENTER", lambda p: ""), \
                 mock.patch.object(bk, "CLIPBOARD_GET", lambda: "  " + FAKE_CLAUDE_TOKEN + "\r\n"), \
                 mock.patch.object(bk, "CLIPBOARD_PUT", lambda t: cleared.append(t) or True):
             code, res, raw = self.call(["put-token", "claude"])
@@ -391,6 +414,31 @@ class TestPutTokenClaudeWindows(TestPutTokenClaudeCapture):
         self.assertEqual(code, 2, res)
         self.assertTrue(put[0].startswith("py -3 "))
         self.assertIn("Ctrl+C", res["human"])
+
+
+class TestScreenMask(unittest.TestCase):
+    """S6: токен не видно на экране, даже если посреди него управляющие коды или строку перенесло."""
+
+    def test_ansi_inside_token_and_wrapped_tail(self):
+        t = FAKE_CLAUDE_TOKEN
+        chunk = "Your token:\n\x1b[33m" + t[:20] + "\x1b[1m" + t[20:60] + "\r\n" + t[60:] + "\x1b[0m\nDone\n"
+        shown, pending = bk._screen_filter(chunk, final=True)
+        self.assertEqual(pending, "")
+        for piece in (t[10:30], t[30:60], t[60:]):
+            self.assertNotIn(piece, shown)
+        self.assertIn("Your token:", shown)
+        self.assertIn("Done", shown)
+
+    def test_partial_token_held_until_newline(self):
+        shown, pending = bk._screen_filter("abc sk-ant-oa", idle=True)
+        self.assertEqual(shown, "")
+        self.assertTrue(pending.endswith("sk-ant-oa"))
+        shown, pending = bk._screen_filter("Press Enter to continue", idle=True)
+        self.assertEqual(shown, "Press Enter to continue")
+
+    def test_short_token_rejected(self):
+        self.assertFalse(bk.CLAUDE_TOKEN_RE.match("sk-ant-oat01-" + "Q" * 40))
+        self.assertTrue(bk.CLAUDE_TOKEN_RE.match(FAKE_CLAUDE_TOKEN))
 
 
 @unittest.skipUnless(os.name == "posix" and sys.platform != "cygwin", "pty — только Mac/Linux")
@@ -989,15 +1037,21 @@ class TestAskpassHelper(Base):
                             '[ -n "$pw" ] && echo "got-password" && echo "len=${#pw}" >&2 && echo "$pw" >&2\n',
                             encoding="utf-8")
         os.chmod(str(fake_ssh), 0o700)
-        before = set(Path(tempfile.gettempdir()).glob("brain-askpass-*"))
-        with mock.patch.object(bk, "RUNNER", bk.default_runner):
+        made = []
+        real_mkdtemp = tempfile.mkdtemp
+
+        def spy(*a, **k):
+            made.append(real_mkdtemp(*a, **k))
+            return made[-1]
+        with mock.patch.object(bk, "RUNNER", bk.default_runner), mock.patch.object(bk.tempfile, "mkdtemp", spy):
             r = bk.run_askpass_ssh([str(fake_ssh)], input_bytes=b"")
         self.assertEqual(r["rc"], 0, r)
         self.assertTrue(r["askpass_called"])
         self.assertEqual(r["stdout"].strip(), "got-password")
         self.assertNotIn(FAKE_PW, r["stderr"])                        # stderr маскируется (точное значение)
         self.assertIn("•••", r["stderr"])
-        self.assertFalse(set(Path(tempfile.gettempdir()).glob("brain-askpass-*")) - before)  # своя папка убрана
+        self.assertEqual(len(made), 1)
+        self.assertFalse(os.path.exists(made[0]))                   # своя папка убрана (не весь $TMPDIR)
 
     def test_run_askpass_ssh_custom_access_path(self):
         if os.name == "nt":
@@ -1205,6 +1259,22 @@ class TestForeignBrainBot(UpgradeShellBase):
         self.assertEqual(self.harden_foreign(self.ours()), "FOREIGN=0")
         self.assertEqual(self.harden_foreign({}), "FOREIGN=0")
 
+    def test_env_via_symlinked_dir_outside_is_not_read(self):
+        """S5: .env в папке-симлинке, ведущей наружу, не читается (readlink -f вне папки)."""
+        outside = self.tmp / "outside"
+        outside.mkdir()
+        (outside / ".env").write_text("BOT_TOKEN=%s\n" % BRIDGE_TOKEN, encoding="utf-8")
+        proj = self.tmp / "proj"
+        proj.mkdir()
+        os.symlink(str(outside / ".env"), str(proj / ".env"))
+        units = {"x-bot.service": {"ExecStart": "/usr/bin/python3 %s/bot.py" % proj, "User": "brain"}}
+        env = self.fake_server(units)
+        self.assertEqual(self.bash(bk.OLD_SCAN + '\nbl_old_token x-bot.service', env).strip(), "")
+
+    def test_bot_step_closes_old_token_files(self):
+        self.assertIn('chown root:root "$f" && chmod 0600 "$f"', bk.BOT_ROOT_SH)
+        self.assertIn("OLD_TOKEN_FILE=", bk.BOT_ROOT_SH)
+
     def test_two_owners_counted(self):
         units = self.bridge()
         (self.tmp / "bridge" / ".env").write_text("TOKEN=%s\nALLOWED_USERS=111222333,444555666\n" % BRIDGE_TOKEN,
@@ -1260,6 +1330,28 @@ class TestUpgradeFlow(KeysMixin if False else Base):
         self.assertIn("по твоему «да»", res["human"])
         self.assertNotIn("10.20.30.40", raw)
 
+    def test_old_info_secrets_masked(self):
+        out = ("OLDINFO=x-bot.service|brain|/opt/x/run --key sk-ant-api03-%s --pw=hunter2hunter|/etc/systemd/system/x-bot.service\n"
+               % ("Z" * 30))
+        info = bk.parse_old_bots(out)[0]
+        self.assertNotIn("Z" * 30, info["exec"])
+        self.assertNotIn("hunter2hunter", json.dumps(info))
+
+    def test_it_team_old_kit_versions_are_ours(self):
+        """R1: скиллы кита 2.0–2.2 без author: ikigai — «наши» (обновляем), чужой cto с другой структурой — «свой»."""
+        sk = self.tmp / "skills"
+        for n, (title, desc) in bk.KIT_TEAM_SIGNS.items():
+            (sk / n).mkdir(parents=True)
+            (sk / n / "SKILL.md").write_text("---\nname: %s\ndescription: %s …\nkit_version: 2.1\n---\n\n%s\n"
+                                             % (n, desc, title), encoding="utf-8")
+        self.assertEqual(set(bk.it_team_status(sk).values()), {"kit"})
+        (sk / "cto" / "SKILL.md").write_text("---\nname: cto\ndescription: мой технический директор\n---\n# Мой CTO\n",
+                                             encoding="utf-8")
+        self.assertEqual(bk.it_team_status(sk)["cto"], "own")
+        (sk / "cto" / "SKILL.md").write_text("---\nname: cto\ndescription: мой\nkit_version: 2.0\n---\n# Мой CTO\n",
+                                             encoding="utf-8")
+        self.assertEqual(bk.it_team_status(sk)["cto"], "own")     # версия есть, но заголовок и описание чужие
+
     def test_it_team_status(self):
         sk = self.tmp / "skills"
         (sk / "cto").mkdir(parents=True)
@@ -1269,7 +1361,7 @@ class TestUpgradeFlow(KeysMixin if False else Base):
         st = bk.it_team_status(sk)
         self.assertEqual(st, {"cto": "kit", "devops": "own", "secops": "missing", "code-reviewer": "missing"})
 
-    SCAN_ONE = b"UNITS=brain-bot.service\nCOUNT=1\nMASK=77\xe2\x80\xa645:\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\nOWNERS=1\n"
+    SCAN_ONE = ("UNITS=brain-bot.service\nCOUNT=1\nMASK=77…45:•••\nOWNERS=1\nOWNER_MASK=12…89\n").encode()
 
     def test_put_token_bot_offers_migration_without_token_in_output(self):
         self.access("SERVER_IP=10.20.30.40\n")
@@ -1278,7 +1370,9 @@ class TestUpgradeFlow(KeysMixin if False else Base):
         self.assertEqual(code, 3, res)
         self.assertEqual(res["token_mask"], "77…45:•••")
         self.assertIn("не покидает сервер", res["human"])
-        self.assertIn("ALLOWED_USERS", res["human"])
+        self.assertIn("12…89", res["human"])                      # S1: маска id и сверка с @userinfobot
+        self.assertIn("@userinfobot", res["human"])
+        self.assertEqual(res["next_step"], "put-token bot --yes --owner-ok")
         self.assertEqual([c for c in self.runner.calls if "__MODE__" in c["body"] or 'apply" = apply' in c["body"]], [])
         self.assertTrue(all('"scan" = apply' in c["body"] for c in self.runner.calls if "bl_old_token" in c["body"]))
 
@@ -1286,7 +1380,7 @@ class TestUpgradeFlow(KeysMixin if False else Base):
         self.access("SERVER_IP=10.20.30.40\n")
         applied = self.SCAN_ONE + "✅ перенесён\nMIGRATED=1\nOWNER=1\n".encode()
         self.runner.rules = [('"apply" = apply', (0, applied, b"")), ("bl_old_token", (0, self.SCAN_ONE, b""))]
-        code, res, raw = self.call(["put-token", "bot", "--yes"])
+        code, res, raw = self.call(["put-token", "bot", "--yes", "--owner-ok"])
         self.assertEqual(code, 0, res)
         self.assertTrue(res["owner_moved"])
         st = json.loads((self.cfg / "link_state.json").read_text())
@@ -1300,10 +1394,35 @@ class TestUpgradeFlow(KeysMixin if False else Base):
         with self.assertRaises(bk.LinkExit):
             bk.owner_id({})
 
+    def test_put_token_bot_yes_without_owner_ok_does_not_write_owner(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        applied = self.SCAN_ONE + "✅ перенесён\nMIGRATED=1\n".encode()
+        self.runner.rules = [('"apply" = apply', (0, applied, b"")), ("bl_old_token", (0, self.SCAN_ONE, b""))]
+        code, res, raw = self.call(["put-token", "bot", "--yes"])
+        self.assertEqual(code, 0, res)
+        body = [c["body"] for c in self.runner.calls if '"apply" = apply' in c["body"]][0]
+        self.assertIn('"0" = 1', body)                            # id не сверен — owner_id не пишем
+        self.assertFalse(res["owner_moved"])
+
+    def test_put_token_bot_nothing_anywhere_asks_for_access_file(self):
+        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
+        put = []
+        self.runner.rules = [("bl_old_token", (0, b"UNITS=\nCOUNT=0\nOWNERS=0\n", b""))]
+        with mock.patch.object(bk.sys.stdin, "isatty", lambda: False), \
+                mock.patch.object(bk, "GETPASS", bk.getpass.getpass), \
+                mock.patch.object(bk, "CLIPBOARD_PUT", lambda t: put.append(t) or True):
+            code, res, raw = self.call(["put-token", "bot"])
+        self.assertEqual(code, 2, res)
+        self.assertIn("Впиши BOT_TOKEN", res["human"])
+        self.assertIn("блокноте", res["human"])
+        self.assertEqual(put, [])                                 # буфер обмена не трогаем
+        self.assertNotIn("command", res)
+
     def test_put_token_bot_many_tokens_falls_back(self):
         self.access("SERVER_IP=10.20.30.40\n")
         self.runner.rules = [("bl_old_token", (0, b"UNITS=a-bot.service b-bot.service\nCOUNT=2\nMASK=11\xe2\x80\xa622:\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\nOWNERS=1\n", b""))]
-        with mock.patch.object(bk.sys.stdin, "isatty", lambda: False):
+        with mock.patch.object(bk.sys.stdin, "isatty", lambda: False), \
+                mock.patch.object(bk, "GETPASS", bk.getpass.getpass):
             code, res, raw = self.call(["put-token", "bot"])
         self.assertEqual(code, 2, res)
         self.assertIn("несколько разных токенов", " ".join(res.get("warnings") or []))

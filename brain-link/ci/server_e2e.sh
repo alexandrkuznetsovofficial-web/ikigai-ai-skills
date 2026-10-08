@@ -210,7 +210,7 @@ else bad "report не создал файл (rc=$rrc)"; fi
 "$PY" - <<PYGEN
 import secrets, string
 a = string.ascii_letters + string.digits
-open("$WORK/tok_claude","w").write("sk-ant-oat01-" + "".join(secrets.choice(a) for _ in range(40)))
+open("$WORK/tok_claude","w").write("sk-ant-oat01-" + "".join(secrets.choice(a) for _ in range(95)))
 open("$WORK/tok_bot","w").write("8" + "".join(secrets.choice("0123456789") for _ in range(8)) + ":" + "".join(secrets.choice(a) for _ in range(35)))
 PYGEN
 
