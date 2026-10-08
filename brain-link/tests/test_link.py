@@ -295,6 +295,130 @@ class TestPutToken(Base):
         self.assertIn("файл доступа", res["human"])
 
 
+class TestPutTokenClaudeCapture(Base):
+    """kit 2.3: строку токена ловит скрипт сам (pty на Mac/Linux, буфер обмена на Windows), а не человек руками."""
+
+    def setUp(self):
+        super().setUp()
+        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
+        self.ready_keys()
+        sha = __import__("hashlib").sha256(FAKE_CLAUDE_TOKEN.encode()).hexdigest()[:12]
+        self.runner.rules = [("set-token", (0, ("✅ токен записан\nSHA256_12=%s\n" % sha).encode(), b""))]
+        self.getpass_called = []
+        self.patches += [mock.patch.object(bk, "GETPASS", lambda prompt="": self.getpass_called.append(1) or ""),
+                         mock.patch.object(bk.shutil, "which", lambda n: "/usr/local/bin/claude"),
+                         mock.patch.object(bk.sys.stdin, "isatty", lambda: True)]
+        for p in self.patches[-3:]:
+            p.start()
+
+    def test_mac_token_captured_without_copy_paste(self):
+        with mock.patch.object(bk, "CAPTURE_TOKEN", lambda argv: (0, FAKE_CLAUDE_TOKEN)):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 0, res)
+        self.assertIn("поймана автоматически", res["human"])
+        self.assertTrue(res["verified"])
+        self.assertEqual(self.getpass_called, [])
+        self.assertNotIn(FAKE_CLAUDE_TOKEN, raw)
+        sent = [c for c in self.runner.calls if "set-token claude" in c["line"]]
+        self.assertEqual(sent[0]["input"], (FAKE_CLAUDE_TOKEN + "\n").encode())
+
+    def test_capture_failed_falls_back_to_hidden_input(self):
+        with mock.patch.object(bk, "CAPTURE_TOKEN", lambda argv: (0, "")):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(self.getpass_called, [1])
+        self.assertEqual(code, 1)                                   # пустой ввод — ничего не отправлено
+        self.assertEqual([c for c in self.runner.calls if "set-token" in c["line"]], [])
+
+    def test_checksum_mismatch_is_error(self):
+        self.runner.rules = [("set-token", (0, b"SHA256_12=000000000000\n", b""))]
+        with mock.patch.object(bk, "CAPTURE_TOKEN", lambda argv: (0, FAKE_CLAUDE_TOKEN)):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 1, res)
+        self.assertIn("не целиком", res["human"])
+
+    def test_wrapped_paste_is_joined(self):
+        with mock.patch.object(bk, "CAPTURE_TOKEN", lambda argv: (0, "")), \
+                mock.patch.object(bk, "GETPASS", lambda prompt="": FAKE_CLAUDE_TOKEN[:30] + "\n " + FAKE_CLAUDE_TOKEN[30:]):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 0, res)
+
+    def test_not_interactive_puts_command_in_clipboard(self):
+        put = []
+        with mock.patch.object(bk.sys.stdin, "isatty", lambda: False), \
+                mock.patch.object(bk, "GETPASS", bk.getpass.getpass), \
+                mock.patch.object(bk, "CLIPBOARD_PUT", lambda t: put.append(t) or True):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 2, res)
+        self.assertTrue(res["clipboard_copied"])
+        self.assertEqual(put, ["python3 ~/.claude/skills/brain-link/scripts/brain_link.py put-token claude"])
+        self.assertIn("в буфере обмена", res["human"])
+
+
+class TestPutTokenClaudeWindows(TestPutTokenClaudeCapture):
+    os_name = "windows"
+
+    def test_mac_token_captured_without_copy_paste(self):
+        pass
+
+    def test_capture_failed_falls_back_to_hidden_input(self):
+        pass
+
+    def test_checksum_mismatch_is_error(self):
+        pass
+
+    def test_wrapped_paste_is_joined(self):
+        pass
+
+    def test_windows_token_taken_from_clipboard(self):
+        cleared = []
+        with mock.patch.object(bk, "INTERACTIVE", lambda argv: 0), \
+                mock.patch.object(bk, "CLIPBOARD_GET", lambda: "  " + FAKE_CLAUDE_TOKEN + "\r\n"), \
+                mock.patch.object(bk, "CLIPBOARD_PUT", lambda t: cleared.append(t) or True):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 0, res)
+        self.assertIn("буфера обмена", res["human"])
+        self.assertEqual(self.getpass_called, [])
+        self.assertEqual(cleared, [" "])                            # токен в буфере не оставляем
+        self.assertNotIn(FAKE_CLAUDE_TOKEN, raw)
+
+    def test_not_interactive_puts_command_in_clipboard(self):
+        put = []
+        with mock.patch.object(bk.sys.stdin, "isatty", lambda: False), \
+                mock.patch.object(bk, "GETPASS", bk.getpass.getpass), \
+                mock.patch.object(bk, "CLIPBOARD_PUT", lambda t: put.append(t) or True):
+            code, res, raw = self.call(["put-token", "claude"])
+        self.assertEqual(code, 2, res)
+        self.assertTrue(put[0].startswith("py -3 "))
+        self.assertIn("Ctrl+C", res["human"])
+
+
+@unittest.skipUnless(os.name == "posix" and sys.platform != "cygwin", "pty — только Mac/Linux")
+class TestCaptureTokenPty(unittest.TestCase):
+    def test_real_pty_captures_and_masks(self):
+        tmp = Path(tempfile.mkdtemp(prefix="brain-pty-"))
+        try:
+            fake = tmp / "claude"
+            fake.write_text("#!/usr/bin/env python3\nimport sys, shutil\n"
+                            "cols = shutil.get_terminal_size().columns\n"
+                            "print('Открываю браузер… cols=' + str(cols))\n"
+                            "print('\\x1b[33m' + %r + '\\x1b[39m')\n"
+                            "print('Store this token securely.')\n" % FAKE_CLAUDE_TOKEN, encoding="utf-8")
+            os.chmod(str(fake), 0o755)
+            errf = tmp / "err.txt"
+            with open(str(errf), "w+b") as ef, mock.patch.object(bk.sys, "stderr", ef), \
+                    mock.patch.object(bk.sys, "stdin", io.StringIO("")):
+                rc, tok = bk.default_capture_token([sys.executable, str(fake)])
+            shown = errf.read_bytes().decode("utf-8", "replace")
+            self.assertEqual(rc, 0)
+            self.assertEqual(tok, FAKE_CLAUDE_TOKEN)
+            self.assertNotIn(FAKE_CLAUDE_TOKEN, shown)
+            self.assertIn("sk-ant-oat•••", shown)
+            self.assertIn("cols=%d" % bk.PTY_COLS, shown)              # широкий терминал: строка не переносится
+            self.assertIn("Store this token", shown)
+        finally:
+            shutil.rmtree(str(tmp), ignore_errors=True)
+
+
 class TestSchedule(Base):
     def setUp(self):
         super().setUp()

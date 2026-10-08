@@ -146,8 +146,143 @@ def default_interactive(argv):
         return 127
 
 
+# kit 2.3: `claude setup-token` под псевдотерминалом (Mac/Linux). Человек видит всё как обычно (вход в браузере),
+# а строку sk-ant-oat… скрипт ловит сам: копировать «жёлтую строку» руками не нужно. На экран человека токен идёт
+# замаскированным, в stdout (JSON для агента) — никогда. Windows: в стандартном Python нет псевдотерминала
+# (ConPTY — только сторонними пакетами), там — буфер обмена или скрытый ввод.
+ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+TOKEN_ANY_RE = re.compile(r"sk-ant-oat[0-9A-Za-z_-]+")
+TOKEN_TAIL_RE = re.compile(r"(?:s|sk|sk-|sk-a|sk-an|sk-ant|sk-ant-|sk-ant-o|sk-ant-oa|sk-ant-oat[0-9A-Za-z_-]*)$")
+PTY_COLS = 400
+
+
+def default_capture_token(argv):
+    """argv под pty: вывод → stderr человека (токен замаскирован), ввод человека → в pty. -> (код, токен|"")."""
+    import pty
+    import select
+    import termios
+    import fcntl
+    import struct
+    pid, fd = pty.fork()
+    if pid == 0:   # ребёнок: широкий терминал — длинная строка токена не переносится
+        try:
+            os.execvp(argv[0], argv)
+        finally:
+            os._exit(127)
+    try:
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, PTY_COLS, 0, 0))
+    except OSError:
+        pass
+    out_fd = sys.stderr.fileno() if hasattr(sys.stderr, "fileno") else 2
+    in_fd = None
+    old_attr = None
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            in_fd = sys.stdin.fileno()
+            import tty
+            old_attr = termios.tcgetattr(in_fd)
+            tty.setraw(in_fd)
+    except (OSError, ValueError, termios.error):
+        in_fd = None
+    raw, pending = [], ""
+
+    def flush(text, final=False):
+        text = TOKEN_ANY_RE.sub("sk-ant-oat•••", text)
+        keep = ""
+        if not final:
+            m = TOKEN_TAIL_RE.search(text)
+            if m:
+                text, keep = text[:m.start()], text[m.start():]
+        if text:
+            try:
+                os.write(out_fd, text.encode("utf-8", "replace"))
+            except OSError:
+                pass
+        return keep
+
+    try:
+        while True:
+            fds = [fd] + ([in_fd] if in_fd is not None else [])
+            try:
+                r, _, _ = select.select(fds, [], [], 0.4)
+            except (OSError, ValueError):
+                break
+            if not r:
+                if pending:
+                    pending = flush(pending, final=True)
+                continue
+            if fd in r:
+                try:
+                    data = os.read(fd, 4096)
+                except OSError:
+                    break
+                if not data:
+                    break
+                raw.append(data)
+                pending = flush(pending + data.decode("utf-8", "replace"))
+            if in_fd is not None and in_fd in r:
+                try:
+                    data = os.read(in_fd, 1024)
+                    if data:
+                        os.write(fd, data)
+                except OSError:
+                    pass
+        if pending:
+            flush(pending, final=True)
+    finally:
+        if old_attr is not None:
+            try:
+                termios.tcsetattr(in_fd, termios.TCSADRAIN, old_attr)
+            except (OSError, termios.error):
+                pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    try:
+        _, status = os.waitpid(pid, 0)
+        rc = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+    except OSError:
+        rc = 1
+    text = ANSI_RE.sub("", b"".join(raw).decode("utf-8", "replace"))
+    raw = None
+    found = [t for t in TOKEN_ANY_RE.findall(text) if CLAUDE_TOKEN_RE.match(t)]
+    return rc, (found[-1] if found else "")
+
+
+def default_clipboard_get():
+    """Текст из буфера обмена (только Windows/Mac; для поиска строки токена — в вывод не идёт)."""
+    try:
+        if os_name() == "windows":
+            rc, o, _ = run([find_powershell(), "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"], timeout=20)
+        elif os_name() == "mac":
+            rc, o, _ = run(["pbpaste"], timeout=20)
+        else:
+            return ""
+        return o if rc == 0 else ""
+    except Exception:
+        return ""
+
+
+def default_clipboard_put(text):
+    """Положить КОМАНДУ (не секрет) в буфер обмена: человеку остаётся вставить её в своём терминале."""
+    try:
+        if os_name() == "mac":
+            rc, _, _ = run(["pbcopy"], input=text.encode("utf-8"), timeout=20)
+        elif os_name() == "windows":
+            rc, _, _ = run(["clip"], input=text.encode("utf-16-le"), timeout=20)
+        else:
+            return False
+        return rc == 0
+    except Exception:
+        return False
+
+
 RUNNER = default_runner
 INTERACTIVE = default_interactive
+CAPTURE_TOKEN = default_capture_token
+CLIPBOARD_GET = default_clipboard_get
+CLIPBOARD_PUT = default_clipboard_put
 POPEN = subprocess.Popen
 GETPASS = getpass.getpass
 SLEEP = time.sleep
@@ -1699,6 +1834,13 @@ def migrate_old_bot_token(ctx, access, apply):
     return info
 
 
+def human_command(step):
+    """Команда шага для терминала человека (Mac — python3, Windows PowerShell — py -3)."""
+    if os_name() == "windows":
+        return 'py -3 "$env:USERPROFILE\\.claude\\skills\\brain-link\\scripts\\brain_link.py" %s' % step
+    return "python3 ~/.claude/skills/brain-link/scripts/brain_link.py %s" % step
+
+
 def cmd_put_token(ctx):
     a = ctx.args
     which = a.which
@@ -1712,17 +1854,46 @@ def cmd_put_token(ctx):
         cmd_put_token_from_old_bot(ctx, access)   # нашёлся ровно один токен — завершает шаг сам (код 0 или 3)
     if not token:
         if not interactive:
-            raise LinkExit(EXIT_HUMAN, "этот шаг запускаешь ТЫ САМА в своём терминале (не агент): токен вводится "
-                                       "скрытым вводом. Команда — в поле command",
-                           command="brain_link.py put-token %s" % which, next_step="put-token %s" % which)
+            cmd_line = human_command("put-token %s" % which)
+            copied = CLIPBOARD_PUT(cmd_line)
+            raise LinkExit(EXIT_HUMAN, "этот шаг запускаешь ТЫ САМА в своём терминале (не агент): %s Откроется "
+                                       "вход в Claude в браузере, строку токена скрипт поймает сам%s." % (
+                                           "команда уже в буфере обмена — открой новое окно терминала, вставь "
+                                           "(Cmd+V / правая кнопка мыши) и нажми Enter." if copied else
+                                           "команда — в поле command.",
+                                           "" if which == "claude" and os_name() != "windows" else
+                                           " (на Windows — выдели строку sk-ant-oat… мышью и нажми Ctrl+C, "
+                                           "скрипт возьмёт её из буфера сам)" if which == "claude" else ""),
+                           command=cmd_line, clipboard_copied=copied, next_step="put-token %s" % which)
         if which == "claude" and not a.no_setup:
             claude = shutil.which("claude")
-            if claude:
-                say("Сейчас откроется вход в Claude (claude setup-token). Войди своей подпиской. "
-                    "В конце будет строка sk-ant-oat… — скопируй её. В чат её не вставляй.")
+            if claude and os_name() != "windows":
+                say("Сейчас откроется вход в Claude (claude setup-token). Войди своей подпиской в браузере. "
+                    "Строку sk-ant-oat… в конце копировать НЕ нужно — я поймаю её сам и отправлю на сервер.")
+                try:
+                    _, token = CAPTURE_TOKEN([claude, "setup-token"])
+                except Exception as ex:   # нет pty и т.п. — запасной путь: скрытый ввод
+                    say("не получилось поймать строку автоматически (%s) — вставишь её сама" % type(ex).__name__)
+                    token = ""
+                token = (token or "").strip()
+                source = "claude setup-token (строка поймана автоматически)" if token else ""
+                if not token:
+                    say("Строку токена поймать не вышло. Выдели её в окне выше (sk-ant-oat…), скопируй и вставь "
+                        "ниже — ввод скрыт.")
+            elif claude:
+                say("Сейчас откроется вход в Claude (claude setup-token). Войди своей подпиской. В конце будет "
+                    "строка sk-ant-oat… — выдели её мышью и нажми Ctrl+C (вставлять никуда не нужно, я возьму её "
+                    "из буфера обмена). В чат её не вставляй.")
                 INTERACTIVE([claude, "setup-token"])
+                clip = (CLIPBOARD_GET() or "").strip()
+                m = TOKEN_ANY_RE.search(clip.replace("\r", "").replace("\n", ""))
+                clip = ""
+                if m and CLAUDE_TOKEN_RE.match(m.group(0)):
+                    token, source = m.group(0), "claude setup-token (строка из буфера обмена)"
+                    CLIPBOARD_PUT(" ")   # токен в буфере не оставляем
             else:
                 say("claude на этом компьютере не найден в PATH. Выполни в другом окне терминала: claude setup-token")
+    if not token:
         prompt = ("Вставь токен подписки (sk-ant-oat…), ввод скрыт, Enter: " if which == "claude"
                   else "Вставь токен бота от @BotFather, ввод скрыт, Enter: ")
         try:
@@ -1730,6 +1901,8 @@ def cmd_put_token(ctx):
         except (EOFError, KeyboardInterrupt):
             token = ""
         source = "скрытый ввод"
+        # вставили с переносом строки посередине (длинная строка в узком окне) — склеиваем
+        token = re.sub(r"\s+", "", token)
     rx = CLAUDE_TOKEN_RE if which == "claude" else BOT_TOKEN_RE
     if not rx.match(token):
         token = ""
@@ -1737,17 +1910,24 @@ def cmd_put_token(ctx):
     cmd = "%s set-token %s" % (ctx.root_prefix(), which)
     rc, o, e = ctx.ssh([cmd], input=(token + "\n").encode("utf-8"), timeout=60)
     o, e = _scrub(o, token), _scrub(e, token)
+    want_sha = _sha256_hex(token)[:12]
     token = ""
     if rc == 255:
         raise ssh_fail(rc, e, "put-token")
     if rc != 0:
         hint = " (сначала шаг harden)" if ("not found" in e or rc == 127) else ""
         raise LinkExit(EXIT_ERR, "сервер не принял токен %s%s: %s" % (which, hint, (e or o).strip()[-200:]))
+    # машинная проверка «дошёл целиком»: brain-admin (kit 2.3) печатает первые 12 знаков sha256 записанного файла
+    got_sha = kv(o).get("SHA256_12")
+    if got_sha and got_sha != want_sha:
+        raise LinkExit(EXIT_ERR, "токен %s дошёл до сервера не целиком (контрольная сумма не совпала) — запусти "
+                                 "шаг ещё раз" % which, step="put-token", which=which)
     save_state(**{"token_%s" % which: bl.now_iso()})
     nxt = "put-token bot" if which == "claude" else ("adopt или init (по ветке из detect)")
     finish(EXIT_OK, "токен %s на сервере: /etc/brain-bot/credentials/%s_token (0600 root), источник — %s. "
-                    "Нигде не напечатан. Следующий шаг: %s" % (which, which, source, nxt),
-           step="put-token", which=which, next_step=nxt)
+                    "Нигде не напечатан.%s Следующий шаг: %s" % (
+                        which, which, source, " Дошёл целиком (контрольная сумма совпала)." if got_sha else "", nxt),
+           step="put-token", which=which, next_step=nxt, verified=bool(got_sha))
 
 
 def cmd_put_token_from_old_bot(ctx, access):

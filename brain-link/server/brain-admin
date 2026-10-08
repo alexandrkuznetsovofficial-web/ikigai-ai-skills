@@ -287,6 +287,8 @@ case "$cmd" in
     chmod 0600 "$tmp"; chown root:root "$tmp"
     mv -f "$tmp" "$CRED_DIR/${name}_token"
     ok "токен $name записан в $CRED_DIR/${name}_token (0600 root)"
+    # kit 2.3: первые 12 знаков sha256 — установщик сверяет «дошёл целиком» (сам токен не печатается)
+    echo "SHA256_12=$(sha256sum "$CRED_DIR/${name}_token" | cut -c1-12)"
     if systemctl is-enabled --quiet brain-bot.service 2>/dev/null; then
       systemctl restart brain-bot.service && ok "бот перезапущен"
     fi
