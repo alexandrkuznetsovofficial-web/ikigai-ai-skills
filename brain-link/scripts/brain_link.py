@@ -8,7 +8,8 @@ brain_link.py — установщик связки «компьютер — м�
   detect                        ОС, ssh, python, файл доступа, состояние сервера → ветка A / B / C и следующий шаг
   keys [--fingerprint SHA256:…] [--replace]
                                 ключи ed25519; ключ сервера закрепляется при первом входе (как ssh accept-new),
-                                --fingerprint — необязательная сверка; потом ОДНА команда для человека
+                                --fingerprint — необязательная сверка; свой ключ кладёт на сервер сам по PASSWORD
+                                из файла доступа (SSH_ASKPASS, одна попытка); нет PASSWORD — команда для человека
   harden                        сервер: пользователь brain, swap, ufw, fail2ban, автообновления, часы, brain-admin
   claude                        Claude Code под brain официальным установщиком, проверка «API-ключа нет»
   put-token claude|bot          токен уходит на сервер со скрытого ввода, нигде не печатается
@@ -41,6 +42,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -1013,12 +1015,124 @@ def cmd_keys(ctx):
     if rc == 0:
         finish(EXIT_OK, "вход по ключу работает (%s), ключ сервера закреплён: %s"
                % (user, ", ".join(fps) or "?"), warnings=ctx.warnings, **res)
+    if not ctx.locked() and access.get("PASSWORD"):
+        push_key_by_password(ctx, res)               # кладёт ключ сам или выходит с понятным human
+        rc, o, e = ctx.ssh(["true"], timeout=40, user=user)
+        if rc == 0:
+            finish(EXIT_OK, "ключ положен на сервер по паролю из файла доступа, вход по ключу работает (%s); ключ "
+                            "сервера закреплён: %s" % (user, ", ".join(fps) or "?"),
+                   warnings=ctx.warnings, key_installed="password", **res)
+        raise ssh_fail(rc, _scrub(e, access.get("PASSWORD")), "ключ положен, но вход по ключу не прошёл")
     res["command"] = copy_id_command(access)
-    finish(EXIT_HUMAN, "ключ сервера закреплён. Теперь ОДИН раз сама в своём терминале выполни команду из "
-                       "поля command — она спросит «yes/no» (ответь yes: отпечаток тот же, %s) и пароль root "
-                       "(вводишь ты, в чат не пиши). Потом снова запусти keys — он проверит вход. Ключ создан без "
+    finish(EXIT_HUMAN, "ключ сервера закреплён, осталось положить твой ключ на сервер. Проще всего — впиши пароль "
+                       "root в файл доступа (строка PASSWORD) — тогда я сделаю это сам, просто запусти keys снова. "
+                       "Или выполни команду из поля command сама в своём терминале — она спросит «yes/no» (ответь "
+                       "yes: отпечаток тот же, %s) и пароль root (вводишь ты, в чат не пиши). Ключ создан без "
                        "пароль-фразы; хочешь фразу — ssh-keygen -p -f ~/.ssh/id_ed25519 (на Mac затем ssh-add "
                        "--apple-use-keychain)" % (", ".join(fps) or "?"), warnings=ctx.warnings, next_step="keys", **res)
+
+
+# ---------- keys: ключ на сервер по паролю из файла доступа (SSH_ASKPASS) ----------
+ASKPASS_SUB = "_askpass"
+# идемпотентно: ключ дописывается, только если такой строки ещё нет
+PUSH_KEY_REMOTE = ("umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && k=$(cat) && "
+                   "(grep -qxF \"$k\" ~/.ssh/authorized_keys || printf '%s\\n' \"$k\" >> ~/.ssh/authorized_keys)")
+PW_PROMPT_RE = re.compile(r"(?i)password|пароль")
+
+
+def askpass_main(argv):
+    """Внутренняя подкоманда для ssh (SSH_ASKPASS): `brain_link.py _askpass <папка> [подсказка ssh]`.
+    Печатает PASSWORD из файла доступа в stdout — только на вопрос о пароле и только ОДИН раз на папку
+    (метка .used: fail2ban, не больше одной попытки за запуск keys). Пароль не идёт ни в argv, ни в окружение."""
+    d = Path(argv[0]) if argv else None
+    prompt = " ".join(argv[1:])          # .cmd через %* может разрезать подсказку по пробелам
+    if d is None or not d.is_dir() or (prompt and not PW_PROMPT_RE.search(prompt)):
+        return 1
+    try:
+        fd = os.open(str(d / ".used"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except OSError:
+        return 1
+    try:
+        access, _ = bl.read_access(bl.access_path())
+    except Exception:
+        return 1
+    pw = access.get("PASSWORD") or ""
+    if not pw:
+        return 1
+    emit(sys.stdout, pw + "\n")
+    return 0
+
+
+def make_askpass(tmpdir):
+    """Помощник для SSH_ASKPASS во временной папке 0700: запускает этот же python с подкомандой _askpass.
+    Сам пароль в файл не пишется — помощник при вызове читает его из файла доступа.
+    Возвращает (путь помощника, доп. окружение для ssh). В окружении — только пути, не пароль."""
+    py, script = sys.executable or "python3", str(Path(__file__).resolve())
+    if os_name() == "windows":
+        # cmd.exe читает .cmd в OEM-кодировке (cp866), а в пути бывает кириллица и пробелы («C:\\Users\\Анна Ли»).
+        # Поэтому пути — через переменные окружения (Unicode), в самом файле только ASCII, всё в кавычках.
+        helper = Path(tmpdir) / "askpass.cmd"
+        helper.write_bytes(b'@echo off\r\n"%BRAIN_ASKPASS_PY%" "%BRAIN_ASKPASS_SCRIPT%" ' + ASKPASS_SUB.encode()
+                           + b' "%BRAIN_ASKPASS_DIR%" %*\r\n')
+        return helper, {"BRAIN_ASKPASS_PY": py, "BRAIN_ASKPASS_SCRIPT": script, "BRAIN_ASKPASS_DIR": str(tmpdir)}
+    helper = Path(tmpdir) / "askpass.sh"
+    helper.write_text("#!/bin/sh\nexec %s %s %s %s \"$@\"\n" % (shlex.quote(py), shlex.quote(script), ASKPASS_SUB,
+                                                             shlex.quote(str(tmpdir))), encoding="utf-8")
+    os.chmod(str(helper), 0o700)
+    return helper, {}
+
+
+def push_key_argv(access):
+    return [find_tool("ssh") or "ssh", "-T",
+            "-o", bl._ssh_opt_path("UserKnownHostsFile", known_hosts()),
+            "-o", "StrictHostKeyChecking=yes",
+            "-o", "PubkeyAuthentication=no",
+            "-o", "PreferredAuthentications=password,keyboard-interactive",
+            "-o", "NumberOfPasswordPrompts=1",
+            "-o", "ConnectTimeout=15",
+            "-o", "LogLevel=ERROR",
+            "-p", str(access.get("SERVER_PORT") or "22"),
+            "root@%s" % access["SERVER_IP"], PUSH_KEY_REMOTE]
+
+
+def push_key_by_password(ctx, res):
+    """Кладёт ~/.ssh/id_ed25519.pub в /root/.ssh/authorized_keys по паролю root из файла доступа. Одна попытка.
+    Пароль: файл доступа → помощник _askpass → ssh. Не попадает в argv, окружение, вывод, JSON и журнал."""
+    access = ctx.access
+    secret = access.get("PASSWORD") or ""
+    pub = Path(str(admin_key()) + ".pub").read_bytes()
+    tmp = tempfile.mkdtemp(prefix="brain-askpass-")            # 0700 на Mac/Linux
+    try:
+        helper, extra = make_askpass(tmp)
+        env = dict(os.environ)
+        env.update(extra)
+        env.update(SSH_ASKPASS=str(helper), SSH_ASKPASS_REQUIRE="force")
+        env.setdefault("DISPLAY", ":0")                         # старый OpenSSH зовёт askpass только при DISPLAY
+        say("кладу твой ключ на сервер по паролю root из файла доступа (одна попытка)…")
+        rc, o, e = run(push_key_argv(access), input=pub, timeout=60, env=env)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    e = _scrub(e, secret)
+    if rc == 0:
+        return
+    low = e.lower()
+    if "permission denied" in low or "too many authentication failures" in low:
+        raise LinkExit(EXIT_HUMAN, "пароль root в файле доступа не подошёл — открой файл доступа в блокноте, проверь "
+                                   "строку PASSWORD (без пробелов, целиком из письма хостера) и запусти keys снова. "
+                                   "Повторять сразу много раз не надо: после нескольких неудач сервер (fail2ban) "
+                                   "закрывает вход на час", next_step="keys", key_install="password_rejected", **res)
+    last = (e.strip().splitlines() or ["код %s" % rc])[-1][:200]
+    code, human = bl.classify_ssh_error(rc, e)
+    if "ключ сервера" in human or "по сети" in human:      # подмена ключа / нет сети — не обходим командой
+        raise LinkExit(EXIT_ERR, "сам положить ключ не вышло: %s [%s]" % (human, last), **res)
+    # askpass не сработал (редкая сборка ssh) — запасной путь: команда для человека
+    res["command"] = copy_id_command(access)
+    res["key_install"] = "askpass_failed"
+    raise LinkExit(EXIT_HUMAN, "сам положить ключ по паролю не вышло (%s). Запасной путь: выполни команду из поля "
+                               "command сама в своём терминале — она спросит пароль root (вводишь ты, в чат не пиши), "
+                               "потом запусти keys снова" % last,
+                   next_step="keys", **res)
 
 
 # =====================================================================================
@@ -1865,11 +1979,12 @@ def cmd_verify(ctx):
 # =====================================================================================
 # lockdown
 # =====================================================================================
+# запасной вход на время смены замков держит сам скрипт (открытая root-сессия Session) + серверный автооткат
+# через 4 минуты без COMMIT — второе окно терминала и VNC от человека не нужны
 LOCKDOWN_CHECKLIST = [
     "verify последний раз зелёный",
-    "открыто ВТОРОЕ окно терминала, в нём вход root на сервер (не закрывай до конца шага)",
-    "вход в VNC-консоль провайдера проверен сегодня (это аварийный вход)",
-    "пароль root сохранён в менеджере паролей",
+    "пароль root сохранён в менеджере паролей (на случай аварийного входа)",
+    "человек дважды ответил «да» на включение lockdown",
 ]
 
 LOCKDOWN_SH = r"""
@@ -1972,7 +2087,9 @@ def cmd_lockdown(ctx):
             finish(EXIT_OK, "строка PASSWORD удалена из файла доступа (копия .bak рядом)" if changed
                    else "строки PASSWORD в файле доступа и так нет", step="lockdown")
         finish(EXIT_CONFIRM, "стоп-точка lockdown: после него вход только по ключам, root по паролю закрыт. "
-                             "Проверь четыре пункта и запусти lockdown --confirm --confirm-again",
+                             "Запасной вход на время шага держу я (открытая root-сессия), а сервер сам откатится "
+                             "через 4 минуты, если что-то пойдёт не так. Проверь три пункта и запусти lockdown "
+                             "--confirm --confirm-again",
                step="lockdown", checklist=LOCKDOWN_CHECKLIST)
     access = ctx.access
     need_ssh_ready()
@@ -2042,7 +2159,7 @@ def cmd_lockdown(ctx):
             has_pw = bool(access.get("PASSWORD")) and not a.drop_password
             if has_pw:
                 finish(EXIT_HUMAN, "lockdown включён: brain по ключу ✅, root по паролю закрыт ✅. Пароль root больше "
-                                   "не нужен в файле доступа (он остаётся в менеджере паролей для VNC) — удалить "
+                                   "не нужен в файле доступа (он остаётся в менеджере паролей на случай аварии) — удалить "
                                    "строку: lockdown --drop-password", step="lockdown", checks=checks,
                        next_step="lockdown --drop-password")
             finish(EXIT_OK, "lockdown включён: вход только по ключам, root закрыт. Дальше сервер обслуживается "
@@ -2300,6 +2417,9 @@ HANDLERS = {
 
 
 def main(argv=None):
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == [ASKPASS_SUB]:          # зовёт ssh (SSH_ASKPASS), не человек: без JSON, только пароль в stdout
+        sys.exit(askpass_main(raw[1:]))
     utf8_stdio()
     args = build_parser().parse_args(argv)
     if not args.cmd:

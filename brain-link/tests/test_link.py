@@ -146,7 +146,8 @@ class TestLockdown(Base):
             for argv in (["lockdown"], ["lockdown", "--confirm"], ["lockdown", "--confirm-again"]):
                 code, res, _ = self.call(argv)
                 self.assertEqual(code, 3, argv)
-                self.assertEqual(len(res["checklist"]), 4)
+                self.assertEqual(len(res["checklist"]), 3)
+                self.assertFalse(any("окно" in x or "VNC" in x for x in res["checklist"]))
         self.assertEqual(self.runner.calls, [])
         popen.assert_not_called()
 
@@ -398,11 +399,12 @@ SCAN_LINE = b"10.20.30.40 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBrainLinkTestHost
 
 
 class TestKeys(Base):
-    """keys: ключ сервера закрепляется при первом входе; --fingerprint — необязательная сверка."""
+    """keys: ключ сервера закрепляется при первом входе; --fingerprint — необязательная сверка.
+    Здесь PASSWORD в файле доступа нет → запасной путь: команда для человека."""
 
     def setUp(self):
         super().setUp()
-        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\nPASSWORD=%s\n" % FAKE_PW)
+        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
         for k in (self.home / ".ssh" / "id_ed25519", self.home / ".ssh" / "brain_sync_ed25519"):
             k.write_text("fake", encoding="utf-8")
             Path(str(k) + ".pub").write_text("ssh-ed25519 " + "A" * 68 + " t\n", encoding="utf-8")
@@ -420,7 +422,8 @@ class TestKeys(Base):
         self.assertEqual(self.kh().read_bytes(), SCAN_LINE)   # как ssh accept-new: без VNC
         self.assertEqual(res["host_key_check"], "first_use")
         self.assertIn("ssh-copy-id", res["command"])
-        self.assertNotIn(FAKE_PW, raw)
+        self.assertIn("PASSWORD", res["human"])                # подсказка: впиши пароль — сделаю сам
+        self.assertFalse(any("SSH_ASKPASS" in str(c) for c in self.runner.calls))
 
     def test_windows_keyscan_falls_back_to_git(self):
         git = self.home / "PF" / "Git" / "usr" / "bin"
@@ -490,6 +493,196 @@ class TestKeys(Base):
         with mock.patch.dict(os.environ, {"BRAIN_LINK_OS": "windows"}):
             cmd = bk.copy_id_command({"SERVER_IP": "10.20.30.40", "SERVER_PORT": "22"})
         self.assertTrue(cmd.startswith('type "$env:USERPROFILE\\.ssh\\id_ed25519.pub" | ssh -p 22 root@'), cmd)
+
+
+class TestKeysByPassword(Base):
+    """keys с PASSWORD в файле доступа: ключ кладёт сам через SSH_ASKPASS, человек терминал не открывает."""
+
+    def setUp(self):
+        super().setUp()
+        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\nPASSWORD=%s\n" % FAKE_PW)
+        for k in (self.home / ".ssh" / "id_ed25519", self.home / ".ssh" / "brain_sync_ed25519"):
+            k.write_text("fake", encoding="utf-8")
+            Path(str(k) + ".pub").write_text("ssh-ed25519 " + "A" * 68 + " t\n", encoding="utf-8")
+        self.envs = []
+        self.helpers = []
+        self.logged_in = False
+        test = self
+
+        class Runner(FakeRunner):
+            def __call__(self, argv, input=None, timeout=120, env=None, cwd=None):
+                line = " ".join(str(a) for a in argv)
+                if "PubkeyAuthentication=no" in line and "authorized_keys" in line:
+                    test.envs.append(dict(env or {}))
+                    hp = Path((env or {}).get("SSH_ASKPASS", ""))
+                    test.helpers.append((hp, hp.exists(), hp.read_bytes() if hp.exists() else b""))
+                    self.calls.append({"argv": [str(a) for a in argv], "input": input, "line": line})
+                    ans = test.push_answer
+                    if ans[0] == 0:
+                        test.logged_in = True
+                    return ans
+                if line.endswith(" true"):
+                    self.calls.append({"argv": [str(a) for a in argv], "input": input, "line": line})
+                    return (0, b"", b"") if test.logged_in else \
+                        (255, b"", b"root@h: Permission denied (publickey,password).")
+                return super().__call__(argv, input=input, timeout=timeout, env=env, cwd=cwd)
+
+        self.runner.__class__ = Runner
+        self.runner.rules = [("ssh-keyscan", (0, SCAN_LINE, b"")),
+                             ("ssh-keygen -l", (0, ("256 %s no comment (ED25519)\n" % FP).encode(), b""))]
+        self.push_answer = (0, b"", b"")
+
+    def push_calls(self):
+        return [c for c in self.runner.calls if "authorized_keys" in c["line"]]
+
+    def assert_no_password_leak(self, raw):
+        self.assertNotIn(FAKE_PW, raw)
+        for c in self.runner.calls:
+            self.assertNotIn(FAKE_PW, c["line"])                       # ни в одном argv
+        for env in self.envs:
+            self.assertFalse(any(FAKE_PW in str(v) for v in env.values()))   # ни в окружении ssh
+        for _, _, body in self.helpers:
+            self.assertNotIn(FAKE_PW.encode(), body)                   # ни в файле помощника
+
+    def test_password_path_installs_key_and_logs_in(self):
+        code, res, raw = self.call(["keys"])
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["key_installed"], "password")
+        self.assertNotIn("command", res)
+        pc = self.push_calls()
+        self.assertEqual(len(pc), 1)                                   # одна попытка (fail2ban)
+        argv = pc[0]["argv"]
+        for opt in ("StrictHostKeyChecking=yes", "PubkeyAuthentication=no", "NumberOfPasswordPrompts=1",
+                    "PreferredAuthentications=password,keyboard-interactive", "ConnectTimeout=15"):
+            self.assertIn(opt, argv)
+        self.assertTrue(any(a.startswith("UserKnownHostsFile=") and "known_hosts" in a for a in argv))
+        self.assertIn("root@10.20.30.40", argv)
+        self.assertIn("grep -qxF", argv[-1])                           # идемпотентно: ключ не дублируется
+        self.assertEqual(pc[0]["input"], (self.home / ".ssh" / "id_ed25519.pub").read_bytes())
+        env = self.envs[0]
+        self.assertEqual(env["SSH_ASKPASS_REQUIRE"], "force")
+        self.assertTrue(env.get("DISPLAY"))
+        hp, existed, body = self.helpers[0]
+        self.assertTrue(existed)
+        self.assertIn(b"_askpass", body)
+        self.assertFalse(hp.exists())                                  # временный помощник удалён
+        self.assertFalse(hp.parent.exists())
+        self.assert_no_password_leak(raw)
+
+    def test_wrong_password_is_human_without_secret(self):
+        self.push_answer = (255, b"", ("root@10.20.30.40: Permission denied (password). %s" % FAKE_PW).encode())
+        code, res, raw = self.call(["keys"])
+        self.assertEqual(code, 2, res)
+        self.assertIn("пароль root в файле доступа не подошёл", res["human"])
+        self.assertIn("PASSWORD", res["human"])
+        self.assertEqual(res["key_install"], "password_rejected")
+        self.assertEqual(len(self.push_calls()), 1)                    # не долбим сервер повторами
+        self.assert_no_password_leak(raw)
+
+    def test_askpass_unsupported_falls_back_to_command(self):
+        self.push_answer = (255, b"", b"ssh_askpass: exec(/tmp/x/askpass.sh): No such file or directory")
+        code, res, raw = self.call(["keys"])
+        self.assertEqual(code, 2, res)
+        self.assertIn("ssh-copy-id", res["command"])
+        self.assertEqual(res["key_install"], "askpass_failed")
+        self.assert_no_password_leak(raw)
+
+    def test_network_error_is_not_turned_into_command(self):
+        self.push_answer = (255, b"", b"ssh: connect to host 10.20.30.40 port 22: Connection timed out")
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 1, res)
+        self.assertNotIn("command", res)
+
+    def test_after_lockdown_password_path_not_used(self):
+        (self.cfg / "link_state.json").write_text('{"lockdown": true}', encoding="utf-8")
+        code, res, _ = self.call(["keys"])
+        self.assertEqual(code, 2, res)
+        self.assertEqual(self.push_calls(), [])
+        self.assertIn("command", res)
+
+
+class TestAskpassHelper(Base):
+    """Внутренняя подкоманда _askpass: печатает пароль только ssh, один раз, только на вопрос о пароле."""
+
+    def setUp(self):
+        super().setUp()
+        self.access("SERVER_IP=10.20.30.40\nPASSWORD=%s\n" % FAKE_PW)
+        self.d = self.tmp / "askpass-dir"
+        self.d.mkdir()
+
+    def askpass(self, args):
+        buf = io.BytesIO()
+
+        class Out:
+            buffer = buf
+
+            def flush(self):
+                pass
+
+            def write(self, t):
+                buf.write(t.encode())
+        with mock.patch.object(sys, "stdout", Out()):
+            with self.assertRaises(SystemExit) as cm:
+                bk.main(["_askpass"] + args)
+        return cm.exception.code, buf.getvalue().decode()
+
+    def test_prints_password_once(self):
+        code, out = self.askpass([str(self.d), "root@10.20.30.40's password: "])
+        self.assertEqual((code, out), (0, FAKE_PW + "\n"))
+        code, out = self.askpass([str(self.d), "root@10.20.30.40's password: "])
+        self.assertEqual((code, out), (1, ""))                         # вторая попытка за запуск — нет
+
+    def test_split_prompt_from_cmd(self):
+        code, out = self.askpass([str(self.d), "(root@h)", "Password:"])
+        self.assertEqual((code, out), (0, FAKE_PW + "\n"))
+
+    def test_refuses_non_password_prompts_and_bad_dir(self):
+        code, out = self.askpass([str(self.d), "Are you sure you want to continue connecting (yes/no)?"])
+        self.assertEqual((code, out), (1, ""))
+        code, out = self.askpass([str(self.tmp / "nope"), "password:"])
+        self.assertEqual((code, out), (1, ""))
+        code, out = self.askpass([])
+        self.assertEqual((code, out), (1, ""))
+
+    def test_no_password_in_file(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        code, out = self.askpass([str(self.d), "password:"])
+        self.assertEqual((code, out), (1, ""))
+
+    def test_posix_helper_runs_this_script(self):
+        helper, extra = bk.make_askpass(str(self.d))
+        body = helper.read_text(encoding="utf-8")
+        self.assertTrue(body.startswith("#!/bin/sh\nexec "))
+        self.assertIn("brain_link.py", body)
+        self.assertIn(" _askpass ", body)
+        self.assertNotIn(FAKE_PW, body)
+        self.assertEqual(extra, {})
+        if os.name != "nt":
+            self.assertEqual(helper.stat().st_mode & 0o777, 0o700)
+
+    def test_posix_helper_end_to_end(self):
+        if os.name == "nt":
+            self.skipTest("POSIX")
+        import subprocess
+        helper, _ = bk.make_askpass(str(self.d))
+        r = subprocess.run([str(helper), "root@h's password: "], capture_output=True,
+                           env=dict(os.environ))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.decode(), FAKE_PW + "\n")
+
+    def test_windows_helper_is_cmd_with_quoted_paths(self):
+        weird = self.tmp / "Анна Ли" / "tmp dir"
+        weird.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"BRAIN_LINK_OS": "windows"}):
+            helper, extra = bk.make_askpass(str(weird))
+        self.assertEqual(helper.suffix, ".cmd")
+        body = helper.read_bytes()
+        body.decode("ascii")                                           # только ASCII: cmd читает в cp866
+        self.assertIn(b'"%BRAIN_ASKPASS_PY%" "%BRAIN_ASKPASS_SCRIPT%" _askpass "%BRAIN_ASKPASS_DIR%" %*', body)
+        self.assertTrue(body.endswith(b"\r\n"))
+        self.assertEqual(extra["BRAIN_ASKPASS_DIR"], str(weird))
+        self.assertTrue(extra["BRAIN_ASKPASS_SCRIPT"].endswith("brain_link.py"))
+        self.assertNotIn(FAKE_PW, " ".join(extra.values()))
 
 
 class TestOldBots(Base):
