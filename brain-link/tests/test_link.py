@@ -891,17 +891,20 @@ class TestAskpassHelper(Base):
 
 class TestOldBots(Base):
     def test_name_rules(self):
-        for u in ("tg-bridge.service", "my_bot.service", "telegram@main.service", "bot.service", "old.tg.service"):
+        # kit 2.3: brain-bot.service по имени — тоже бот; свой ли он, решает серверный скан по ExecStart
+        for u in ("tg-bridge.service", "my_bot.service", "telegram@main.service", "bot.service", "old.tg.service",
+                  "brain-bot.service"):
             self.assertTrue(bk.looks_like_bot_unit(u), u)
         for u in ("postgresql.service", "postgresql@16-main.service", "robot-vacuum.service", "nginx.service",
-                  "abbotsford.service", "brain-bot.service", "systemd-tg.service"):
+                  "abbotsford.service", "systemd-tg.service", "brain-brief.service"):
             self.assertFalse(bk.looks_like_bot_unit(u), u)
 
     def test_protected_never_offered(self):
         text = ("OLD=postgresql.service\nOLD=mysql.service nginx.service\nOLD=ssh.service\nOLD=docker.service\n"
                 "OLD=systemd-resolved.service\nOLD=cron.service\nOLD=ufw.service\nOLD=fail2ban.service\n"
                 "OLD=apache2.service\nOLD=brain-bot.service\nOLD=tg-bridge.service\nOLD=bad;rm.service\n")
-        self.assertEqual(bk.old_bot_units(text), ["tg-bridge.service"])
+        # brain-bot.service в списке OLD= уже прошёл серверную проверку «не наш ExecStart» — его можно предлагать
+        self.assertEqual(bk.old_bot_units(text), ["brain-bot.service", "tg-bridge.service"])
 
     def test_bot_step_offers_only_real_bots(self):
         self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
@@ -927,7 +930,9 @@ case "$1" in
   is-active) echo active ;;
   is-enabled) echo enabled ;;
   show) case "$*" in *worker.service*) echo 'Environment=BOT_TOKEN=x' ;;
-                     *nginx.service*) echo 'Environment=TELEGRAM=1' ;; *) echo 'ExecStart=/usr/bin/x' ;; esac ;;
+                     *nginx.service*) echo 'Environment=TELEGRAM=1' ;;
+                     *brain-bot.service*) echo '{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py run ; }' ;;
+                     *) echo 'ExecStart=/usr/bin/x' ;; esac ;;
 esac
 """, encoding="utf-8")
         os.chmod(str(fake / "systemctl"), 0o755)
@@ -940,6 +945,332 @@ esac
             self.assertIn("worker.service", found)          # по BOT_TOKEN в окружении юнита
             for bad in ("postgresql", "notgood", "nginx", "brain-bot", "cron"):
                 self.assertNotIn(bad, found, script[:40])
+
+
+# ---------------------------------------------------------------------------------------------------------
+# kit 2.3: апгрейд уже настроенного сервера — чужой brain-bot, перенос токена, sshd -T в lockdown
+# ---------------------------------------------------------------------------------------------------------
+FAKE_SYSTEMCTL_PY = r"""#!/usr/bin/env python3
+import json, os, sys
+units = json.load(open(os.environ["FAKE_SYSTEMD"], encoding="utf-8"))
+a = sys.argv[1:]
+cmd = a[0] if a else ""
+if cmd == "list-units":
+    for u in units:
+        print("%s loaded active running X" % u)
+elif cmd in ("is-active", "is-enabled"):
+    print("active" if cmd == "is-active" else "enabled")
+elif cmd == "show":
+    props, value, unit = [], "--value" in a, a[-1]
+    for i, x in enumerate(a):
+        if x == "-p":
+            props.append(a[i + 1])
+    d = units.get(unit, {})
+    for pr in props:
+        v = d.get(pr, "")
+        if pr == "ExecStart" and v:
+            v = "{ path=%s ; argv[]=%s ; ignore_errors=no ; }" % (v.split()[0], v)
+        if pr == "LoadState":
+            v = "loaded" if unit in units else "not-found"
+        print(v if value else "%s=%s" % (pr, v))
+"""
+
+
+class UpgradeShellBase(Base):
+    """Серверный скан (OLD_SCAN) на настоящем bash с фейковым systemctl (python), данные юнитов — JSON."""
+
+    def fake_server(self, units):
+        fake = self.tmp / "bin"
+        fake.mkdir(exist_ok=True)
+        (fake / "systemctl").write_text(FAKE_SYSTEMCTL_PY, encoding="utf-8")
+        os.chmod(str(fake / "systemctl"), 0o755)
+        data = self.tmp / "units.json"
+        data.write_text(json.dumps(units), encoding="utf-8")
+        return dict(os.environ, PATH=str(fake) + os.pathsep + os.environ.get("PATH", ""), FAKE_SYSTEMD=str(data))
+
+    def bash(self, script, env):
+        import subprocess
+        r = subprocess.run(["bash", "-c", script], capture_output=True, env=env, timeout=60)
+        return r.stdout.decode("utf-8", "replace")
+
+
+BRIDGE_TOKEN = "7712345:" + "BrIdGe" * 6 + "x"          # фейк, формат как у @BotFather
+JULY_TOKEN = "6654321:" + "JuLyKiT" * 5 + "q"
+
+
+@unittest.skipUnless(shutil.which("bash") and os.name != "nt", "серверный скан исполняется на Linux-сервере")
+class TestForeignBrainBot(UpgradeShellBase):
+    def bridge(self):
+        proj = self.tmp / "bridge"
+        (proj / "venv" / "bin").mkdir(parents=True)
+        (proj / ".env").write_text("TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_BOT_USERNAME=my_brain_bot\n"
+                                   "ALLOWED_USERS=[123456789]\nAPPROVED_DIRECTORY=/home/brain\n" % BRIDGE_TOKEN,
+                                   encoding="utf-8")
+        return {"brain-bot.service": {"ExecStart": str(proj / "venv" / "bin" / "claude-telegram-bot"),
+                                      "WorkingDirectory": str(proj), "User": "brain",
+                                      "FragmentPath": "/etc/systemd/system/brain-bot.service"}}
+
+    def july(self):
+        envf = self.tmp / "tgbot.env"
+        envf.write_text('export BOT_TOKEN="%s"\nOWNER_ID=987654321  # владелец\n' % JULY_TOKEN, encoding="utf-8")
+        return {"brain-bot.service": {"ExecStart": "/usr/bin/python3 %s/tgbot/bot.py" % self.tmp,
+                                      "EnvironmentFiles": "%s (ignore_errors=no)" % envf, "User": "brain",
+                                      "FragmentPath": "/etc/systemd/system/brain-bot.service"}}
+
+    def ours(self):
+        return {"brain-bot.service": {"ExecStart": "/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py run",
+                                      "Environment": "OWNER_ID=111 TELEGRAM_API_BASE=http://127.0.0.1:18081",
+                                      "User": "brainbot"},
+                "brain-brief.service": {"ExecStart": "/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py brief"}}
+
+    def scan(self, units):
+        env = self.fake_server(units)
+        out = self.bash(bk.OLD_BOTS_SH, env)
+        probe = self.bash(bk.PROBE_SH, env)
+        return env, out, probe
+
+    def test_bridge_named_brain_bot_is_old_bot(self):
+        env, out, probe = self.scan(self.bridge())
+        self.assertEqual(bk.old_bot_units(out), ["brain-bot.service"])
+        self.assertIn("OLD_BOTS=brain-bot.service", probe)
+        self.assertIn("BOT_OURS=0", probe)
+        info = bk.parse_old_bots(out)[0]
+        self.assertEqual(info["user"], "brain")
+        self.assertIn("claude-telegram-bot", info["exec"])
+        # токен и владелец — из .env проекта (WorkingDirectory); наружу — только маска
+        tok = self.bash(bk.OLD_SCAN + '\nbl_old_token brain-bot.service', env).strip()
+        self.assertEqual(tok, BRIDGE_TOKEN)
+        mask = self.bash(bk.OLD_SCAN + '\nbl_old_token brain-bot.service | bl_tok_mask', env).strip()
+        self.assertEqual(mask, "77…45:•••")
+        own = self.bash(bk.OLD_SCAN + '\nbl_old_owners brain-bot.service', env).split()
+        self.assertEqual(own, ["123456789"])
+        self.assertNotIn(BRIDGE_TOKEN, out + probe)
+
+    def test_july_bot_with_environment_file(self):
+        env, out, probe = self.scan(self.july())
+        self.assertEqual(bk.old_bot_units(out), ["brain-bot.service"])
+        self.assertEqual(self.bash(bk.OLD_SCAN + '\nbl_old_token brain-bot.service', env).strip(), JULY_TOKEN)
+        self.assertEqual(self.bash(bk.OLD_SCAN + '\nbl_old_owners brain-bot.service', env).split(), ["987654321"])
+
+    def test_our_brain_bot_is_not_old(self):
+        env, out, probe = self.scan(self.ours())
+        self.assertEqual(bk.old_bot_units(out), [])
+        self.assertIn("OLD_BOTS=\n", probe)
+        self.assertIn("BOT_OURS=1", probe)
+
+    def test_symlinked_env_is_not_read(self):
+        units = self.bridge()
+        proj = self.tmp / "bridge"
+        (proj / ".env").unlink()
+        (self.tmp / "elsewhere.env").write_text("BOT_TOKEN=%s\n" % BRIDGE_TOKEN, encoding="utf-8")
+        os.symlink(str(self.tmp / "elsewhere.env"), str(proj / ".env"))
+        env = self.fake_server(units)
+        self.assertEqual(self.bash(bk.OLD_SCAN + '\nbl_old_token brain-bot.service', env).strip(), "")
+
+    def test_two_owners_counted(self):
+        units = self.bridge()
+        (self.tmp / "bridge" / ".env").write_text("TOKEN=%s\nALLOWED_USERS=111222333,444555666\n" % BRIDGE_TOKEN,
+                                                  encoding="utf-8")
+        env = self.fake_server(units)
+        self.assertEqual(len(self.bash(bk.OLD_SCAN + '\nbl_old_owners brain-bot.service', env).split()), 2)
+
+
+class InputRunner(FakeRunner):
+    """Как FakeRunner, но правила смотрят и в stdin (серверные скрипты идут через bash -s)."""
+
+    def __call__(self, argv, input=None, timeout=120, env=None, cwd=None):
+        line = " ".join(str(a) for a in argv)
+        body = (input or b"").decode("utf-8", "replace") if isinstance(input, (bytes, bytearray)) else ""
+        self.calls.append({"argv": [str(a) for a in argv], "input": input, "line": line, "body": body})
+        for needle, answer in self.rules:
+            if needle in line or needle in body:
+                return answer
+        return self.default
+
+
+class TestUpgradeFlow(KeysMixin if False else Base):
+    def setUp(self):
+        super().setUp()
+        self.runner = InputRunner()
+        self.patches.append(mock.patch.object(bk, "RUNNER", self.runner))
+        self.patches[-1].start()
+        self.ready_keys()
+
+    def test_detect_sees_foreign_brain_bot_and_maps(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        probe = ("WHO=root\nNOW=%d\nNTP=yes\nBRAIN=1\nCLAUDE=1\nCLAUDE_BOT=1\nHARDENED=1\nLOCKDOWN=0\nHEARTBEAT=0\n"
+                 "BOT=active\nBOT_OURS=0\nMEMFILES=3\nOLD_BOTS=brain-bot.service \n"
+                 "OLDINFO=brain-bot.service|brain|/home/brain/bridge/venv/bin/claude-telegram-bot|/etc/systemd/system/brain-bot.service\n"
+                 "OLDTOK=brain-bot.service|1|77…45:•••\nOLDOWN=brain-bot.service|1\nUFW=inactive\nF2B=none\n"
+                 "SSHD_PW=open\nSSHD_ROOT=yes\nLEGACY_CRON=0\nTOKEN_CLAUDE=1\nTOKEN_BOT=1\n" % int(__import__("time").time()))
+        (self.cfg / "sync_state.json").write_text('{"initialized": true, "target": "ssh:root@10.20.30.40:22"}')
+        with mock.patch.object(bk, "local_schedule_present", lambda: True):
+            self.runner.rules = [("bash -s", (0, probe.encode(), b""))]
+            code, res, raw = self.call(["detect"])
+        self.assertEqual(code, 0, res)
+        self.assertEqual(res["next_step"], "bot")            # BOT=active, но чужой → шаг bot
+        up = res["upgrade"]
+        self.assertEqual(up["old_token"], "one")
+        self.assertEqual(up["old_owner"], "one")
+        self.assertEqual(up["ssh_password_login"], "open")
+        self.assertEqual(up["old_bots"][0]["user"], "brain")
+        self.assertIn("brain-bot.service", res["map"]["old_bot"])
+        self.assertIn("токен перенесём", res["map"]["old_bot"])
+        self.assertIn("открыт", res["map"]["ssh_password"])
+        self.assertIn("Opus", res["map"]["bot_model"])
+        self.assertIn("IT-команда", res["map"]["it_team"])
+        self.assertIn("по твоему «да»", res["human"])
+        self.assertNotIn("10.20.30.40", raw)
+
+    def test_it_team_status(self):
+        sk = self.tmp / "skills"
+        (sk / "cto").mkdir(parents=True)
+        (sk / "cto" / "SKILL.md").write_text("---\nname: cto\nauthor: ikigai\nkit_version: 2.3\n---\n", encoding="utf-8")
+        (sk / "devops").mkdir()
+        (sk / "devops" / "SKILL.md").write_text("---\nname: devops\ndescription: мой\n---\n", encoding="utf-8")
+        st = bk.it_team_status(sk)
+        self.assertEqual(st, {"cto": "kit", "devops": "own", "secops": "missing", "code-reviewer": "missing"})
+
+    SCAN_ONE = b"UNITS=brain-bot.service\nCOUNT=1\nMASK=77\xe2\x80\xa645:\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\nOWNERS=1\n"
+
+    def test_put_token_bot_offers_migration_without_token_in_output(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        self.runner.rules = [("bl_old_token", (0, self.SCAN_ONE, b""))]
+        code, res, raw = self.call(["put-token", "bot"])
+        self.assertEqual(code, 3, res)
+        self.assertEqual(res["token_mask"], "77…45:•••")
+        self.assertIn("не покидает сервер", res["human"])
+        self.assertIn("ALLOWED_USERS", res["human"])
+        self.assertEqual([c for c in self.runner.calls if "__MODE__" in c["body"] or 'apply" = apply' in c["body"]], [])
+        self.assertTrue(all('"scan" = apply' in c["body"] for c in self.runner.calls if "bl_old_token" in c["body"]))
+
+    def test_put_token_bot_yes_migrates_and_owner_goes_to_server(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        applied = self.SCAN_ONE + "✅ перенесён\nMIGRATED=1\nOWNER=1\n".encode()
+        self.runner.rules = [('"apply" = apply', (0, applied, b"")), ("bl_old_token", (0, self.SCAN_ONE, b""))]
+        code, res, raw = self.call(["put-token", "bot", "--yes"])
+        self.assertEqual(code, 0, res)
+        self.assertTrue(res["owner_moved"])
+        st = json.loads((self.cfg / "link_state.json").read_text())
+        self.assertTrue(st["owner_on_server"])
+        self.assertEqual(st["token_bot_source"], "old_bot")
+        apply_body = [c["body"] for c in self.runner.calls if '"apply" = apply' in c["body"]][0]
+        self.assertIn("brain-admin set-token bot", apply_body)
+        self.assertIn('"1" = 1', apply_body)                      # владельца просим: USER_ID в файле нет
+        # шаг bot теперь берёт владельца на сервере
+        self.assertEqual(bk.owner_id({}, allow_server=True), "server")
+        with self.assertRaises(bk.LinkExit):
+            bk.owner_id({})
+
+    def test_put_token_bot_many_tokens_falls_back(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        self.runner.rules = [("bl_old_token", (0, b"UNITS=a-bot.service b-bot.service\nCOUNT=2\nMASK=11\xe2\x80\xa622:\xe2\x80\xa2\xe2\x80\xa2\xe2\x80\xa2\nOWNERS=1\n", b""))]
+        with mock.patch.object(bk.sys.stdin, "isatty", lambda: False):
+            code, res, raw = self.call(["put-token", "bot"])
+        self.assertEqual(code, 2, res)
+        self.assertIn("несколько разных токенов", " ".join(res.get("warnings") or []))
+
+    def test_access_file_token_wins_over_old_bot(self):
+        self.access("SERVER_IP=10.20.30.40\nBOT_TOKEN=%s\n" % FAKE_BOT_TOKEN)
+        self.runner.rules = [("set-token", (0, b"ok\n", b"")), ("bl_old_token", (0, self.SCAN_ONE, b""))]
+        code, res, raw = self.call(["put-token", "bot"])
+        self.assertEqual(code, 0, res)
+        self.assertFalse(any("bl_old_token" in c["body"] for c in self.runner.calls))
+
+    def test_bot_step_foreign_brain_bot_stop_point_then_backup(self):
+        self.access("SERVER_IP=10.20.30.40\nUSER_ID=123456789\n")
+        old = ("OLD=brain-bot.service\nOLDINFO=brain-bot.service|brain|/home/brain/bridge/venv/bin/claude-telegram-bot|"
+               "/etc/systemd/system/brain-bot.service\n").encode()
+        self.runner.rules = [("old_bots all", (0, old, b""))]
+        code, res, _ = self.call(["bot"])
+        self.assertEqual(code, 3, res)
+        self.assertIn("называется так же", res["human"])
+        self.assertIn("claude-telegram-bot", res["human"])
+        self.assertIn("/var/backups/brain-link", res["human"])
+        self.runner.rules = [("old_bots all", (0, old, b"")),
+                             ("tar xzf", (0, b"", b"")), ("BOT_TZ=", (0, "✅ ok\nOLD_BACKUP=brain-bot.service|/var/backups/brain-link/old-bot.x\n".encode(), b""))]
+        code, res, _ = self.call(["bot", "--yes"])
+        self.assertEqual(code, 0, res)
+        body = [c["body"] for c in self.runner.calls if "BOT_TZ=" in c["body"]][0]
+        self.assertIn("for s in brain-bot.service; do", body)
+        # копия юнита и drop-in'ов — ДО установки наших юнитов, drop-in'ы чужого brain-bot переносятся целиком
+        self.assertLess(body.index("old-bot.$s.$stamp"), body.index('for u in brain-bot.service brain-brief.service'))
+        self.assertIn("mv /etc/systemd/system/brain-bot.service.d", body)
+        self.assertEqual(res["old_bot_backups"], {"brain-bot.service": "/var/backups/brain-link/old-bot.x"})
+
+    def test_bot_owner_from_server_when_migrated(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        bk.save_state(owner_on_server=True)
+        self.runner.rules = [("old_bots all", (0, b"", b"")), ("tar xzf", (0, b"", b"")),
+                             ("BOT_TZ=", (0, "✅ ok\n".encode(), b""))]
+        code, res, _ = self.call(["bot"])
+        self.assertEqual(code, 0, res)
+        body = [c["body"] for c in self.runner.calls if "BOT_TZ=" in c["body"]][0]
+        self.assertIn("OWNER_ID=server", body)
+        self.assertIn(bk.OWNER_FILE, body)
+
+    def test_bot_without_owner_anywhere_is_config(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        self.runner.rules = [("old_bots all", (0, b"", b""))]
+        code, res, _ = self.call(["bot"])
+        self.assertEqual(code, 4, res)
+        self.assertIn("USER_ID", res["human"])
+
+    def test_harden_without_user_id_goes_on(self):
+        self.access("SERVER_IP=10.20.30.40\n")
+        (self.home / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 " + "A" * 68 + " a@b\n", encoding="utf-8")
+        (self.home / ".ssh" / "brain_sync_ed25519.pub").write_text("ssh-ed25519 " + "B" * 68 + " s@b\n", encoding="utf-8")
+        self.runner.rules = [("harden.sh", (0, "✅ ok\n".encode(), b"")), ("tar xzf", (0, b"", b""))]
+        code, res, _ = self.call(["harden"])
+        self.assertEqual(code, 0, res)
+        body = [c["body"] for c in self.runner.calls if "harden.sh" in c["body"]][0]
+        self.assertIn("OWNER_ID=none", body)
+        self.assertIn("USER_ID", " ".join(res["warnings"]))
+
+
+@unittest.skipUnless(shutil.which("bash") and os.name != "nt", "lockdown исполняется на Linux-сервере")
+class TestLockdownEffectiveSshd(UpgradeShellBase):
+    """kit 2.3 (п.4): lockdown проверяет ДЕЙСТВУЮЩИЕ настройки sshd -T, а не только sshd -t."""
+
+    def eff(self, sshd_body):
+        fake = self.tmp / "bin"
+        fake.mkdir(exist_ok=True)
+        (fake / "sshd").write_text("#!/bin/sh\n" + sshd_body, encoding="utf-8")
+        os.chmod(str(fake / "sshd"), 0o755)
+        env = dict(os.environ, PATH=str(fake) + os.pathsep + os.environ.get("PATH", ""))
+        script = bk.LOCKDOWN_SH.replace("\nbrain_lockdown\n", "\n") + "\neff_bad\n"
+        self.assertNotEqual(script, bk.LOCKDOWN_SH + "\neff_bad\n")
+        return self.bash(script, env)
+
+    def test_cloudimg_password_yes_detected(self):
+        out = self.eff("printf 'port 22\\npasswordauthentication yes\\npermitrootlogin no\\nkbdinteractiveauthentication no\\n'\n")
+        self.assertIn("passwordauthentication=yes", out)
+
+    def test_root_prohibit_password_detected(self):
+        out = self.eff("printf 'passwordauthentication no\\npermitrootlogin prohibit-password\\n'\n")
+        self.assertIn("permitrootlogin=prohibit-password", out)
+
+    def test_all_closed_is_clean(self):
+        out = self.eff("printf 'PasswordAuthentication no\\nPermitRootLogin no\\nKbdInteractiveAuthentication no\\n'\n")
+        self.assertEqual(out.strip(), "")
+
+    def test_match_for_root_seen_via_dash_C(self):
+        # Match User root → PasswordAuthentication yes виден только в sshd -T -C user=root
+        body = ('case "$*" in *user=root*) printf \'passwordauthentication yes\\npermitrootlogin no\\n\' ;;'
+                ' *) printf \'passwordauthentication no\\npermitrootlogin no\\n\' ;; esac\n')
+        self.assertIn("passwordauthentication=yes", self.eff(body))
+
+    def test_old_sshd_without_dash_C_falls_back(self):
+        body = ('case "$*" in *-C*) exit 1 ;; *) printf \'passwordauthentication yes\\n\' ;; esac\n')
+        self.assertIn("passwordauthentication=yes", self.eff(body))
+
+    def test_drop_in_name_sorts_before_cloud_images(self):
+        # «первое значение побеждает»: наш файл должен идти раньше 50-cloud-init.conf и 60-cloudimg-settings.conf
+        for other in ("50-cloud-init.conf", "60-cloudimg-settings.conf", "10-brain-lab.conf", "01-x.conf"):
+            self.assertLess("00-brain.conf", other)
+        self.assertIn("/etc/ssh/sshd_config.d/00-brain.conf", bk.LOCKDOWN_SH)
+        self.assertIn("Include /etc/ssh/sshd_config.d/*.conf", bk.LOCKDOWN_SH)
+        self.assertIn("ROLLEDBACK", bk.LOCKDOWN_SH)
 
 
 class TestServerChanged(Base):

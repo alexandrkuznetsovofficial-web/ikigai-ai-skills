@@ -31,7 +31,7 @@ import time
 import unicodedata
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-KIT_VERSION = "2.2"
+KIT_VERSION = "2.3"
 PROTOCOL = 1
 
 EXIT_OK, EXIT_CONFIG, EXIT_AUTH, EXIT_CONFIRM, EXIT_PROVIDER = 0, 1, 2, 3, 4

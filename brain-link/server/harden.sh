@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harden.sh — kit 2.1 (brain-link). Подготовка чистого Ubuntu 24.04 под «базу» второго мозга.
+# harden.sh — kit 2.3 (brain-link). Подготовка чистого Ubuntu 24.04 под «базу» второго мозга.
 # Запуск от root (до lockdown), идемпотентно: повторный прогон ничего не ломает, только досоздаёт.
 #
 #   ADMIN_PUBKEY="ssh-ed25519 AAAA… you@laptop" \
@@ -191,11 +191,25 @@ else bad "пользователь бота: $(grep -E '❌|🟡' /tmp/brain-bot
 rm -f /tmp/brain-botuser.$$
 
 # 12. Код бота, настройки claude, юниты (бот не включаем: ещё нет токенов — это шаг `brain-link bot`)
+# kit 2.3: brain-bot.service может быть ЧУЖИМ (мост claude-code-telegram, бот июльского кита, «настроил свой
+# Claude»). Свой — только если ExecStart запускает /usr/local/lib/brain-bot/brain_bot.py. Чужой harden не
+# перезаписывает и не перезапускает: его выключит шаг `brain-link bot` по «да» человека (копия юнита — в $BAK_DIR).
+FOREIGN_BOT=0
+if [ "$(systemctl show -p LoadState --value brain-bot.service 2>/dev/null)" = loaded ] \
+   && ! systemctl show -p ExecStart --value brain-bot.service 2>/dev/null | grep -qF /usr/local/lib/brain-bot/brain_bot.py; then
+  FOREIGN_BOT=1
+elif [ -f /etc/systemd/system/brain-bot.service ] && ! grep -qF /usr/local/lib/brain-bot/brain_bot.py /etc/systemd/system/brain-bot.service; then
+  FOREIGN_BOT=1
+fi
 install -d -m 0755 -o root -g root /usr/local/lib/brain-bot "$BH/.config/brain-bot"
 chown root:root "$BH/.config/brain-bot"
 put "$HERE/brain_bot.py" /usr/local/lib/brain-bot/brain_bot.py 0755 root:root
 put "$HERE/claude_settings.json" "/etc/brain-bot/claude_settings.json" 0644 root:root
 for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.service brain-watch.timer; do
+  if [ "$u" = brain-bot.service ] && [ "$FOREIGN_BOT" = 1 ]; then
+    warn "brain-bot.service — чужой бот ($(systemctl show -p ExecStart --value brain-bot.service 2>/dev/null | sed -n 's/.*path=\([^ ;]*\).*/\1/p' | head -1)): не трогаю, его выключит шаг bot по «да»"
+    continue
+  fi
   TMPU=$(mktemp)
   # Часовой пояс: в юнитах по умолчанию Europe/Moscow (Environment=BOT_TZ и OnCalendar таймера)
   if [[ "${OWNER_ID:-}" =~ ^[0-9]+$ ]]; then sed -e "s/__OWNER_ID__/$OWNER_ID/" -e "s#Europe/Moscow#$TZ_NAME#g" "$HERE/systemd/$u" > "$TMPU"
@@ -206,7 +220,7 @@ for u in brain-bot.service brain-brief.service brain-brief.timer brain-watch.ser
 done
 systemctl daemon-reload
 # повторный harden на ранней установке: работающий бот ещё под brain — перезапуск переводит его на brainbot
-if systemctl is-active --quiet brain-bot.service 2>/dev/null; then
+if [ "$FOREIGN_BOT" = 0 ] && systemctl is-active --quiet brain-bot.service 2>/dev/null; then
   systemctl restart brain-bot.service >/dev/null 2>&1 && ok "бот перезапущен под $(systemctl show -p User --value brain-bot.service)" \
     || bad "бот не перезапустился: journalctl -u brain-bot -n 50"
 fi
@@ -222,9 +236,11 @@ case " $NS " in
   *" 127."*|*" ::1 "*) bad "DNS через локальный адрес [$NS], не 127.0.0.53: бот (IPAddressDeny=localhost) не сможет резолвить имена — добавь адрес в IPAddressAllow юнитов" ;;
   *) ok "DNS: [$NS] (не loopback) — IPAddressDeny=localhost не мешает" ;;
 esac
-grep -q '__OWNER_ID__' /etc/systemd/system/brain-bot.service \
+if [ "$FOREIGN_BOT" = 1 ]; then ok "юниты brain-brief / brain-watch установлены (brain-bot поставит шаг bot)"
+else grep -q '__OWNER_ID__' /etc/systemd/system/brain-bot.service \
   && warn "OWNER_ID не задан — бот не стартует, пока его не подставит brain-link bot (fail-closed)" \
   || ok "юниты brain-bot / brief / watch установлены"
+fi
 
 # 12б. Приманки самопроверки безопасности: ФАЛЬШИВЫЕ уникальные CANARY-значения (настоящие токены — никогда).
 # /etc/brain-bot/canary (root 0600), ~/.config/brain-canary и ~/.claude/.canary-credentials.json (brain 0600),

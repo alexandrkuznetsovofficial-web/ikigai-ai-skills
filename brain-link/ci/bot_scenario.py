@@ -185,7 +185,12 @@ def full(a):
     n = len(claude_records(log))
     tg.exchange(owner, "обычный вопрос без deep")
     rec = wait_new_record(log, n)
-    check("по умолчанию --model sonnet", rec is not None and rec.get("model") == "sonnet")
+    check("по умолчанию --model opus (kit 2.3)", rec is not None and rec.get("model") == "opus",
+          str(rec and rec.get("model")))
+    n = len(claude_records(log))
+    tg.exchange(owner, "/fast лабораторный быстрый вопрос")
+    rec = wait_new_record(log, n)
+    check("/fast → --model sonnet", rec is not None and rec.get("model") == "sonnet", str(rec and rec.get("model")))
 
     # 6. фильтр секретов на выходе
     out = tg.exchange(owner, "LAB_LEAK_TOKEN покажи")

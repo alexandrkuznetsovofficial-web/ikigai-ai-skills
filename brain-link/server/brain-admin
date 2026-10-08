@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# brain-admin — kit 2.1 (brain-link). Обслуживание сервера после lockdown, без root-входа.
+# brain-admin — kit 2.3 (brain-link). Обслуживание сервера после lockdown, без root-входа.
 # Ставится в /usr/local/sbin/brain-admin (root:root 0755), вызывается: sudo brain-admin <команда>.
 # Белый список команд; аргументы проверяются строго. sudoers: brain ALL=(root) NOPASSWD: /usr/local/sbin/brain-admin
 set -euo pipefail
@@ -137,7 +137,10 @@ migrate_legacy_state() {
     echo "MIGRATE=already"; return 0
   fi
   [ -f "$BOT_UNIT" ] && unit_user=$(sed -n 's/^[[:space:]]*User=[[:space:]]*//p' "$BOT_UNIT" | tail -1)
-  if [ "$unit_user" = brain ] && [ -d "$LEGACY_STATE" ] && [ ! -L "$LEGACY_STATE" ]; then
+  # kit 2.3: только НАШ юнит (ExecStart — код кита). Чужой brain-bot.service под brain (мост, июльский бот) —
+  # не ранняя установка кита: его папки не переносим и не удаляем.
+  if [ "$unit_user" = brain ] && grep -qF "$LIB_DIR/brain_bot.py" "$BOT_UNIT" \
+     && [ -d "$LEGACY_STATE" ] && [ ! -L "$LEGACY_STATE" ]; then
     for f in $LEGACY_FILES; do
       runuser -u brain -- test -f "$LEGACY_STATE/$f" -a ! -L "$LEGACY_STATE/$f" 2>/dev/null || continue
       if runuser -u brain -- head -c 1048576 -- "$LEGACY_STATE/$f" \

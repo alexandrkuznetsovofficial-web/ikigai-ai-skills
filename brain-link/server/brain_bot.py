@@ -29,7 +29,8 @@ Python 3.9+ и только стандартная библиотека (urllib)
                         $STATE_DIRECTORY, затем /var/lib/brain-bot, если есть, иначе ~/.local/state/brain-bot
                         (установки до kit 2.1-RT11, бот ещё под brain)
   BOT_TZ                часовой пояс владельца (по умолчанию Europe/Moscow)
-  MODEL_DEFAULT/MODEL_DEEP  модели (sonnet / opus)
+  MODEL_DEFAULT/MODEL_DEEP/MODEL_FAST  модели (kit 2.3: opus / opus / sonnet). По умолчанию отвечает Opus;
+                        /fast — Sonnet: быстрее и бережнее к лимиту подписки
   TELEGRAM_API_BASE     адрес Bot API (по умолчанию https://api.telegram.org) — для фейкового Telegram
                         в CI. Только https:// или http://127.0.0.1|localhost; иное — выход (fail-closed)
 
@@ -75,7 +76,7 @@ try:  # fcntl есть только на Unix; сервер — Linux, тест�
 except ImportError:  # pragma: no cover
     fcntl = None
 
-KIT_VERSION = "2.1"
+KIT_VERSION = "2.3"
 log = logging.getLogger("brain-bot")
 
 # ---------------------------------------------------------------- константы
@@ -176,7 +177,8 @@ SELFCHECK_PATTERNS = tuple(p for p in SECRET_PATTERNS if p[0] != "assignment") +
 
 MSG_BUSY = "Думаю над прошлым сообщением — пришли это ещё раз через минуту."
 MSG_LIMIT = ("Упёрлись в лимит подписки Claude. Подожди немного (обычно до нескольких часов) "
-             "или спроси короче. Opus (/deep) расходует лимит быстрее.")
+             "или спроси короче через /fast … — ответит Sonnet, он быстрее и бережнее к лимиту. "
+             "По умолчанию я отвечаю Opus: он умнее, но на Pro лимит кончается быстрее.")
 MSG_TIMEOUT = "Не уложился в 3 минуты. Попробуй сузить вопрос или разбить его на части."
 MSG_AUTH = ("Claude не принял токен подписки. На компьютере: `claude setup-token`, "
             "затем `brain-link put-token claude`.")
@@ -190,7 +192,9 @@ HELP = (
     "• Просто пиши — отвечу по памяти (только читаю, ничего не меняю).\n"
     "• Ссылка в сообщении — режим «веб»: смотрю страницу, память не трогаю.\n"
     "• «запомни …» или /inbox … — запишу заметку, на компьютере через 5 минут.\n"
-    "• /deep … или «подумай глубоко» — ответит Opus (дольше и дороже по лимиту).\n"
+    "• По умолчанию отвечает Opus — самая сильная модель.\n"
+    "• /fast … — быстрый короткий ответ (Sonnet, бережнее к лимиту подписки; выручит, если Opus упёрся в лимит).\n"
+    "• /deep … или «подумай глубоко» — тоже Opus, явно.\n"
     "• /status — как дела у сервера и синка."
 )
 
@@ -269,8 +273,10 @@ class Config:
         # только явный путь: никакого поиска по PATH (там могла бы оказаться копия владельца из /home/brain)
         self.claude_bin = env.get("CLAUDE_BIN") or BOT_CLAUDE_BIN
         self.claude_sha_file = env.get("BRAIN_CLAUDE_SHA256") or BOT_CLAUDE_SHA256
-        self.model_default = env.get("MODEL_DEFAULT") or "sonnet"
+        # kit 2.3: по умолчанию — Opus; /fast — Sonnet (быстро и бережно к лимиту Pro)
+        self.model_default = env.get("MODEL_DEFAULT") or "opus"
         self.model_deep = env.get("MODEL_DEEP") or "opus"
+        self.model_fast = env.get("MODEL_FAST") or "sonnet"
         self.voice = env.get("VOICE", "0") == "1"
         self.dialogues = env.get("DIALOGUES", "1") != "0"
         self.lang = env.get("LANG") or "C.UTF-8"
@@ -1512,21 +1518,25 @@ class Bot:
         m = REMEMBER_RE.match(t)
         if m:
             return self.remember(m.group(1))
-        deep = False
+        deep = fast = False
         if cmd == "/deep":
             deep, t = True, rest.strip()
             if not t:
                 return self.send("Напиши вопрос после /deep.")
+        elif cmd == "/fast":
+            fast, t = True, rest.strip()
+            if not t:
+                return self.send("Напиши вопрос после /fast — отвечу быстро (Sonnet).")
         elif DEEP_RE.search(t):
             deep = True
         if from_voice:  # уже под замком (голос расшифровывался под ним)
-            return self.answer(t, deep)
+            return self.answer(t, deep, fast=fast)
         if not self.lock.acquire():
             return self.send(MSG_BUSY)
 
         def work():
             try:
-                self.answer(t, deep)
+                self.answer(t, deep, fast=fast)
             finally:
                 self.lock.release()
 
@@ -1543,7 +1553,7 @@ class Bot:
         log.info("inbox note saved: %s", os.path.basename(path))
         return self.send(MSG_SAVED)
 
-    def answer(self, text, deep):
+    def answer(self, text, deep, fast=False):
         ok, wait = self.rate.take()
         if not ok:
             return self.send("Лимит %d запросов в час. Следующий — примерно через %d мин." % (
@@ -1558,17 +1568,18 @@ class Bot:
             if mode == "web":
                 return self.send(MSG_SAFE_WEB)
             mode = "safe"
-        reply, meta, _ = self.ask_claude(text, deep, mode=mode)
+        reply, meta, _ = self.ask_claude(text, deep, mode=mode, fast=fast)
         if mode in ("files", "safe"):
             # web-ответы в memory/dialogues НЕ пишем: это пересказ чужой страницы, а dialogues потом
             # читает модель в режиме «файлы» — так текст сайта стал бы «памятью» (отложенная инъекция)
             append_dialogue(self.cfg, self.now(), text, reply, meta)
         self.send(reply)
 
-    def ask_claude(self, text, deep, mode=None):
-        """-> (ответ для владельца, метка режима, ok). Вызывать под self.lock."""
+    def ask_claude(self, text, deep, mode=None, fast=False):
+        """-> (ответ для владельца, метка режима, ok). Вызывать под self.lock.
+        Модель: /fast → model_fast (Sonnet), /deep → model_deep, иначе model_default (kit 2.3: Opus)."""
         mode = mode or pick_mode(text)
-        model = self.cfg.model_deep if deep else self.cfg.model_default
+        model = self.cfg.model_fast if fast else (self.cfg.model_deep if deep else self.cfg.model_default)
         meta = "%s, %s" % (mode, model)
         blocked = integrity_block(self.cfg)
         if blocked:
@@ -1663,6 +1674,7 @@ class Bot:
         lines.append("Часы: %s" % {"yes": "синхронизированы ✅", "no": "НЕ синхронизированы ❌"}.get(
             ntp_synced(), "не удалось проверить"))
         lines.append("Claude: %s" % claude_version(self.cfg))
+        lines.append("Модель: %s по умолчанию · /fast — %s" % (self.cfg.model_default, self.cfg.model_fast))
         lines.append("Запросов за час: %d из %d · голос: %s" % (
             self.rate.count(), CALLS_PER_HOUR, "вкл" if self.cfg.voice else "выкл"))
         lines.append("Самопроверка безопасности: %s" % selfcheck_summary(self.cfg)[0])

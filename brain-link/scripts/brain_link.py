@@ -82,12 +82,16 @@ SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 
 # «старый бот» на сервере: слово bot / telegram / tg целиком в имени юнита (postgresql — не бот)
 # или следы Telegram в ExecStart / WorkingDirectory / Environment. Системные сервисы не трогаем никогда.
+# kit 2.3: имя brain-* больше НЕ защищает. «Свой» юнит — только тот, чей ExecStart указывает на код кита
+# /usr/local/lib/brain-bot/brain_bot.py (это проверяет серверный скан, OURS_MARK). Чужой brain-bot.service
+# (мост claude-code-telegram, бот июльского кита) — старый бот: выключается по «да», копия юнита — в бэкап.
+OURS_MARK = "/usr/local/lib/brain-bot/brain_bot.py"
 BOT_NAME_RE = re.compile(r"(^|[-_.@])(bot|telegram|tg)([-_.@]|$)", re.I)
 PROTECTED_UNIT_RE = re.compile(
-    r"^(brain-.*|postgresql.*|mysql.*|mariadb.*|nginx.*|apache2.*|httpd.*|docker.*|containerd.*|ssh.*|"
+    r"^(postgresql.*|mysql.*|mariadb.*|nginx.*|apache2.*|httpd.*|docker.*|containerd.*|ssh.*|"
     r"sshd.*|systemd-.*|cron.*|crond.*|ufw.*|fail2ban.*|dbus.*|snapd.*|unattended-upgrades.*|rsyslog.*|"
     r"getty.*|serial-getty.*|polkit.*|networkd-dispatcher.*|qemu-guest-agent.*|cloud-.*)\.service$", re.I)
-SHELL_PROTECTED = ("brain-*|postgresql*|mysql*|mariadb*|nginx*|apache2*|httpd*|docker*|containerd*|ssh*|"
+SHELL_PROTECTED = ("postgresql*|mysql*|mariadb*|nginx*|apache2*|httpd*|docker*|containerd*|ssh*|"
                    "systemd-*|cron*|crond*|ufw*|fail2ban*|dbus*|snapd*|unattended-upgrades*|rsyslog*|getty*|"
                    "serial-getty*|polkit*|networkd-dispatcher*|qemu-guest-agent*|cloud-*")
 
@@ -97,7 +101,8 @@ def is_protected_unit(unit):
 
 
 def looks_like_bot_unit(unit):
-    """Только по имени: tg-bridge.service, my_bot.service, telegram@x.service — да; postgresql.service — нет."""
+    """Только по имени: tg-bridge.service, my_bot.service, telegram@x.service, brain-bot.service — да;
+    postgresql.service — нет. Свой ли brain-bot.service — решает серверный скан по ExecStart (OURS_MARK)."""
     stem = (unit or "")[:-len(".service")] if (unit or "").endswith(".service") else (unit or "")
     return bool(BOT_NAME_RE.search(stem)) and not is_protected_unit(unit)
 
@@ -426,6 +431,59 @@ def kv(text):
     return res
 
 
+def parse_old_bots(text):
+    """OLDINFO / OLDTOK / OLDOWN из серверного скана → [{unit, user, exec, unit_file, token, owners}].
+    token — {"count": N, "mask": "12…34:•••"} или None; owners — сколько разных id в ALLOWED_USERS и т.п.
+    Самих токенов и id здесь нет и быть не может: сервер печатает только маску и счётчики."""
+    bots = {}
+    for line in (text or "").splitlines():
+        for key in ("OLDINFO=", "OLDTOK=", "OLDOWN="):
+            if not line.startswith(key):
+                continue
+            parts = line[len(key):].split("|")
+            unit = parts[0].strip()
+            if not UNIT_RE.match(unit) or is_protected_unit(unit):
+                continue
+            b = bots.setdefault(unit, {"unit": unit, "user": None, "exec": None, "unit_file": None,
+                                       "token": None, "owners": None})
+            if key == "OLDINFO=" and len(parts) >= 4:
+                b["user"] = parts[1].strip() or "root"
+                b["exec"] = mask_report(parts[2].strip())[:200] or None
+                b["unit_file"] = parts[3].strip() or None
+            elif key == "OLDTOK=" and len(parts) >= 3 and parts[1].strip().isdigit():
+                mask = parts[2].strip()
+                b["token"] = {"count": int(parts[1]), "mask": mask if re.match(r"^\d\d…\d\d:•••$", mask) else "•••"}
+            elif key == "OLDOWN=" and len(parts) >= 2 and parts[1].strip().isdigit():
+                b["owners"] = int(parts[1])
+    return list(bots.values())
+
+
+def old_bot_line(b):
+    """Одна строка для человека: имя, пользователь, программа."""
+    return "%s (пользователь %s%s)" % (b["unit"], b.get("user") or "?",
+                                       ", запускает %s" % b["exec"] if b.get("exec") else "")
+
+
+IT_TEAM = ("cto", "devops", "secops", "code-reviewer")
+AUTHOR_RE = re.compile(r"(?m)^author:\s*[\"']?ikigai\b")
+
+
+def it_team_status(skills_dir):
+    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai в шапке), own — свой/чужой (не трогаем),
+    missing — нет. Читаем только шапку SKILL.md."""
+    res = {}
+    for name in IT_TEAM:
+        f = Path(skills_dir) / name / "SKILL.md"
+        try:
+            head = f.read_text(encoding="utf-8", errors="replace")[:3000]
+        except OSError:
+            res[name] = "missing"
+            continue
+        fm = head.split("---", 2)[1] if head.startswith("---") and head.count("---") >= 2 else ""
+        res[name] = "kit" if AUTHOR_RE.search(fm) and "kit_version:" in fm else "own"
+    return res
+
+
 def marks(text):
     """Строки ✅ / 🟡 / ❌ из вывода серверных скриптов."""
     res = {"ok": [], "warn": [], "bad": []}
@@ -510,11 +568,14 @@ def tail_file(path, n=3000):
 # Функция для сервера: печатает юниты, похожие на старого Telegram-бота. running — только запущенные (detect),
 # all — запущенные или включённые (bot). Имя по границам слова, иначе — следы Telegram в настройках юнита.
 OLD_SCAN = r"""
+# свой юнит кита — только если ExecStart (с учётом drop-in) запускает код кита; имя brain-* ничего не значит
+bl_ours() { systemctl show -p ExecStart --value "$1" 2>/dev/null | grep -qF '__OURS__'; }
 old_bots() {
   if [ "$1" = running ]; then F="--state=running"; else F="--all"; fi
   systemctl list-units --type=service $F --no-legend --plain 2>/dev/null | awk '{print $1}' | while read -r u; do
     case "$u" in *.service) ;; *) continue ;; esac
     case "$u" in __PROTECTED__) continue ;; esac
+    bl_ours "$u" && continue
     if [ "$1" != running ]; then
       st=$(systemctl is-active "$u" 2>/dev/null); en=$(systemctl is-enabled "$u" 2>/dev/null)
       [ "$st" = active ] || [ "$en" = enabled ] || continue
@@ -524,7 +585,67 @@ old_bots() {
        | grep -qiE 'api\.telegram\.org|telegram|bot_token'; then echo "$u"; fi
   done
 }
-""".replace("__PROTECTED__", SHELL_PROTECTED)
+# Сведения о старом боте для человека: юнит|пользователь|ExecStart (похожее на токен — замаскировано)|файл юнита
+old_bot_info() {
+  local ex
+  ex=$(systemctl show -p ExecStart --value "$1" 2>/dev/null | sed -n 's/.*argv\[\]=\([^;]*\);.*/\1/p' | head -1 \
+       | sed -E 's/[0-9]{6,12}:[A-Za-z0-9_-]{20,}/•••:•••/g; s/[|]/ /g' | tr -d '\r\n' | cut -c1-200)
+  echo "OLDINFO=$1|$(systemctl show -p User --value "$1" 2>/dev/null)|$ex|$(systemctl show -p FragmentPath --value "$1" 2>/dev/null)"
+}
+# kit 2.3: окружение старого бота — Environment=, EnvironmentFile= и .env в WorkingDirectory / рядом с программой
+# (мост claude-code-telegram читает .env из папки проекта). Только обычные файлы (не симлинки), до 64 КБ.
+# Значения (в т.ч. токен) остаются в переменных оболочки на сервере: наружу — только маска и счётчики.
+bl_env_lines() {
+  local u=$1 f d a wd ex
+  systemctl show -p Environment --value "$u" 2>/dev/null | tr ' ' '\n'
+  {
+    systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null | tr ' ' '\n' | sed -n 's#^-\{0,1\}\(/.*\)#\1#p'
+    wd=$(systemctl show -p WorkingDirectory --value "$u" 2>/dev/null); wd=${wd#-}
+    [ -n "$wd" ] && echo "$wd/.env"
+    ex=$(systemctl show -p ExecStart --value "$u" 2>/dev/null | sed -n 's/.*argv\[\]=\([^;]*\);.*/\1/p' | head -1)
+    for a in $ex; do
+      case "$a" in /*) d=$(dirname "$a"); echo "$d/.env"
+        case "$d" in */bin) echo "$(dirname "$(dirname "$d")")/.env" ;; esac ;; esac
+    done
+  } | awk 'NF && !s[$0]++' | while read -r f; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    head -c 65536 -- "$f" 2>/dev/null; echo
+  done
+}
+bl_env_get() { # $1 — имена ключей (ERE): значения из bl_env_lines на stdin
+  sed -n -E "s/^[[:space:]]*(export[[:space:]]+)?($1)[[:space:]]*=[[:space:]]*//p" | tr -d '\r' \
+    | sed -E "s/[[:space:]]+#.*$//; s/^[\"']//; s/[\"'][[:space:]]*$//; s/[[:space:]]+$//"
+}
+bl_old_token() { bl_env_lines "$1" | bl_env_get 'TELEGRAM_BOT_TOKEN|BOT_TOKEN|TOKEN|TELEGRAM_TOKEN' \
+  | grep -E '^[0-9]{6,12}:[A-Za-z0-9_-]{30,}$' | awk '!s[$0]++'; }
+bl_old_owners() { bl_env_lines "$1" \
+  | bl_env_get 'ALLOWED_USERS|ALLOWED_USER_IDS|OWNER_ID|OWNER_USER_ID|TELEGRAM_OWNER|TELEGRAM_USER_ID' \
+  | tr -c '0-9\n' '\n' | grep -E '^[0-9]{3,15}$' | awk '!s[$0]++'; }
+# маска токена: две первые и две последние цифры номера бота, хвост скрыт целиком
+bl_tok_mask() { sed -E 's/^([0-9]{2})[0-9]*([0-9]{2}):.*/\1…\2:•••/'; }
+# root, до lockdown: по каждому старому боту — OLDTOK=юнит|сколько токенов|маска первого, OLDOWN=юнит|сколько id
+old_bot_secrets() {
+  local u t n
+  [ "$(id -u)" = 0 ] || return 0
+  for u in "$@"; do
+    t=$(bl_old_token "$u"); n=$(printf '%s\n' "$t" | grep -c .)
+    if [ "$n" -ge 1 ]; then echo "OLDTOK=$u|$n|$(printf '%s\n' "$t" | head -1 | bl_tok_mask)"; fi
+    t=""
+    echo "OLDOWN=$u|$(bl_old_owners "$u" | grep -c .)"
+  done
+}
+""".replace("__PROTECTED__", SHELL_PROTECTED).replace("__OURS__", OURS_MARK)
+
+# Действующие настройки sshd (как их видит сам sshd: первое значение побеждает, drop-in'ы, Match для root).
+# Только root; brain после lockdown sshd -T не читает (ключи хоста) — тогда SSHD_PW=unknown.
+SSHD_EFF_SH = r"""
+sshd_eff() {
+  local u
+  for u in root brain; do
+    sshd -T -C "user=$u,host=brain-link.invalid,addr=203.0.113.1" 2>/dev/null || sshd -T 2>/dev/null
+  done | awk '{k=tolower($1)} k=="passwordauthentication"||k=="kbdinteractiveauthentication"||k=="permitrootlogin" {print k"="tolower($2)}' | sort -u
+}
+"""
 
 PROBE_SH = r"""
 . /etc/os-release 2>/dev/null; echo "OS=${PRETTY_NAME:-?}"
@@ -542,11 +663,24 @@ echo "BOT=$(systemctl is-active brain-bot.service 2>/dev/null)"
 MEM=$(find /home/brain/memory -type f 2>/dev/null | grep -v -e '/memory/inbox/' -e '/memory/dialogues/' | head -5000 | wc -l)
 echo "MEMFILES=$MEM"
 __OLDSCAN__
+# kit 2.3: brain-bot.service может оказаться чужим (мост claude-code-telegram, бот июльского кита)
+if [ "$(systemctl show -p LoadState --value brain-bot.service 2>/dev/null)" = loaded ]; then
+  bl_ours brain-bot.service && echo BOT_OURS=1 || echo BOT_OURS=0
+else echo BOT_OURS=none; fi
 OLD=$(old_bots running | tr '\n' ' ')
 echo "OLD_BOTS=$OLD"
+for u in $OLD; do old_bot_info "$u"; done
+old_bot_secrets $OLD
 __CAPS__
 if [ "$(id -u)" = 0 ]; then
   echo "UFW=$(ufw status 2>/dev/null | head -1 | awk '{print $2}')"
+  command -v fail2ban-client >/dev/null 2>&1 && { fail2ban-client status sshd >/dev/null 2>&1 && echo F2B=on || echo F2B=off; } || echo F2B=none
+  __SSHDEFF__
+  EFF=$(sshd_eff)
+  if [ -z "$EFF" ]; then echo SSHD_PW=unknown
+  elif printf '%s\n' "$EFF" | grep -qE '^(passwordauthentication|kbdinteractiveauthentication)=yes$'; then echo SSHD_PW=open
+  else echo SSHD_PW=closed; fi
+  echo "SSHD_ROOT=$(printf '%s\n' "$EFF" | sed -n 's/^permitrootlogin=//p' | sort -u | tr '\n' ' ' | sed 's/ $//')"
   CR=$( { crontab -l -u root; crontab -l -u brain; cat /etc/cron.d/*; } 2>/dev/null | grep -vE '^[[:space:]]*#' \
         | grep -cE 'brain-hourly-snapshot|mirror')
   echo "LEGACY_CRON=$CR"
@@ -558,7 +692,7 @@ else
   echo TOKEN_CLAUDE=unknown
   echo TOKEN_BOT=unknown
 fi
-""".replace("__OLDSCAN__", OLD_SCAN)
+""".replace("__OLDSCAN__", OLD_SCAN).replace("__SSHDEFF__", SSHD_EFF_SH.strip())
 
 # Возможности сервера: версия claude и флаги изоляции, systemd и его песочница, контейнер, ufw, Python.
 # claude — root-копия бота (/usr/local/lib/brain-bot/claude), запускается С ПРАВАМИ brainbot и с конфигом бота
@@ -735,6 +869,7 @@ def probe_server(ctx):
         t1 = time.time()
         if rc == 0 and "WHO=" in o:
             info = kv(o)
+            info["OLD_DETAILS"] = parse_old_bots(o)
             try:
                 info["CLOCK_SKEW"] = round(float(info.get("NOW")) - (t0 + t1) / 2.0, 1)
             except (TypeError, ValueError):
@@ -798,7 +933,12 @@ def cmd_detect(ctx):
     res["ssh_ok"] = srv is not None
     if srv and srv.get("OLD_BOTS"):
         srv["OLD_BOTS"] = " ".join(old_bot_units("OLD=" + srv["OLD_BOTS"]))
+    if srv:
+        olds = set((srv.get("OLD_BOTS") or "").split())
+        srv["OLD_DETAILS"] = [b for b in srv.get("OLD_DETAILS") or [] if b["unit"] in olds]
     res["server"] = srv
+    skills = Path(a.skills_dir).expanduser() if getattr(a, "skills_dir", None) else bl.default_skills_dir()
+    res["local"]["it_team"] = it_team_status(skills)
     scaps, swarn = server_capabilities(srv)
     res["capabilities"] = {"local": local_capabilities(), "server": scaps}
     ctx.warnings += swarn
@@ -836,8 +976,8 @@ def cmd_detect(ctx):
         nxt = "adopt" if branch == "B" else "init"   # ветка D (сменился сервер) → init
     elif not res["local"]["schedule"]:
         nxt = "schedule"
-    elif srv.get("BOT") != "active":
-        nxt = "bot"
+    elif srv.get("BOT") != "active" or srv.get("BOT_OURS") == "0":
+        nxt = "bot"   # brain-bot.service работает, но он чужой (мост, июльский бот) — его заменит шаг bot
     elif not res["local"]["verify_green"]:
         nxt = "verify"
     elif srv.get("LOCKDOWN") != "1":
@@ -845,12 +985,20 @@ def cmd_detect(ctx):
     else:
         nxt = "status"
     res["next_step"] = nxt
+    res["upgrade"] = upgrade_view(srv, access, res["local"]["it_team"])
+    res["map"] = res["upgrade"].pop("map")
     names = {"A": "A — чистый сервер", "B": "B — сервер по старой модели «истина на сервере»",
              "C": "C — связка уже стоит", "D": "D — сменился сервер (связка была с другим)",
              "?": "ещё не знаю (нет входа по ключу)"}
     human = "ветка %s · следующий шаг: %s" % (names[branch], nxt)
     if not srv:
         human += " (%s)" % why
+    if res["upgrade"]["old_bots"]:
+        human += " · старый бот: %s — выключу на шаге bot только по твоему «да»%s" % (
+            "; ".join(old_bot_line(b) for b in res["upgrade"]["old_bots"]),
+            ", токен перенесу на сервере (put-token bot)" if res["upgrade"]["old_token"] == "one" else "")
+    if res["upgrade"]["ssh_password_login"] == "open":
+        human += " · вход по паролю на сервере открыт (закроет lockdown в конце)"
     if ctx.warnings:
         human += " · предупреждений: %d" % len(ctx.warnings)
     finish(EXIT_OK, human, warnings=ctx.warnings, **res)
@@ -859,6 +1007,55 @@ def cmd_detect(ctx):
 # =====================================================================================
 # keys
 # =====================================================================================
+def upgrade_view(srv, access, it_team):
+    """Сведения для апгрейда уже настроенного сервера и строки карты «Где ты сейчас» (kit 2.3)."""
+    srv = srv or {}
+    olds = srv.get("OLD_DETAILS") or []
+    toks = [b["token"] for b in olds if b.get("token")]
+    if not toks:
+        old_token = "none" if srv.get("WHO") == "root" else "unknown"
+    elif len(toks) == 1 and toks[0]["count"] == 1:
+        old_token = "one"
+    else:
+        old_token = "many"
+    owners = [b["owners"] for b in olds if b.get("owners") is not None]
+    pw = srv.get("SSHD_PW") or "unknown"
+    if srv.get("LOCKDOWN") == "1" and pw == "unknown":
+        pw = "closed"
+    view = {"old_bots": olds, "old_token": old_token,
+            "old_token_mask": toks[0]["mask"] if old_token == "one" else None,
+            "old_owner": ("one" if owners == [1] else "many" if any(o > 1 for o in owners) else
+                          "none" if owners else "unknown"),
+            "bot_token_in_access": bool(access.get("BOT_TOKEN")), "user_id_in_access": bool(access.get("USER_ID")),
+            "ssh_password_login": pw, "ssh_root_login": srv.get("SSHD_ROOT") or None,
+            "ufw": srv.get("UFW") or None, "fail2ban": srv.get("F2B") or None, "bot_model": "opus"}
+    if olds:
+        tail = {"one": ", токен перенесём на сервере", "many": ", токенов несколько — спрошу, какой",
+                "none": ", токен — из файла доступа (BOT_TOKEN)"}.get(old_token, "")
+        old_line = "старый бот: %s — будет выключен по твоему «да»%s" % (
+            ", ".join(b["unit"] for b in olds), tail)
+    else:
+        old_line = "старый бот: нет" if srv.get("WHO") else "старый бот: ещё не знаю (нет входа на сервер)"
+    team = {"kit": 0, "own": 0, "missing": 0}
+    for v in (it_team or {}).values():
+        team[v] = team.get(v, 0) + 1
+    if team["missing"] == len(IT_TEAM):
+        team_line = "IT-команда: нет — поставим из кита (или без команды, ведёт сам Claude)"
+    elif team["own"]:
+        team_line = "IT-команда: есть своя (%d из %d) — не трогаем, подгружаем рамки установки" % (
+            team["own"] + team["kit"], len(IT_TEAM))
+    else:
+        team_line = "IT-команда: из кита (%d из %d)" % (team["kit"], len(IT_TEAM))
+    view["map"] = {
+        "old_bot": old_line,
+        "ssh_password": "вход по паролю на сервере: %s" % {"open": "открыт (закроет lockdown)", "closed": "закрыт ✅"}
+        .get(pw, "ещё не знаю"),
+        "bot_model": "модель бота: Opus (/fast — Sonnet)",
+        "it_team": team_line,
+    }
+    return view
+
+
 def ensure_keypair(path, comment, created):
     keygen = find_tool("ssh-keygen")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1299,11 +1496,20 @@ def read_pub(path):
     return key
 
 
-def owner_id(access):
+OWNER_FILE = "/etc/brain-bot/owner_id"   # kit 2.3: владелец, перенесённый со старого бота (root 0600, только сервер)
+
+
+def owner_id(access, allow_server=False):
+    """USER_ID из файла доступа. Нет — и владелец уже перенесён со старого бота (put-token bot --yes) →
+    "server": шаг bot прочитает его на сервере из OWNER_FILE, на компьютер id не приезжает."""
     uid = (access.get("USER_ID") or "").strip()
-    if not re.match(r"^[0-9]{3,15}$", uid):
-        raise LinkExit(EXIT_CONFIG, "в файле доступа нет USER_ID (только цифры, берётся у @userinfobot)")
-    return uid
+    if re.match(r"^[0-9]{3,15}$", uid):
+        return uid
+    if allow_server and load_state().get("owner_on_server"):
+        return "server"
+    raise LinkExit(EXIT_CONFIG, "в файле доступа нет USER_ID (только цифры, берётся у @userinfobot)%s" % (
+        ". Старый бот на сервере не дал ровно одного владельца — впиши USER_ID в файл доступа" if allow_server
+        else ""))
 
 
 TZ_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$")
@@ -1336,6 +1542,17 @@ def require_root_phase(ctx, step):
                                  "повторить можно только через VNC-консоль провайдера" % step)
 
 
+def harden_owner(access, ctx):
+    """harden не требует USER_ID (kit 2.3): у апгрейда его может дать старый бот (put-token bot). Нет —
+    юнит бота остаётся с плейсхолдером (fail-closed), OWNER_ID подставит шаг bot."""
+    uid = (access.get("USER_ID") or "").strip()
+    if re.match(r"^[0-9]{3,15}$", uid):
+        return uid
+    ctx.warnings.append("в файле доступа нет USER_ID — владельца бота возьмём у старого бота (put-token bot) "
+                        "или впиши USER_ID до шага bot")
+    return "none"
+
+
 def cmd_harden(ctx):
     access = ctx.access
     need_ssh_ready()
@@ -1344,7 +1561,7 @@ def cmd_harden(ctx):
               .replace("__ADMIN__", shlex.quote(read_pub(admin_key())))
               .replace("__SYNC__", shlex.quote(read_pub(sync_key())))
               .replace("__PORT__", shlex.quote(access.get("SERVER_PORT", "22")))
-              .replace("__OWNER__", shlex.quote(owner_id(access)))
+              .replace("__OWNER__", shlex.quote(harden_owner(access, ctx)))
               .replace("__TZ__", shlex.quote(bot_tz()))
               .replace("__COPY__", COPY_KIT_SH))
     upload_server_dir(ctx)
@@ -1356,7 +1573,7 @@ def cmd_harden(ctx):
     save_state(harden_ok=rc == 0)
     if rc == 0:
         finish(EXIT_OK, "harden прошёл: ✅ %d · 🟡 %d. Следующий шаг: claude" % (len(m["ok"]), len(m["warn"])),
-               step="harden", lines=m, next_step="claude")
+               step="harden", lines=m, next_step="claude", warnings=ctx.warnings)
     finish(EXIT_ERR, "harden с ошибками: ❌ %s" % "; ".join(m["bad"][:3] or [e.strip()[-200:]]), step="harden",
            lines=m)
 
@@ -1426,6 +1643,62 @@ def _scrub(text, secret):
     return text.replace(secret, "•••") if secret else text
 
 
+# kit 2.3: токен Telegram старого бота → хранилище связки, целиком на сервере. Токен читается из окружения
+# старого юнита (Environment=, EnvironmentFile=, .env проекта) и сразу уходит в stdin `brain-admin set-token bot`;
+# в вывод — только маска и счётчики. Владелец — из ALLOWED_USERS и т.п., если там ровно один id (в OWNER_FILE).
+MIGRATE_TOKEN_SH = r"""
+set -u
+__OLDSCAN__
+ok(){ echo "✅ $*"; }
+[ "$(id -u)" = 0 ] || { echo "❌ нужен root (перенос токена — до lockdown)"; exit 1; }
+[ -x /usr/local/sbin/brain-admin ] || { echo "❌ нет brain-admin — сначала harden"; exit 1; }
+U=""; ALLT=""
+for u in $(old_bots all); do
+  t=$(bl_old_token "$u"); [ -n "$t" ] || continue
+  ALLT=$(printf '%s\n%s\n' "$ALLT" "$t" | grep . | awk '!s[$0]++'); U="$U $u"; t=""
+done
+N=$(printf '%s\n' "$ALLT" | grep -c .)
+echo "UNITS=${U# }"; echo "COUNT=$N"
+[ "$N" -ge 1 ] && echo "MASK=$(printf '%s\n' "$ALLT" | head -1 | bl_tok_mask)"
+OW=$(for u in $U; do bl_old_owners "$u"; done | awk '!s[$0]++')
+NO=$(printf '%s\n' "$OW" | grep -c .)
+echo "OWNERS=$NO"
+if [ "__MODE__" = apply ]; then
+  if [ "$N" != 1 ]; then ALLT=""; echo "❌ токенов у старых ботов: $N — переносить нечего или неясно какой"; exit 3; fi
+  if printf '%s\n' "$ALLT" | /usr/local/sbin/brain-admin set-token bot >/dev/null 2>&1; then
+    ALLT=""; ok "токен бота перенесён со старого бота в /etc/brain-bot/credentials/bot_token (0600 root)"; echo MIGRATED=1
+  else ALLT=""; echo "❌ brain-admin set-token bot не принял токен старого бота"; exit 1; fi
+  if [ "__WANTOWNER__" = 1 ] && [ "$NO" = 1 ]; then
+    install -d -m 0755 -o root -g root /etc/brain-bot
+    (umask 077; printf '%s\n' "$OW" > __OWNERFILE__.tmp) && chown root:root __OWNERFILE__.tmp \
+      && mv -f __OWNERFILE__.tmp __OWNERFILE__ && ok "владелец бота — со старого бота (__OWNERFILE__, 0600 root)" && echo OWNER=1
+  fi
+fi
+exit 0
+""".replace("__OLDSCAN__", OLD_SCAN).replace("__OWNERFILE__", OWNER_FILE)
+
+
+def migrate_old_bot_token(ctx, access, apply):
+    """None — переносить нечего (идём обычным путём). Иначе — dict с ответом сервера (без токена)."""
+    want_owner = "0" if re.match(r"^[0-9]{3,15}$", (access.get("USER_ID") or "").strip()) else "1"
+    script = (MIGRATE_TOKEN_SH.replace("__MODE__", "apply" if apply else "scan")
+              .replace("__WANTOWNER__", want_owner))
+    rc, o, e = ctx.sh(script, timeout=120, user="root")
+    if rc == 255:
+        raise ssh_fail(rc, e, "put-token bot")
+    info = kv(o)
+    info["rc"] = rc
+    info["lines"] = marks(o)
+    try:
+        count = int(info.get("COUNT") or 0)
+    except ValueError:
+        count = 0
+    info["count"] = count
+    if rc not in (0, 3) or count == 0:
+        return None if not apply else info
+    return info
+
+
 def cmd_put_token(ctx):
     a = ctx.args
     which = a.which
@@ -1435,6 +1708,8 @@ def cmd_put_token(ctx):
     token, source = "", ""
     if which == "bot" and access.get("BOT_TOKEN"):
         token, source = access["BOT_TOKEN"].strip(), "файл доступа"
+    if which == "bot" and not token and not ctx.locked():
+        cmd_put_token_from_old_bot(ctx, access)   # нашёлся ровно один токен — завершает шаг сам (код 0 или 3)
     if not token:
         if not interactive:
             raise LinkExit(EXIT_HUMAN, "этот шаг запускаешь ТЫ САМА в своём терминале (не агент): токен вводится "
@@ -1473,6 +1748,53 @@ def cmd_put_token(ctx):
     finish(EXIT_OK, "токен %s на сервере: /etc/brain-bot/credentials/%s_token (0600 root), источник — %s. "
                     "Нигде не напечатан. Следующий шаг: %s" % (which, which, source, nxt),
            step="put-token", which=which, next_step=nxt)
+
+
+def cmd_put_token_from_old_bot(ctx, access):
+    """kit 2.3: BOT_TOKEN в файле доступа нет, а у старого бота на сервере он есть → перенос на сервере.
+    Без --yes — стоп-точка (код 3), с --yes — перенос. Токенов нет или несколько — возврат, обычный путь."""
+    a = ctx.args
+    scan = migrate_old_bot_token(ctx, access, apply=False)
+    if not scan:
+        return
+    units, mask = scan.get("UNITS") or "?", scan.get("MASK") or "•••"
+    if not re.match(r"^\d\d…\d\d:•••$", mask):
+        mask = "•••"
+    owners = int(scan.get("OWNERS") or 0) if (scan.get("OWNERS") or "").isdigit() else 0
+    need_owner = not re.match(r"^[0-9]{3,15}$", (access.get("USER_ID") or "").strip())
+    res = {"step": "put-token", "which": "bot", "source": "old_bot", "old_bot_units": units.split(),
+           "token_mask": mask, "old_bot_owners": owners}
+    if scan["count"] > 1:
+        ctx.warnings.append("у старых ботов (%s) нашлось несколько разных токенов — какой переносить, решаешь ты: "
+                            "впиши нужный BOT_TOKEN в файл доступа" % units)
+        return
+    if need_owner:
+        owner_note = (" Владельца (твой Telegram id из ALLOWED_USERS старого бота) перенесу туда же." if owners == 1
+                      else " Владельца у старого бота %s — впиши USER_ID в файл доступа (у @userinfobot)."
+                      % ("нет" if owners == 0 else "несколько (%d)" % owners))
+    else:
+        owner_note = " Владелец — USER_ID из файла доступа."
+    if not a.yes:
+        raise LinkExit(EXIT_CONFIRM, "стоп-точка: у старого бота (%s) нашёлся токен Telegram %s. Перенесу его в "
+                                     "хранилище связки прямо на сервере — токен не покидает сервер, в чат и на "
+                                     "компьютер не попадает, BOT_TOKEN в файл доступа вписывать не нужно.%s "
+                                     "Подтверди: put-token bot --yes" % (units, mask, owner_note),
+                       next_step="put-token bot --yes", **res)
+    done = migrate_old_bot_token(ctx, access, apply=True)
+    if not done or done.get("MIGRATED") != "1":
+        bad = "; ".join(((done or {}).get("lines") or {}).get("bad") or []) or "сервер не подтвердил перенос"
+        raise LinkExit(EXIT_ERR, "токен старого бота не перенёсся: %s. Запасной путь — BOT_TOKEN в файле "
+                                 "доступа и put-token bot" % bad, **res)
+    owner_moved = done.get("OWNER") == "1"
+    save_state(token_bot=bl.now_iso(), token_bot_source="old_bot", **({"owner_on_server": True} if owner_moved else {}))
+    nxt = "adopt или init (по ветке из detect)"
+    if need_owner and not owner_moved:
+        ctx.warnings.append("владелец не перенесён — до шага bot впиши USER_ID в файл доступа")
+    finish(EXIT_OK, "токен бота перенесён со старого бота (%s) в /etc/brain-bot/credentials/bot_token (0600 root) "
+                    "прямо на сервере, нигде не напечатан.%s Старый бот пока работает — выключит его шаг bot по "
+                    "твоему «да». Следующий шаг: %s" % (
+                        mask, " Владелец бота тоже перенесён." if owner_moved else "", nxt),
+           next_step=nxt, warnings=ctx.warnings, owner_moved=owner_moved, **res)
 
 
 # =====================================================================================
@@ -1780,7 +2102,7 @@ def cmd_schedule(ctx):
 # =====================================================================================
 OLD_BOTS_SH = r"""
 __OLDSCAN__
-old_bots all | while read -r u; do echo "OLD=$u"; done
+old_bots all | while read -r u; do echo "OLD=$u"; old_bot_info "$u"; done
 """.replace("__OLDSCAN__", OLD_SCAN)
 
 BOT_ROOT_SH = r"""
@@ -1797,7 +2119,30 @@ put(){ if [ -f "$2" ] && cmp -s "$1" "$2"; then return 0; fi
   if [ -f "$2" ]; then install -d -m 0700 -o root -g root "$BAK"; cp -p "$2" "$BAK/$(echo "${2#/}" | tr '/' '_').$stamp"; fi
   install -m "$3" -o root -g root "$1" "$2"; }
 for n in bot_token claude_token; do [ -s /etc/brain-bot/credentials/$n ] || bad "нет секрета $n — сначала put-token ${n%_token}"; done
+# kit 2.3: владелец, перенесённый со старого бота (put-token bot --yes), — только на сервере
+if [ "$OWNER_ID" = server ]; then
+  OWNER_ID=$(head -c 32 __OWNERFILE__ 2>/dev/null | tr -cd '0-9')
+  [ -n "$OWNER_ID" ] && ok "владелец бота — со старого бота (__OWNERFILE__)" || bad "нет владельца: впиши USER_ID в файл доступа"
+fi
+[[ "$OWNER_ID" =~ ^[0-9]{3,15}$ ]] || bad "OWNER_ID не число — впиши USER_ID в файл доступа"
 [ "$F" = 0 ] || exit 2
+# kit 2.3: старые боты выключаются ДО установки наших юнитов (по «да» человека — список приходит только с --yes).
+# Ничего не удаляем: копия юнита и его drop-in'ов — в $BAK/old-bot.<юнит>.<время>/. Чужой бот с нашим именем
+# brain-bot.service: его drop-in'ы (/etc/systemd/system/brain-bot.service.d) переносятся туда же целиком —
+# иначе они смешались бы с нашим юнитом (ExecStart, Environment с токеном).
+for s in __OLD__; do
+  OB="$BAK/old-bot.$s.$stamp"; install -d -m 0700 -o root -g root "$OB"
+  FP=$(systemctl show -p FragmentPath --value "$s" 2>/dev/null)
+  [ -n "$FP" ] && [ -f "$FP" ] && cp -p "$FP" "$OB/" 2>/dev/null
+  for f in $(systemctl show -p DropInPaths --value "$s" 2>/dev/null); do [ -f "$f" ] && cp -p "$f" "$OB/" 2>/dev/null; done
+  if systemctl disable --now "$s" >/dev/null 2>&1; then ok "старый бот $s выключен (не удалён; копия юнита — $OB)"
+  else warn "старый бот $s не выключился (копия юнита — $OB)"; fi
+  if [ "$s" = brain-bot.service ] && [ -d /etc/systemd/system/brain-bot.service.d ]; then
+    mv /etc/systemd/system/brain-bot.service.d "$OB/brain-bot.service.d" && ok "drop-in'ы старого brain-bot перенесены в $OB"
+  fi
+  echo "OLD_BACKUP=$s|$OB"
+done
+systemctl daemon-reload
 install -d -m 0755 -o root -g root /usr/local/lib/brain-bot /etc/brain-bot
 put "$D/brain_bot.py" /usr/local/lib/brain-bot/brain_bot.py 0755
 put "$D/claude_settings.json" /etc/brain-bot/claude_settings.json 0644
@@ -1819,9 +2164,6 @@ done
 ok "код бота, brain-admin, настройки claude и юниты на месте (OWNER_ID и пояс $BOT_TZ подставлены)"
 /usr/local/sbin/brain-admin canary-init >/dev/null 2>&1 && ok "приманки самопроверки на месте" || bad "приманки самопроверки не легли: sudo brain-admin canary-init"
 __COPY__
-for s in __OLD__; do
-  systemctl disable --now "$s" >/dev/null 2>&1 && ok "старый бот $s выключен (не удалён; вернуть: systemctl enable --now $s)" || warn "старый бот $s не выключился"
-done
 VC=/etc/systemd/system/brain-bot.service.d/voice.conf
 if [ "__VOICE__" = 1 ]; then
   # RT-11b: venv голоса — root-владения в /usr/local/lib/brain-bot (не ~/.venv-voice под brain)
@@ -1887,24 +2229,33 @@ def cmd_bot(ctx):
             finish(EXIT_OK, "бот обновлён через brain-admin и работает", lines=m, **res)
         finish(EXIT_ERR, "бот: %s" % "; ".join(m["bad"][:3] or [e.strip()[-200:]]), lines=m, **res)
     # до lockdown — от root
+    owner = owner_id(access, allow_server=True)   # нет владельца — стоп до любых действий на сервере
     rc, o, e = ctx.sh(OLD_BOTS_SH, timeout=60, user="root")
     if rc == 255:
         raise ssh_fail(rc, e, "bot")
     old = old_bot_units(o)   # системные (postgresql, nginx, ssh, systemd-* …) отсеяны ещё раз здесь
     res["old_bots"] = old
+    res["old_bot_details"] = [b for b in parse_old_bots(o) if b["unit"] in old]
     if old and not a.yes:
-        raise LinkExit(EXIT_CONFIRM, "стоп-точка: на сервере работает другой бот (%s). Два бота с одним токеном "
-                                     "мешают друг другу. Выключу его (disable --now, файлы не удаляю) — подтверди: "
-                                     "bot --yes%s" % (", ".join(old), " --voice" if a.voice else ""), **res)
+        same = " Он называется так же, как наш (brain-bot.service), но запускает чужую программу — заменю его нашим." \
+            if "brain-bot.service" in old else ""
+        raise LinkExit(EXIT_CONFIRM, "стоп-точка: на сервере работает другой бот: %s. Два бота с одним токеном "
+                                     "мешают друг другу.%s Выключу его (disable --now; файлы не удаляю, копию юнита "
+                                     "сохраню в /var/backups/brain-link) — подтверди: bot --yes%s" % (
+                                         "; ".join(old_bot_line(b) for b in res["old_bot_details"]) or ", ".join(old),
+                                         same, " --voice" if a.voice else ""), **res)
     upload_server_dir(ctx)
-    script = (BOT_ROOT_SH.replace("__UP__", UPLOAD_DIR).replace("__OWNER__", owner_id(access))
+    script = (BOT_ROOT_SH.replace("__UP__", UPLOAD_DIR).replace("__OWNER__", owner)
               .replace("__TZ__", shlex.quote(bot_tz()))
               .replace("__COPY__", COPY_KIT_SH).replace("__OLD__", " ".join(old))
+              .replace("__OWNERFILE__", OWNER_FILE)
               .replace("__VOICE__", "1" if a.voice else "0"))
     if a.voice:
         say("bot --voice: ставлю faster-whisper (до 5 минут)…")
     rc, o, e = ctx.sh(script, timeout=1500, user="root")
     m = marks(o)
+    res["old_bot_backups"] = {ln.split("=", 1)[1].split("|")[0]: ln.split("|", 1)[1] for ln in o.splitlines()
+                              if ln.startswith("OLD_BACKUP=") and "|" in ln}
     if rc == 0:
         save_state(bot_installed=bl.now_iso(), voice=bool(a.voice))
         finish(EXIT_OK, "бот работает под brainbot (не brain), брифинг и сторож включены. Напиши боту /status. "
@@ -2131,27 +2482,53 @@ LOCKDOWN_CHECKLIST = [
 LOCKDOWN_SH = r"""
 # Всё внутри функции: bash сначала читает её целиком, поэтому `read` ниже получает
 # следующую строку, которую пришлёт компьютер (COMMIT / ROLLBACK), а не кусок скрипта.
+__SSHDEFF__
+# kit 2.3: мало, чтобы 00-brain.conf прошёл sshd -t, — проверяем ДЕЙСТВУЮЩИЕ значения (sshd -T, для root и brain).
+# Пароль может остаться включённым: в sshd_config нет Include sshd_config.d (свой Claude переписал конфиг),
+# PasswordAuthentication yes стоит в основном файле ДО Include, или Match-блок его включает. Тогда один раз
+# ставим Include первой строкой (копия основного файла — в /var/backups/brain-link), не помогло — откат и FAILED.
+eff_bad() { sshd_eff | grep -E '^(passwordauthentication=yes|kbdinteractiveauthentication=yes|permitrootlogin=.*)$' | grep -v '^permitrootlogin=no$'; }
 brain_lockdown() {
   C=/etc/ssh/sshd_config.d/00-brain.conf
+  SC=/etc/ssh/sshd_config
+  SCB=""
   if [ ! -f "$C.disabled" ]; then
-    if [ -f "$C" ]; then echo ALREADY; else echo "❌ нет $C.disabled — сначала harden"; echo FAILED; fi
+    if [ -f "$C" ] && [ -z "$(eff_bad)" ]; then echo ALREADY
+    elif [ -f "$C" ]; then echo "❌ 00-brain.conf включён, но sshd всё ещё пускает по паролю: $(eff_bad | tr '\n' ' ')"; echo FAILED
+    else echo "❌ нет $C.disabled — сначала harden"; echo FAILED; fi
     return 0
   fi
+  undo() { mv "$C" "$C.disabled"; [ -n "$SCB" ] && cp -p "$SCB" "$SC"; }
   mv "$C.disabled" "$C"
   if ! sshd -t 2>/tmp/brain-sshd-t.$$; then
-    mv "$C" "$C.disabled"; echo "❌ sshd -t: $(head -2 /tmp/brain-sshd-t.$$ | tr '\n' ' ')"; rm -f /tmp/brain-sshd-t.$$; echo FAILED; return 0
+    undo; echo "❌ sshd -t: $(head -2 /tmp/brain-sshd-t.$$ | tr '\n' ' ')"; rm -f /tmp/brain-sshd-t.$$; echo FAILED; return 0
   fi
   rm -f /tmp/brain-sshd-t.$$
+  if [ -n "$(eff_bad)" ] && [ -f "$SC" ]; then
+    install -d -m 0700 -o root -g root /var/backups/brain-link
+    SCB=/var/backups/brain-link/etc_ssh_sshd_config.lockdown.$(date +%Y%m%d_%H%M%S)
+    cp -p "$SC" "$SCB"
+    { echo '# brain-link lockdown: drop-in 00-brain.conf читается первым (первое значение побеждает)'
+      echo 'Include /etc/ssh/sshd_config.d/*.conf'; cat "$SCB"; } > "$SC.brain-new" && chmod --reference="$SCB" "$SC.brain-new" \
+      && mv -f "$SC.brain-new" "$SC" && echo "🟡 в $SC добавлен Include sshd_config.d первой строкой (копия — $SCB)"
+    if ! sshd -t 2>/dev/null; then undo; echo "❌ sshd -t после Include не прошёл — откат"; echo FAILED; return 0; fi
+  fi
+  BADV=$(eff_bad | tr '\n' ' ')
+  if [ -n "$BADV" ]; then
+    FILES=$(grep -lisE '^[[:space:]]*(PasswordAuthentication|KbdInteractiveAuthentication|PermitRootLogin)[[:space:]]+(yes|prohibit-password|without-password)' $SC /etc/ssh/sshd_config.d/*.conf 2>/dev/null | tr '\n' ' ')
+    undo; echo "❌ sshd -T после 00-brain.conf: $BADV— пароль/root не закрываются (Match-блок?). Где включено: ${FILES:-?}"; echo FAILED; return 0
+  fi
+  echo "✅ sshd -T: passwordauthentication no, kbdinteractiveauthentication no, permitrootlogin no"
   touch /run/brain-lockdown.pending
-  nohup setsid sh -c 'sleep 240; if [ -f /run/brain-lockdown.pending ]; then mv /etc/ssh/sshd_config.d/00-brain.conf /etc/ssh/sshd_config.d/00-brain.conf.disabled; systemctl reload ssh 2>/dev/null || systemctl reload sshd; rm -f /run/brain-lockdown.pending; logger -t brain-link "lockdown: автооткат по таймеру"; fi' </dev/null >/dev/null 2>&1 &
+  nohup setsid sh -c 'sleep 240; if [ -f /run/brain-lockdown.pending ]; then mv /etc/ssh/sshd_config.d/00-brain.conf /etc/ssh/sshd_config.d/00-brain.conf.disabled; [ -n "$1" ] && cp -p "$1" /etc/ssh/sshd_config; systemctl reload ssh 2>/dev/null || systemctl reload sshd; rm -f /run/brain-lockdown.pending; logger -t brain-link "lockdown: автооткат по таймеру"; fi' sh "$SCB" </dev/null >/dev/null 2>&1 &
   if systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null; then echo RELOADED
-  else mv "$C" "$C.disabled"; rm -f /run/brain-lockdown.pending; echo "❌ reload ssh не прошёл"; echo FAILED; return 0; fi
+  else undo; rm -f /run/brain-lockdown.pending; echo "❌ reload ssh не прошёл"; echo FAILED; return 0; fi
   read -r -t 200 ANSWER || ANSWER=ROLLBACK
   if [ "$ANSWER" = COMMIT ]; then rm -f /run/brain-lockdown.pending; echo COMMITTED
-  else mv "$C" "$C.disabled"; systemctl reload ssh 2>/dev/null || systemctl reload sshd; rm -f /run/brain-lockdown.pending; echo ROLLEDBACK; fi
+  else undo; systemctl reload ssh 2>/dev/null || systemctl reload sshd; rm -f /run/brain-lockdown.pending; echo ROLLEDBACK; fi
 }
 brain_lockdown
-"""
+""".replace("__SSHDEFF__", SSHD_EFF_SH.strip())
 
 
 class Session:
@@ -2452,11 +2829,11 @@ def _tail_lines(path, n=REPORT_LINES):
 def cmd_report(ctx):
     """Диагностика для куратора: один текстовый файл в домашней папке, секреты и адреса замаскированы."""
     stamp = time.strftime("%Y-%m-%d_%H%M")
-    parts = ["brain-link report · kit 2.2 · %s" % time.strftime("%Y-%m-%d %H:%M:%S %z")]
+    parts = ["brain-link report · kit %s · %s" % (bl.KIT_VERSION, time.strftime("%Y-%m-%d %H:%M:%S %z"))]
     parts.append(_section("версии и ОС", "\n".join([
         "os: %s · %s %s" % (os_name(), platform.system(), platform.release()),
         "python: %s (%s)" % (platform.python_version(), sys.executable),
-        "kit: 2.2"])))
+        "kit: %s" % bl.KIT_VERSION])))
     parts.append(_section("возможности компьютера", json.dumps(local_capabilities(), ensure_ascii=False, indent=1)))
     # detect — отдельным процессом: он сам решает, как ходить на сервер, и печатает один JSON
     rc, o, e = run([sys.executable, str(Path(__file__).resolve()), "detect"], timeout=180, env=child_env())

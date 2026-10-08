@@ -187,11 +187,28 @@ class TestModes(Base):
             self.assertIn(t, dis)
         self.assertIn(MEMORY_MARKER, call["prompt"])
         self.assertEqual(call["cwd"], os.path.join(self.home, "memory"))  # cwd = память, не HOME
-        for flag, val in (("--max-turns", "25"), ("--output-format", "text"), ("--model", "sonnet"),
+        for flag, val in (("--max-turns", "25"), ("--output-format", "text"), ("--model", "opus"),
                           ("--settings", self.cfg.settings)):
             self.assertEqual(args[args.index(flag) + 1], val)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(call["timeout"], 180)
+
+    def test_default_is_opus_fast_is_sonnet(self):
+        """kit 2.3: по умолчанию Opus; /fast — Sonnet; /fast без вопроса — подсказка, claude не зовём."""
+        self.assertEqual((self.cfg.model_default, self.cfg.model_fast), ("opus", "sonnet"))
+        self.bot.handle_update(upd("что в фокусе?"))
+        self.bot.handle_update(upd("/fast коротко: что в фокусе?"))
+        self.bot.handle_update(upd("/fast"))
+        models = [c["args"][c["args"].index("--model") + 1] for c in self.claude.calls]
+        self.assertEqual(models, ["opus", "sonnet"])
+        self.assertNotIn("/fast", self.claude.calls[1]["prompt"])
+        self.assertTrue(any("/fast" in m for m in self.api.sent()))
+        self.assertIn("/fast", bb.HELP)
+        self.assertIn("Opus", bb.HELP)
+
+    def test_models_overridable_by_env(self):
+        cfg = bb.Config({"OWNER_ID": "42", "MODEL_DEFAULT": "sonnet", "MODEL_FAST": "haiku"})
+        self.assertEqual((cfg.model_default, cfg.model_deep, cfg.model_fast), ("sonnet", "opus", "haiku"))
 
     def test_deep_uses_opus(self):
         self.bot.handle_update(upd("/deep разбери стратегию"))
@@ -316,6 +333,7 @@ class TestLimitsAndErrors(Base):
         self.claude.rc, self.claude.out, self.claude.err = 1, "", "API Error: 429 rate_limit_error"
         self.bot.handle_update(upd("вопрос"))
         self.assertIn(bb.MSG_LIMIT, self.api.sent())
+        self.assertIn("/fast", bb.MSG_LIMIT)   # при лимите Opus бот сам предлагает быстрый Sonnet
 
         def boom(*a, **k):
             raise bb.subprocess.TimeoutExpired("claude", 180)
@@ -1571,8 +1589,9 @@ class TestMigrateLegacyState(unittest.TestCase):
         with open(os.path.join(folder, name), "w") as f:
             f.write(text)
 
-    def _unit(self, user):
-        self._put(self.tmp, "brain-bot.service", "[Service]\nUser=%s\nGroup=brain\n" % user)
+    def _unit(self, user, exec_start="/usr/bin/python3 /usr/local/lib/brain-bot/brain_bot.py run"):
+        self._put(self.tmp, "brain-bot.service", "[Service]\nUser=%s\nGroup=brain\nExecStart=%s\n"
+                  % (user, exec_start))
 
     def run_migrate(self):
         import subprocess
@@ -1581,7 +1600,7 @@ set -uo pipefail
 ok(){ echo "OK $*"; }; warn(){ echo "WARN $*"; }
 runuser(){ while [ "$1" != "--" ]; do shift; done; shift
   local a=(); for x in "$@"; do [ "$x" = "--one-file-system" ] || a+=("$x"); done; "${a[@]}"; }
-BOT_USER=brainbot BOT_STATE="$1" LEGACY_STATE="$2" BOT_UNIT="$3"
+BOT_USER=brainbot BOT_STATE="$1" LEGACY_STATE="$2" BOT_UNIT="$3" LIB_DIR=/usr/local/lib/brain-bot
 LEGACY_FILES="safe_mode selfcheck.json selfcheck_runs.json watch_state.json calls.json"
 """ + self.block + "\nmigrate_legacy_state\n"
         r = subprocess.run(["bash", "-c", sh, "sh", self.state, self.legacy, self.unit],
@@ -1626,6 +1645,15 @@ LEGACY_FILES="safe_mode selfcheck.json selfcheck_runs.json watch_state.json call
         self._put(self.legacy, "safe_mode", "")                               # второй раз — ничего
         self.assertIn("MIGRATE=already", self.run_migrate())
         self.assertIn("selfcheck", self._state("safe_mode"))
+
+    def test_foreign_brain_bot_under_brain_is_not_migrated(self):
+        """kit 2.3: чужой brain-bot.service под brain (мост claude-code-telegram) — не ранняя установка кита:
+        его папки не переносим и не удаляем."""
+        self._unit("brain", exec_start="/home/brain/bridge/venv/bin/claude-telegram-bot")
+        self._put(self.legacy, "watch_state.json", '{"bridge": 1}')
+        self.assertIn("MIGRATE=skip", self.run_migrate())
+        self.assertIsNone(self._state("watch_state.json"))
+        self.assertTrue(os.path.exists(os.path.join(self.legacy, "watch_state.json")))
 
     def test_real_migration_turns_safe_mode_on_not_off(self):
         self._unit("brain")
