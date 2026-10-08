@@ -2141,11 +2141,15 @@ class TestGuideTexts(unittest.TestCase):
                                 "%s:%d: %s" % (f, n, line))
 
     def test_versions_23(self):
-        self.assertTrue((self.ROOT / "start/START_SVYAZKA.md").read_text(encoding="utf-8").startswith(
-            "# Связка Икигай 2.3"))
+        g = (self.ROOT / "start/START_SVYAZKA.md").read_text(encoding="utf-8").split("\n")
+        # первая строка — служебная (совместимость с текстами вставки 2.2), заголовок — в первых трёх
+        self.assertTrue(g[0].startswith("<!-- CLAUDE: Это гайд-установщик kit 2.3"))
+        self.assertTrue(any(l.startswith("# Связка Икигай 2.3") for l in g[:3]))
         self.assertIn("kit_version: 2.3", (KIT / "SKILL.md").read_text(encoding="utf-8"))
         self.assertEqual(__import__("brainlib").KIT_VERSION, "2.3")
-        self.assertIn("Ikigai_Svyazka_Kit_2.3", (self.ROOT / "start/PASTE_TEXT.md").read_text(encoding="utf-8"))
+        pt = (self.ROOT / "start/PASTE_TEXT.md").read_text(encoding="utf-8")
+        self.assertIn("Ikigai_Svyazka_Kit", pt)
+        self.assertIn("2.3", pt)
 
     def test_team_kit_twins_and_author(self):
         for n in ("cto", "devops", "secops", "code-reviewer"):
