@@ -1,6 +1,34 @@
-# brain-link kit 2.1 — голос бота (VOICE=1). Ставит root: шаг `brain-link bot --voice` кладёт этот файл в
+# brain-link kit 2.5 — голос бота (VOICE=1). Ставит root: шаг `brain-link bot --voice` кладёт этот файл в
 # /usr/local/lib/brain-bot/requirements-voice.txt и зовёт `brain-admin voice-venv` →
 # /usr/local/lib/brain-bot/voice-venv (root-владение, только готовые колёса: pip --only-binary=:all:).
 # Строки — строго «пакет==версия» (иначе brain-admin откажет). Модель small (~460 МБ) скачается в
 # /var/lib/brain-bot/cache при первом голосовом.
+# kit 2.5: закреплена ВСЯ цепочка. До 2.5 стояла одна строка faster-whisper, и pip брал свежие зависимости:
+# huggingface_hub 2.x перестал тянуть requests (а faster-whisper 1.1.1 его импортирует), av 19 несовместим
+# с faster-whisper 1.1.1 (av.open(..., metadata_errors=)). Список проверяет CI (job voice-deps): pip check,
+# pip freeze ⊆ этот файл, импорт и декодирование ogg/opus тем же кодом, что у бота.
 faster-whisper==1.1.1
+ctranslate2==4.5.0
+huggingface_hub==0.27.1
+tokenizers==0.21.0
+onnxruntime==1.20.1
+av==13.1.0
+requests==2.32.3
+tqdm==4.67.1
+numpy==1.26.4
+pyyaml==6.0.2
+filelock==3.16.1
+fsspec==2024.12.0
+packaging==24.2
+typing_extensions==4.12.2
+urllib3==2.3.0
+certifi==2024.12.14
+idna==3.10
+charset-normalizer==3.4.1
+setuptools==75.6.0
+coloredlogs==15.0.1
+humanfriendly==10.0
+flatbuffers==24.12.23
+protobuf==5.29.2
+sympy==1.13.3
+mpmath==1.3.0

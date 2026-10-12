@@ -1556,9 +1556,14 @@ class TestClaudeRootCopyScripts(unittest.TestCase):
         self.assertIn("--only-binary=:all:", vv)
         self.assertIn('"$VOICE_REQ"', vv)
         self.assertNotIn("$SRC_DIR", vv)                     # список пакетов — только root-копия
+        pins = []
         for line in self._src("brain-link", "server", "requirements-voice.txt").splitlines():
             if line.strip() and not line.startswith("#"):
                 self.assertRegex(line, r"^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][0-9A-Za-z.]*$")
+                pins.append(line.split("==")[0].lower().replace("_", "-"))
+        # kit 2.5: транзитивка закреплена — без av/requests/huggingface_hub голос ломался молча
+        for need in ("faster-whisper", "av", "requests", "huggingface-hub", "ctranslate2", "tokenizers", "onnxruntime"):
+            self.assertIn(need, pins)
 
     def test_brain_admin_never_runs_owner_claude(self):
         admin = self._src("brain-link", "server", "brain-admin")

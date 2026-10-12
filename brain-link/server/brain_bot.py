@@ -1639,7 +1639,10 @@ class Bot:
                 self.send("🎙 " + text[:500])
                 self.handle_text(text, from_voice=True)
             except Exception as e:
-                log.error("voice failed: %s", type(e).__name__)
+                # kit 2.5: текст ошибки нужен для диагноза (ModuleNotFoundError: requests, TypeError из av);
+                # токен бота мог бы попасть в URL скачивания — вырезаем его до записи в журнал
+                detail = re.sub(r"\d{6,12}:[A-Za-z0-9_-]{20,}", "•••", str(e))[:200]
+                log.error("voice failed: %s: %s", type(e).__name__, detail)
                 self.send("Не получилось расшифровать голосовое. Напиши текстом.")
             finally:
                 self.lock.release()
@@ -1936,11 +1939,16 @@ def selftest(cfg):
     row(not safe, "безопасный режим выключен" if not safe else "БЕЗОПАСНЫЙ РЕЖИМ: %s" % ", ".join(sorted(safe)),
         warn=True)
     if cfg.voice:
+        # kit 2.5: настоящий импорт, а не find_spec — find_spec не видел ни отсутствующий requests,
+        # ни несовместимый av (голосовые падали, а самопроверка была зелёной)
         try:
-            import importlib.util
-            row(importlib.util.find_spec("faster_whisper") is not None, "faster-whisper установлен (VOICE=1)")
-        except Exception:
-            row(False, "faster-whisper установлен (VOICE=1)")
+            import importlib
+            for mod in ("requests", "av", "faster_whisper"):
+                importlib.import_module(mod)
+            row(True, "голос: faster-whisper, av, requests импортируются (VOICE=1)")
+        except Exception as e:
+            row(False, "голос: импорт не прошёл (%s: %s) — повтори шаг bot --voice по киту 2.5"
+                % (type(e).__name__, str(e)[:120]))
     print("\n".join(rows))
     print("ИТОГ: %s" % ("всё в порядке" if not bad else "ошибок: %d" % bad))
     return 1 if bad else 0

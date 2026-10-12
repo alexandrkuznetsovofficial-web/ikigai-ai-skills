@@ -1817,7 +1817,8 @@ class TestReport(KeysMixin, Base):
         self.assertIn("127.0.0.1", text)
         self.assertIn("169.254.169.254", text)
         self.assertIn("12:34:56", text)
-        self.assertIn("12…89", text)                       # USER_ID частично
+        self.assertNotIn("12…89", text)                    # kit 2.5: USER_ID целиком скрыт
+        self.assertIn("•ID•", text)
         self.assertIn("ufw: active", text)
         self.assertIn("brain-admin logs 200", text)
 
@@ -1843,7 +1844,7 @@ class TestReport(KeysMixin, Base):
         self.assertNotIn("Иван", t)
         self.assertNotIn(FAKE_BOT_TOKEN.split(":")[1], t)       # токен прилип к слову — всё равно скрыт
         self.assertNotIn("999888777", t)
-        self.assertIn("user_id=99…77", t)
+        self.assertIn("user_id=•••", t)
         self.assertNotIn("1001234567890", t)
 
     def test_cmd_report_adds_double_backslash_homes(self):
@@ -1851,6 +1852,18 @@ class TestReport(KeysMixin, Base):
         body = src[src.index("def cmd_report("):]
         self.assertIn('h.replace("\\\\", "\\\\\\\\")', body)
         self.assertIn("write_private(dest", body)
+
+    def test_mask_kit25_no_secret_chars_and_host(self):
+        import brainlib
+        self.assertEqual(brainlib.mask("Sup3rSecretPw"), "••• (задано)")
+        v = brainlib.access_public_view({"PASSWORD": "Sup3rSecretPw", "BOT_TOKEN": FAKE_BOT_TOKEN})
+        self.assertNotIn("Su", v["PASSWORD"])
+        self.assertNotIn(FAKE_BOT_TOKEN[:2], v["BOT_TOKEN"])
+        t = bk.mask_report("Oct 11 s123456.hoster.example systemd[1]: x user_id=12…89 github.com")
+        self.assertNotIn("s123456", t)
+        self.assertNotIn("12…89", t)
+        self.assertIn("github.com", t)
+        self.assertIn("__report 2>&1 | sed", bk.REPORT_SH)
 
     def test_mask_report_unit(self):
         t = bk.mask_report("a sk-" + "ant-oat01-abcdefghijkl b 8.8.8.8 c 2001:db8::1 d version 1.2.300.4",

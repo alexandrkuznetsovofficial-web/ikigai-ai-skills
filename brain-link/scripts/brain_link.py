@@ -3193,6 +3193,12 @@ def cmd_lockdown(ctx):
 REPORT_LINES = 200
 REPORT_SH = r"""
 P="__PREFIX__"   # «sudo -n brain-admin» или «/usr/local/sbin/brain-admin»; $P без кавычек — нарочно
+# kit 2.5: имя сервера у хостера (в каждой строке journalctl) заменяем на <сервер> до выхода с сервера
+H1=$(hostname -f 2>/dev/null || true); H2=$(hostname 2>/dev/null || true)
+# простое имя вроде «server» не трогаем (испортило бы обычные слова журнала): только с цифрой или точкой
+case "$H1" in *[0-9]*|*.*) ;; *) H1= ;; esac
+case "$H2" in *[0-9]*|*.*) ;; *) H2= ;; esac
+__report() {
 echo "=== brain-admin status"; $P status 2>&1 | tail -60
 echo "=== brain-admin logs 200"; $P logs 200 2>&1 | tail -200
 # состояние бота (0700 brainbot) brain сам не читает — его отдаёт brain-admin bot-state (читает от brainbot)
@@ -3205,6 +3211,8 @@ if [ "$(id -u)" = 0 ]; then
   echo "=== ufw"; ufw status verbose 2>&1 | head -20
   echo "=== fail2ban"; fail2ban-client status sshd 2>&1 | head -20
 fi
+}
+__report 2>&1 | sed -e "s/${H1:-@@@}/<сервер>/g" -e "s/${H2:-@@@}/<сервер>/g"
 """
 
 IPV4_RE = re.compile(r"(?<![\d.])(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(?![\d.])")
@@ -3212,8 +3220,10 @@ IPV6_RE = re.compile(r"(?i)(?<![\w:])(?:[0-9a-f]{1,4}:){2,7}(?::|[0-9a-f]{1,4})(
 MASK_PATTERNS = (
     (re.compile(r"sk-ant-[A-Za-z0-9_\-]{6,}"), "sk-ant-•••"),
     (re.compile(r"(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}"), "•••:••• (токен бота)"),
-    # посторонние в журнале бота («ignored update … user_id=… chat=…») — частично, как USER_ID владельца
-    (re.compile(r"\b(user_id=|chat=)(-?\d{2})\d+(\d{2})\b"), "\\1\\2…\\3"),
+    # kit 2.5: id в журнале бота («ignored update … user_id=… chat=…») — целиком, в т.ч. уже частичные «12…89»
+    (re.compile(r"\b(user_id=|chat=)-?[\d…]+"), "\\1•••"),
+    # имя сервера у хостера (s123456.hoster.example и т.п.) — сервер его ещё и подменяет сам (REPORT_SH)
+    (re.compile(r"\bs\d{4,8}(?:\.[a-z0-9-]+)+\.[a-z]{2,}\b", re.I), "<сервер>"),
     (re.compile(r"CANARY-[A-Za-z0-9]{8,}"), "CANARY-•••"),
     (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z0-9 ]*PRIVATE KEY-----|$)"),
      "[закрытый ключ скрыт]"),
@@ -3252,7 +3262,7 @@ def mask_report(text, secrets=(), user_ids=(), homes=()):
         out = out.replace(v, "•••")
     for uid in user_ids:
         if uid and len(uid) >= 5:
-            out = out.replace(uid, uid[:2] + "…" + uid[-2:])
+            out = out.replace(uid, "•ID•")         # kit 2.5: id владельца целиком
     for h in sorted({x for x in homes if x and len(x) > 3}, key=len, reverse=True):
         out = out.replace(h, "~")
     for rx, sub in MASK_PATTERNS:

@@ -208,3 +208,57 @@ jobs:
           path: ${{ runner.temp }}/brain-lab/artifacts
           if-no-files-found: ignore
           retention-days: 7
+
+  # kit 2.5 — голос бота: настоящий список пакетов (до 2.5 pip сам брал свежие зависимости, и голос ломался:
+  # нет requests, av 19). Единственный job, которому нужен PyPI; сервер участника не эмулирует.
+  voice-deps:
+    name: voice-deps (requirements-voice.txt, py3.12)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: venv теми же флагами, что brain-admin voice-venv
+        run: |
+          python -I -m venv "$RUNNER_TEMP/vv"
+          PIP_NO_INPUT=1 PIP_DISABLE_PIP_VERSION_CHECK=1 "$RUNNER_TEMP/vv/bin/python" -I -m pip install -q \
+            --no-cache-dir --only-binary=:all: -r brain-link/server/requirements-voice.txt
+      - name: pip check и дрейф (pip freeze ⊆ requirements-voice.txt)
+        run: |
+          V="$RUNNER_TEMP/vv/bin/python"
+          "$V" -m pip check
+          norm() { tr 'A-Z_' 'a-z-' | sed 's/==.*//'; }
+          grep -vE '^\s*(#|$)' brain-link/server/requirements-voice.txt | norm | sort -u > "$RUNNER_TEMP/want"
+          "$V" -m pip freeze --all | grep -vE '^(pip|wheel)==' | norm | sort -u > "$RUNNER_TEMP/have"
+          echo "--- pip freeze:"; "$V" -m pip freeze --all
+          extra=$(comm -13 "$RUNNER_TEMP/want" "$RUNNER_TEMP/have")
+          if [ -n "$extra" ]; then echo "СТОП: pip дотянул незакреплённое: $extra"; exit 1; fi
+          echo "всё закреплено"
+      - name: импорт, как у бота
+        run: |
+          "$RUNNER_TEMP/vv/bin/python" -I -c "import requests, av, huggingface_hub, ctranslate2, tokenizers, onnxruntime; from faster_whisper import WhisperModel; print('импорт ok')"
+      - name: ogg/opus без расширения → decode_audio (место, где падал av 19)
+        run: |
+          sudo apt-get install -y -q ffmpeg >/dev/null 2>&1 || true
+          F="$RUNNER_TEMP/in_1700000000000"
+          ffmpeg -loglevel error -f lavfi -i "sine=frequency=440:duration=2" -ac 1 -ar 48000 -c:a libopus -f ogg "$F"
+          "$RUNNER_TEMP/vv/bin/python" -I - "$F" <<'PY'
+          import sys
+          from faster_whisper.audio import decode_audio
+          a = decode_audio(sys.argv[1])
+          assert str(a.dtype) == "float32", a.dtype
+          assert 28000 < len(a) < 36000, len(a)
+          print("decode ok:", len(a), "отсчётов")
+          PY
+      - name: модель tiny (путь скачивания модели через huggingface_hub и requests)
+        run: |
+          export XDG_CACHE_HOME="$RUNNER_TEMP/cache" HF_HOME="$RUNNER_TEMP/cache/hf"
+          "$RUNNER_TEMP/vv/bin/python" -I - "$RUNNER_TEMP/in_1700000000000" <<'PY'
+          import sys
+          from faster_whisper import WhisperModel
+          m = WhisperModel("tiny", device="cpu", compute_type="int8")
+          segs, info = m.transcribe(sys.argv[1], language="ru", condition_on_previous_text=False, vad_filter=True)
+          print("transcribe ok:", repr(" ".join(s.text for s in segs)), info.duration)
+          PY

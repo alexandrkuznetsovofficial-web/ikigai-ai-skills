@@ -183,12 +183,10 @@ def run_cli(func, *args, **kwargs):
 
 
 def mask(value):
+    # kit 2.5: ни одного символа значения — отчёты уходят в общий чат потока (раньше было «ab…yz (N символов)»)
     if not value:
         return "(пусто)"
-    value = str(value)
-    if len(value) <= 4:
-        return "•" * len(value)
-    return "%s…%s (%d символов)" % (value[:2], value[-2:], len(value))
+    return "••• (задано)"
 
 
 def mask_ip(ip):
