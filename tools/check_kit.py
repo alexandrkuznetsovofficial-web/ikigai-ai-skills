@@ -67,7 +67,7 @@ KIT2_FILES = [
     "agents/checker.md",
     "agents/secops.md",
     "agents/researcher.md",
-    "brain-link/SKILL.md",  # kit_version: 2.4
+    "brain-link/SKILL.md",  # kit_version: 2.5
 ]
 
 # Однофайловые скиллы лежат в этих папках: у каждого .md должна быть шапка.
@@ -387,7 +387,7 @@ def skill_targets(files):
 
 
 # --- 2. kit_version -----------------------------------------------------------
-KV_FM = re.compile(r"^\s*kit_version:\s*[\"']?2\.[01234]\b")
+KV_FM = re.compile(r"^\s*kit_version:\s*[\"']?2\.[0-5]\b")
 KV_COMMENT = re.compile(r"<!--[^>]*kit_version:\s*2\.[01]\b")
 
 

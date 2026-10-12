@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# harden.sh — kit 2.4 (brain-link). Подготовка чистого Ubuntu 24.04 под «базу» второго мозга.
+# harden.sh — kit 2.5 (brain-link). Подготовка чистого Ubuntu 24.04 под «базу» второго мозга.
 # Запуск от root (до lockdown), идемпотентно: повторный прогон ничего не ломает, только досоздаёт.
 #
 #   ADMIN_PUBKEY="ssh-ed25519 AAAA… you@laptop" \

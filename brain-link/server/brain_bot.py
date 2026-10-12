@@ -77,7 +77,7 @@ try:  # fcntl есть только на Unix; сервер — Linux, тест�
 except ImportError:  # pragma: no cover
     fcntl = None
 
-KIT_VERSION = "2.4"
+KIT_VERSION = "2.5"
 log = logging.getLogger("brain-bot")
 
 # ---------------------------------------------------------------- константы

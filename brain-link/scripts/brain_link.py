@@ -741,11 +741,11 @@ KIT_TEAM_SIGNS = {
     "secops": ("# 🛡️ Офицер безопасности (SecOps)", "Офицер безопасности твоего сервера и «второго мозга»"),
     "code-reviewer": ("# Код-ревьюер — свежий взгляд ПЕРЕД запуском", "Независимый ревьюер кода перед запуском"),
 }
-KV_OLD_RE = re.compile(r"(?m)^kit_version:\s*[\"']?2\.[0-4]\b")
+KV_OLD_RE = re.compile(r"(?m)^kit_version:\s*[\"']?2\.[0-5]\b")
 
 
 def it_team_status(skills_dir):
-    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai, или kit_version 2.0–2.4 + то же имя + заголовок
+    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai, или kit_version 2.0–2.5 + то же имя + заголовок
     или description как в ките — такие обновляем, старое в skills_old), own — реально чужой (не трогаем),
     missing — нет. Читаем только начало SKILL.md."""
     res = {}

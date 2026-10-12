@@ -2197,16 +2197,17 @@ class TestGuideTexts(unittest.TestCase):
                 self.assertTrue(any(w in low for w in ("никогда", "не проси", "не нужен", "не спрашивай", "не нужно")),
                                 "%s:%d: %s" % (f, n, line))
 
-    def test_versions_24(self):
+    def test_versions_25(self):
         g = (self.ROOT / "start/START_SVYAZKA.md").read_text(encoding="utf-8").split("\n")
         # первая строка — служебная (совместимость с текстами вставки 2.2), заголовок — в первых трёх
-        self.assertTrue(g[0].startswith("<!-- CLAUDE: Это гайд-установщик kit 2.4"))
-        self.assertTrue(any(l.startswith("# Связка Икигай 2.4") for l in g[:3]))
-        self.assertIn("kit_version: 2.4", (KIT / "SKILL.md").read_text(encoding="utf-8"))
-        self.assertEqual(__import__("brainlib").KIT_VERSION, "2.4")
+        self.assertTrue(g[0].startswith("<!-- CLAUDE: Это гайд-установщик kit 2.5"))
+        self.assertTrue(any(l.startswith("# Связка Икигай 2.5") for l in g[:3]))
+        self.assertIn("kit_version: 2.5", (KIT / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual(__import__("brainlib").KIT_VERSION, "2.5")
         pt = (self.ROOT / "start/PASTE_TEXT.md").read_text(encoding="utf-8")
         self.assertIn("Ikigai_Svyazka_Kit", pt)
-        self.assertIn("2.4", pt)
+        self.assertIn("2.5", pt)
+        self.assertNotIn("kit 2.4", pt)
         self.assertNotIn("kit 2.3", pt)
         self.assertNotIn("киту 2.3", pt)
 

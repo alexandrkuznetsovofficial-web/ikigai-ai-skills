@@ -1,4 +1,4 @@
-# Текст для вставки в Claude Code (VS Code) · kit 2.4
+# Текст для вставки в Claude Code (VS Code) · kit 2.5
 
 **Режим — Auto** (по умолчанию, внизу окна чата Claude рядом с полем ввода). Manual — запасной: Claude сам попросит
 переключить, если какое-то одно действие не пройдёт. Скопируй текст ниже целиком и вставь в чат.
@@ -6,22 +6,24 @@
 ---
 
 ```text
-Привет! Помоги поставить связку Икигай (kit 2.4): сервер + бот в Telegram. Я не программист.
-Начни ответ с фразы «работаю по киту 2.4».
+Привет! Помоги поставить связку Икигай (kit 2.5): сервер + бот в Telegram. Я не программист.
+Начни ответ с фразы «работаю по киту 2.5».
 
 Гайд, по которому идём: https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/start/START_SVYAZKA.md
 Прочитай его целиком и веди меня по этапам, по одному шагу за раз.
 
-Если GitHub не открывается, а у меня в Загрузках (или в папке Загрузки/Telegram Desktop) есть архив
-Ikigai_Svyazka_Kit*.zip (если нет — попроси меня открыть в браузере https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/releases/download/svyazka/Ikigai_Svyazka_Kit.zip или взять архив у куратора) — распакуй его командой python3 -m zipfile -e (на Windows: py -3 -m zipfile -e)
-в новую папку и читай ikigai-ai-skills-main/start/START_SVYAZKA.md оттуда. Архив старше 2.4 — скажи мне и возьми свежий.
+Кит скачай сам в папку ~/ikigai-kit (не в Загрузки: на Mac VS Code туда часто не пускают) — так, как написано
+в Этапе 1 гайда. Если GitHub не открывается — возьми тот же архив с https://ikigai-community.com/aipotok/skills/start/Ikigai_Svyazka_Kit.zip,
+распакуй python3 -m zipfile -e (на Windows: py -3 -m zipfile -e) и читай ikigai-ai-skills-main/start/START_SVYAZKA.md
+оттуда. Если я уже скачал кит сам — подойдёт и архив Ikigai_Svyazka_Kit*.zip, и папка Ikigai_Svyazka_Kit (Safari
+распаковывает архив сам). Версия ниже 2.5 — обнови, это не правка кита.
 
 Если у меня уже есть журнал установки (~/.config/brain/install_journal.md) — продолжи по нему.
 Сначала определи, что у меня уже сделано, покажи таблицей «Где ты сейчас» и веди только по недостающим шагам.
 
 Я разрешаю в этой установке:
-- скачать zip-архив репозитория github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills (ветка main) в Загрузки
-  и распаковать его;
+- скачать архив кита (выпуск svyazka на github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills или копию на
+  ikigai-community.com) в папку ~/ikigai-kit и распаковать его;
 - скопировать из него папки скиллов ikigai-preflight, brain-link, second-brain-audit и cto, devops, secops,
   code-reviewer в ~/.claude/skills: если их нет — поставить; если стоят наши старые версии из кита — перенести их
   в ~/.claude/skills_old и поставить новые; мои собственные (не из кита) не трогать;
