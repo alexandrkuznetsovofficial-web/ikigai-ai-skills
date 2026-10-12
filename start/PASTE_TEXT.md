@@ -1,4 +1,4 @@
-# Текст для вставки в Claude Code (VS Code) · kit 2.3
+# Текст для вставки в Claude Code (VS Code) · kit 2.4
 
 **Режим — Auto** (по умолчанию, внизу окна чата Claude рядом с полем ввода). Manual — запасной: Claude сам попросит
 переключить, если какое-то одно действие не пройдёт. Скопируй текст ниже целиком и вставь в чат.
@@ -6,15 +6,15 @@
 ---
 
 ```text
-Привет! Помоги поставить связку Икигай (kit 2.3): сервер + бот в Telegram. Я не программист.
-Начни ответ с фразы «работаю по киту 2.3».
+Привет! Помоги поставить связку Икигай (kit 2.4): сервер + бот в Telegram. Я не программист.
+Начни ответ с фразы «работаю по киту 2.4».
 
 Гайд, по которому идём: https://raw.githubusercontent.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/main/start/START_SVYAZKA.md
 Прочитай его целиком и веди меня по этапам, по одному шагу за раз.
 
 Если GitHub не открывается, а у меня в Загрузках (или в папке Загрузки/Telegram Desktop) есть архив
 Ikigai_Svyazka_Kit*.zip (если нет — попроси меня открыть в браузере https://github.com/alexandrkuznetsovofficial-web/ikigai-ai-skills/releases/download/svyazka/Ikigai_Svyazka_Kit.zip или взять архив у куратора) — распакуй его командой python3 -m zipfile -e (на Windows: py -3 -m zipfile -e)
-в новую папку и читай ikigai-ai-skills-main/start/START_SVYAZKA.md оттуда. Архив старше 2.3 — скажи мне и возьми свежий.
+в новую папку и читай ikigai-ai-skills-main/start/START_SVYAZKA.md оттуда. Архив старше 2.4 — скажи мне и возьми свежий.
 
 Если у меня уже есть журнал установки (~/.config/brain/install_journal.md) — продолжи по нему.
 Сначала определи, что у меня уже сделано, покажи таблицей «Где ты сейчас» и веди только по недостающим шагам.

@@ -2626,6 +2626,13 @@ ok "код бота, brain-admin, настройки claude и юниты на �
 /usr/local/sbin/brain-admin canary-init >/dev/null 2>&1 && ok "приманки самопроверки на месте" || bad "приманки самопроверки не легли: sudo brain-admin canary-init"
 __COPY__
 VC=/etc/systemd/system/brain-bot.service.d/voice.conf
+VV=/usr/local/lib/brain-bot/voice-venv
+# kit 2.4: venv голоса из kit ≤2.3 создан 0700 root (umask 077): brainbot не может его выполнить (203/EXEC).
+# Лечим на месте, без пересборки, ДО решения про voice.conf. Только настоящий каталог root, не симлинк;
+# chmod -R без -L (ссылка bin/python3 → /usr/bin/python3 не разыменовывается).
+if [ -d "$VV" ] && [ ! -L "$VV" ] && [ "$(stat -c %U "$VV")" = root ]; then
+  chmod -R go+rX,go-w "$VV" && ok "голос: права venv исправлены (запускать может brainbot, писать — только root)" || bad "голос: не удалось исправить права $VV"
+fi
 if [ "__VOICE__" = 1 ]; then
   # RT-11b: venv голоса — root-владения в /usr/local/lib/brain-bot (не ~/.venv-voice под brain)
   LOG=$(mktemp)
@@ -2640,11 +2647,20 @@ if [ "__VOICE__" = 1 ]; then
     ok "голос включён: VOICE=1, MemoryMax=2500M"
   else bad "голос: $(grep -E '❌' "$LOG" | head -1) $(tail -2 "$LOG" | tr '\n' ' ')"; fi
   rm -f "$LOG"
-elif [ -f "$VC" ] && grep -q '/home/brain/' "$VC"; then
-  # голос ранней установки исполнял ~/.venv-voice из папки brain — выключаем, вернуть: bot --voice
-  install -d -m 0700 -o root -g root "$BAK"; mv -f "$VC" "$BAK/brain-bot.voice.conf.$stamp"
-  warn "голос выключен: прежний venv лежал в /home/brain (brain мог подменить код бота). Включить заново: bot --voice"
+elif [ -f "$VC" ]; then
+  WHY=""
+  if grep -q '/home/brain/' "$VC"; then
+    WHY="прежний venv лежал в /home/brain (brain мог подменить код бота)"
+  elif ! runuser -u brainbot -- "$VV/bin/python3" -I -c 'import sys' >/dev/null 2>&1; then
+    WHY="venv голоса не запускается под brainbot (права или состав)"
+  fi
+  # рабочий голос (venv запускается) НЕ трогаем: повторный bot без --voice не должен его выключать
+  if [ -n "$WHY" ]; then
+    install -d -m 0700 -o root -g root "$BAK"; mv -f "$VC" "$BAK/brain-bot.voice.conf.$stamp"
+    warn "голос выключен: $WHY. Копия drop-in в $BAK. Включить заново: bot --voice"
+  fi
 fi
+if [ -f "$VC" ]; then echo "VOICE_STATE=on"; else echo "VOICE_STATE=off"; fi
 systemctl daemon-reload
 systemctl enable brain-bot.service brain-brief.timer brain-watch.timer >/dev/null 2>&1 || bad "systemctl enable не прошёл"
 systemctl restart brain-bot.service
@@ -2719,7 +2735,7 @@ def cmd_bot(ctx):
                               if ln.startswith("OLD_BACKUP=") and "|" in ln}
     res["old_token_files"] = [ln.split("=", 1)[1] for ln in o.splitlines() if ln.startswith("OLD_TOKEN_FILE=")]
     if rc == 0:
-        save_state(bot_installed=bl.now_iso(), voice=bool(a.voice))
+        save_state(bot_installed=bl.now_iso(), voice="VOICE_STATE=on" in o)
         closed = [f.rsplit("|", 1)[0] for f in res["old_token_files"] if f.endswith("|closed")]
         shared = [f.rsplit("|", 1)[0] for f in res["old_token_files"] if f.endswith("|shared")]
         note = ""

@@ -1,4 +1,4 @@
-# Протокол сбоя brain-link (kit 2.3)
+# Протокол сбоя brain-link (kit 2.4)
 
 Таблица для Claude участника. Читается после **каждого** шага `brain_link.py` и каждого `brain_sync.py`.
 

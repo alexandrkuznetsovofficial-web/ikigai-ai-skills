@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# brain-admin — kit 2.3 (brain-link). Обслуживание сервера после lockdown, без root-входа.
+# brain-admin — kit 2.4 (brain-link). Обслуживание сервера после lockdown, без root-входа.
 # Ставится в /usr/local/sbin/brain-admin (root:root 0755), вызывается: sudo brain-admin <команда>.
 # Белый список команд; аргументы проверяются строго. sudoers: brain ALL=(root) NOPASSWD: /usr/local/sbin/brain-admin
 set -euo pipefail
@@ -370,6 +370,12 @@ PY
        && [ -f "$BOT_CLAUDE_SHA" ] && [ "$(awk '{print $1; exit}' "$BOT_CLAUDE_SHA")" = "$(sha256sum "$BOT_CLAUDE" | awk '{print $1}')" ]; then
       ok "claude бота: $BOT_CLAUDE (root 0755), sha256 совпадает"
     else echo "❌ claude бота: нет root-копии $BOT_CLAUDE или sha256 не совпадает — sudo brain-admin update-claude"; rc=1; fi
+    # kit 2.4: голос — brainbot обязан мочь выполнить venv (до 2.4 он выходил 0700 root → 203/EXEC)
+    if [ -d "$VOICE_VENV" ] || grep -qs voice-venv /etc/systemd/system/brain-bot.service.d/voice.conf; then
+      if runuser -u "$BOT_USER" -- "$VOICE_VENV"/bin/python3 -I -c 'import sys' >/dev/null 2>&1; then
+        ok "голос: $BOT_USER исполняет $VOICE_VENV"
+      else echo "❌ голос: $BOT_USER не может запустить venv голоса $VOICE_VENV (права 0700 от kit ≤2.3?) — повтори шаг bot до lockdown (kit 2.4 чинит права) или sudo brain-admin voice-venv"; rc=1; fi
+    fi
     wr=""
     for u in brain "$BOT_USER"; do
       for d in "$LIB_DIR" "$BOT_CLAUDE_DIR" "$BOT_CLAUDE_DIR/bin" "$BOT_CLAUDE" "$BOT_CLAUDE_SHA"; do
@@ -610,7 +616,9 @@ PY
     if env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 /usr/bin/python3 -I -m venv "$VOICE_VENV.new" >"$LOG" 2>&1 \
        && env -i PATH=/usr/bin:/bin HOME=/root LANG=C.UTF-8 PIP_NO_INPUT=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
             "$VOICE_VENV.new/bin/python3" -I -m pip install -q --no-cache-dir --only-binary=:all: -r "$VOICE_REQ" >>"$LOG" 2>&1; then
-      chown -R root:root "$VOICE_VENV.new"; chmod -R go-w "$VOICE_VENV.new"
+      # kit 2.4: под umask 077 venv выходит 0700 root, и brainbot не может его выполнить (203/EXEC).
+      # Читать и запускать — всем, писать — только root (бот не подменит собственный код, RT-11b).
+      chown -R root:root "$VOICE_VENV.new"; chmod -R go+rX,go-w "$VOICE_VENV.new"
       rm -rf --one-file-system -- /usr/local/lib/brain-bot/voice-venv
       mv "$VOICE_VENV.new" "$VOICE_VENV"
       rm -f "$LOG"

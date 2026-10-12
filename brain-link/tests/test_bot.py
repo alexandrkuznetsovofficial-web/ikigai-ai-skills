@@ -648,6 +648,9 @@ class TestServerScripts(unittest.TestCase):
                     # venv голоса (RT-11b): root-интерпретатор, но без файлов brain: env -i, cwd /, root-копия списка
                     self.assertNotRegex(code, r"/home/brain|\$BRAIN_HOME|\$SRC_DIR")
                     continue
+                if 'runuser -u "$BOT_USER" -- "$VOICE_VENV"/bin/python3 -I -c' in code:
+                    # kit 2.4: selftest проверяет, что БЕЗ прав root venv голоса запускается под пользователем бота
+                    continue
                 # под brain: runuser, либо systemd-run с User=brain (песочница юнита бота)
                 self.assertTrue("runuser -u brain" in code or ("systemd-run" in code and "User=brain" in code),
                                 "строка %d: интерпретатор не под brain" % n)

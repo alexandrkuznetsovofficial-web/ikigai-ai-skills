@@ -1636,6 +1636,50 @@ class TestServerChanged(Base):
         self.assertEqual(bk.server_changed({"initialized": True, "target": "local:/x"}, {"SERVER_IP": "1.2.3.4"}), "")
 
 
+class TestVoiceVenvPerms24(unittest.TestCase):
+    """kit 2.4: venv голоса из-под umask 077 выходил 0700 root, и brainbot не мог его выполнить (203/EXEC)."""
+
+    def test_brain_admin_fixes_perms_and_selftest_checks(self):
+        adm = (KIT / "server/brain-admin").read_text(encoding="utf-8")
+        branch = adm[adm.index("  voice-venv)"):adm.index("  remove-private)")]
+        self.assertIn('chmod -R go+rX,go-w "$VOICE_VENV.new"', branch)
+        self.assertNotIn('chmod -R go-w "$VOICE_VENV.new"', branch)      # старая строка не вернулась
+        self.assertIn("umask 077", adm.split("\n", 12)[-1][:400] + adm[:600])  # глобальную маску не трогаем
+        self.assertIn('runuser -u "$BOT_USER" -- "$VOICE_VENV"/bin/python3 -I -c', adm)   # selftest
+
+    def test_bot_step_heals_and_keeps_working_voice(self):
+        sh = bk.BOT_ROOT_SH
+        self.assertIn('chmod -R go+rX,go-w "$VV"', sh)
+        self.assertIn('[ ! -L "$VV" ]', sh)                                # симлинк не трогаем
+        self.assertLess(sh.index('chmod -R go+rX,go-w "$VV"'), sh.index('if [ "__VOICE__" = 1 ]'))  # лечим ДО решения
+        self.assertIn("рабочий голос (venv запускается) НЕ трогаем", sh)
+        self.assertIn('runuser -u brainbot -- "$VV/bin/python3" -I -c', sh)
+        self.assertIn("VOICE_STATE=on", sh)
+
+    @unittest.skipIf(os.name == "nt", "права POSIX")
+    def test_chmod_command_makes_umask077_venv_runnable(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as t:
+            v = Path(t) / "voice-venv"
+            subprocess.run(["sh", "-c", 'umask 077; "%s" -m venv "%s"' % (sys.executable, v)], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.assertEqual(os.stat(v).st_mode & 0o077, 0)                # воспроизвели баг: 0700
+            target = Path(os.path.realpath(v / "bin" / "python3"))
+            before = os.stat(target).st_mode
+            subprocess.run(["chmod", "-R", "go+rX,go-w", str(v)], check=True)
+            for d, dirs, files in os.walk(v):
+                for n in dirs + files:
+                    q = Path(d) / n
+                    if q.is_symlink():
+                        continue
+                    m = os.stat(q).st_mode
+                    self.assertEqual(m & 0o022, 0, str(q))                 # запись — только владельцу
+                    self.assertEqual(m & 0o004, 0o004, str(q))             # читать может любой
+                    if q.is_dir():
+                        self.assertEqual(m & 0o001, 0o001, str(q))          # заходить может любой
+            self.assertEqual(os.stat(target).st_mode, before)               # цель симлинка не изменилась
+
+
 class TestTarSkipsSymlinks(Base):
     @unittest.skipIf(os.name == "nt", "симлинки на Windows требуют прав")
     def test_symlink_not_packed(self):
@@ -2140,16 +2184,18 @@ class TestGuideTexts(unittest.TestCase):
                 self.assertTrue(any(w in low for w in ("никогда", "не проси", "не нужен", "не спрашивай", "не нужно")),
                                 "%s:%d: %s" % (f, n, line))
 
-    def test_versions_23(self):
+    def test_versions_24(self):
         g = (self.ROOT / "start/START_SVYAZKA.md").read_text(encoding="utf-8").split("\n")
         # первая строка — служебная (совместимость с текстами вставки 2.2), заголовок — в первых трёх
-        self.assertTrue(g[0].startswith("<!-- CLAUDE: Это гайд-установщик kit 2.3"))
-        self.assertTrue(any(l.startswith("# Связка Икигай 2.3") for l in g[:3]))
-        self.assertIn("kit_version: 2.3", (KIT / "SKILL.md").read_text(encoding="utf-8"))
-        self.assertEqual(__import__("brainlib").KIT_VERSION, "2.3")
+        self.assertTrue(g[0].startswith("<!-- CLAUDE: Это гайд-установщик kit 2.4"))
+        self.assertTrue(any(l.startswith("# Связка Икигай 2.4") for l in g[:3]))
+        self.assertIn("kit_version: 2.4", (KIT / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertEqual(__import__("brainlib").KIT_VERSION, "2.4")
         pt = (self.ROOT / "start/PASTE_TEXT.md").read_text(encoding="utf-8")
         self.assertIn("Ikigai_Svyazka_Kit", pt)
-        self.assertIn("2.3", pt)
+        self.assertIn("2.4", pt)
+        self.assertNotIn("kit 2.3", pt)
+        self.assertNotIn("киту 2.3", pt)
 
     def test_team_kit_twins_and_author(self):
         for n in ("cto", "devops", "secops", "code-reviewer"):
