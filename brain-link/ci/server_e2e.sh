@@ -470,12 +470,12 @@ LINK -- bot --yes; assert_rc 0 $? "kit 2.4: повторный bot --yes"
 RSSH root "runuser -u brainbot -- $VVP/bin/python3 -I -c 'import sys'" \
   && ok "kit 2.4: bot --yes вылечил права venv голоса" || bad "kit 2.4: bot --yes не вылечил права venv голоса"
 # drop-in голоса со сломанным venv (его нет): bot без --voice переносит drop-in в бэкап, бот остаётся рабочим
-RSSH root "rm -rf $VVP && printf '[Service]\nExecStart=\nExecStart=$VVP/bin/python3 -I /usr/local/lib/brain-bot/brain_bot.py run\nEnvironment=VOICE=1\n' > /etc/systemd/system/brain-bot.service.d/voice.conf"
+RSSH root "rm -rf $VVP && install -d -m0755 /etc/systemd/system/brain-bot.service.d && printf '[Service]\nExecStart=\nExecStart=$VVP/bin/python3 -I /usr/local/lib/brain-bot/brain_bot.py run\nEnvironment=VOICE=1\n' > /etc/systemd/system/brain-bot.service.d/voice.conf" \
+  || bad "лаборатория: voice.conf не подложен"
 LINK -- bot --yes; assert_rc 0 $? "kit 2.4: bot --yes со сломанным voice.conf"
 RSSH root 'test ! -e /etc/systemd/system/brain-bot.service.d/voice.conf && ls /var/backups/brain-link/brain-bot.voice.conf.* >/dev/null 2>&1' \
   && ok "kit 2.4: нерабочий voice.conf перенесён в бэкап (не удалён)" || bad "kit 2.4: voice.conf остался или пропал без копии"
 RSSH root 'systemctl is-active --quiet brain-bot.service' && ok "kit 2.4: бот работает после bot --yes без голоса" || bad "kit 2.4: бот не работает после bot --yes"
-RSSH root 'rm -f /usr/local/lib/brain-bot/requirements-voice.txt'
 sudo "$PY" "$HERE/bot_scenario.py" full --tg http://127.0.0.1:18081 --owner 111111111 \
   --secrets "$WORK/secforbot" --claude-log "$CLOG" \
   --brain-home /home/brain --report "$WORK/bot_report.json" 2>&1 | tee -a "$LOG"

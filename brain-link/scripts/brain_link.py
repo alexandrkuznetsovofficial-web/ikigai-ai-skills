@@ -741,11 +741,11 @@ KIT_TEAM_SIGNS = {
     "secops": ("# 🛡️ Офицер безопасности (SecOps)", "Офицер безопасности твоего сервера и «второго мозга»"),
     "code-reviewer": ("# Код-ревьюер — свежий взгляд ПЕРЕД запуском", "Независимый ревьюер кода перед запуском"),
 }
-KV_OLD_RE = re.compile(r"(?m)^kit_version:\s*[\"']?2\.[0-3]\b")
+KV_OLD_RE = re.compile(r"(?m)^kit_version:\s*[\"']?2\.[0-4]\b")
 
 
 def it_team_status(skills_dir):
-    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai, или kit_version 2.0–2.3 + то же имя + заголовок
+    """Скиллы IT-команды на компьютере: kit — наш (author: ikigai, или kit_version 2.0–2.4 + то же имя + заголовок
     или description как в ките — такие обновляем, старое в skills_old), own — реально чужой (не трогаем),
     missing — нет. Читаем только начало SKILL.md."""
     res = {}
@@ -2652,7 +2652,7 @@ elif [ -f "$VC" ]; then
   if grep -q '/home/brain/' "$VC"; then
     WHY="прежний venv лежал в /home/brain (brain мог подменить код бота)"
   elif ! runuser -u brainbot -- "$VV/bin/python3" -I -c 'import sys' >/dev/null 2>&1; then
-    WHY="venv голоса не запускается под brainbot (права или состав)"
+    WHY="venv голоса не запускается под brainbot (нет файлов или права)"
   fi
   # рабочий голос (venv запускается) НЕ трогаем: повторный bot без --voice не должен его выключать
   if [ -n "$WHY" ]; then
@@ -2735,7 +2735,8 @@ def cmd_bot(ctx):
                               if ln.startswith("OLD_BACKUP=") and "|" in ln}
     res["old_token_files"] = [ln.split("=", 1)[1] for ln in o.splitlines() if ln.startswith("OLD_TOKEN_FILE=")]
     if rc == 0:
-        save_state(bot_installed=bl.now_iso(), voice="VOICE_STATE=on" in o)
+        res["voice"] = "VOICE_STATE=on" in o      # фактическое состояние (drop-in на месте), а не флаг запуска
+        save_state(bot_installed=bl.now_iso(), voice=res["voice"])
         closed = [f.rsplit("|", 1)[0] for f in res["old_token_files"] if f.endswith("|closed")]
         shared = [f.rsplit("|", 1)[0] for f in res["old_token_files"] if f.endswith("|shared")]
         note = ""
