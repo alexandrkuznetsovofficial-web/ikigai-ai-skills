@@ -3195,9 +3195,13 @@ REPORT_SH = r"""
 P="__PREFIX__"   # «sudo -n brain-admin» или «/usr/local/sbin/brain-admin»; $P без кавычек — нарочно
 # kit 2.5: имя сервера у хостера (в каждой строке journalctl) заменяем на <сервер> до выхода с сервера
 H1=$(hostname -f 2>/dev/null || true); H2=$(hostname 2>/dev/null || true)
-# простое имя вроде «server» не трогаем (испортило бы обычные слова журнала): только с цифрой или точкой
-case "$H1" in *[0-9]*|*.*) ;; *) H1= ;; esac
-case "$H2" in *[0-9]*|*.*) ;; *) H2= ;; esac
+# простое имя вроде «server» и короткое/чисто цифровое не трогаем (испортило бы слова и время в журнале):
+# только ≥4 символов, с буквой и с цифрой или точкой
+for v in H1 H2; do eval "h=\$$v"
+  case "$h" in *[A-Za-z]*) ;; *) h= ;; esac
+  case "$h" in *[0-9]*|*.*) ;; *) h= ;; esac
+  [ "${#h}" -ge 4 ] || h=
+  eval "$v=\$h"; done
 __report() {
 echo "=== brain-admin status"; $P status 2>&1 | tail -60
 echo "=== brain-admin logs 200"; $P logs 200 2>&1 | tail -200

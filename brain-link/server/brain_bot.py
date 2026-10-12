@@ -1943,9 +1943,23 @@ def selftest(cfg):
         # ни несовместимый av (голосовые падали, а самопроверка была зелёной)
         try:
             import importlib
+            import importlib.metadata as md
             for mod in ("requests", "av", "faster_whisper"):
                 importlib.import_module(mod)
-            row(True, "голос: faster-whisper, av, requests импортируются (VOICE=1)")
+            # одно «import av» пропускает несовместимый av 19 — сверяем версии с root-копией списка kit
+            req = "/usr/local/lib/brain-bot/requirements-voice.txt"
+            norm = lambda s: s.strip().lower().replace("_", "-")
+            have = {norm(d.metadata["Name"]): d.version for d in md.distributions()}
+            wrong = []
+            if os.path.isfile(req):
+                for line in open(req, encoding="utf-8"):
+                    if "==" in line and not line.lstrip().startswith("#"):
+                        name, ver = line.strip().split("==", 1)
+                        if have.get(norm(name)) != ver:
+                            wrong.append(name)
+            if wrong:
+                raise RuntimeError("версии не как в списке kit: " + ", ".join(wrong[:5]))
+            row(True, "голос: пакеты как в списке kit и импортируются (VOICE=1)")
         except Exception as e:
             row(False, "голос: импорт не прошёл (%s: %s) — повтори шаг bot --voice по киту 2.5"
                 % (type(e).__name__, str(e)[:120]))

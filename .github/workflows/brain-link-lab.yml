@@ -239,6 +239,15 @@ jobs:
       - name: импорт, как у бота
         run: |
           "$RUNNER_TEMP/vv/bin/python" -I -c "import requests, av, huggingface_hub, ctranslate2, tokenizers, onnxruntime; from faster_whisper import WhisperModel; print('импорт ok')"
+      - name: проверка версий из selftest brain-admin (та же строка) — на верном списке зелёная
+        run: |
+          CODE=$(python3 - <<'PY'
+          import re
+          s = open("brain-link/server/brain-admin", encoding="utf-8").read()
+          print(re.search(r"python3 -I -c '(import sys,importlib\.metadata[^']*)' \"\$VOICE_REQ\"", s).group(1))
+          PY
+          )
+          "$RUNNER_TEMP/vv/bin/python" -I -c "$CODE" brain-link/server/requirements-voice.txt && echo "selftest-версии ok"
       - name: ogg/opus без расширения → decode_audio (место, где падал av 19)
         run: |
           sudo apt-get install -y -q ffmpeg >/dev/null 2>&1 || true

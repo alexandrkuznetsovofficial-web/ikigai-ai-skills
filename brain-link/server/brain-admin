@@ -377,9 +377,10 @@ PY
       else echo "❌ голос: $BOT_USER не может запустить venv голоса $VOICE_VENV (права 0700 от kit ≤2.3?) — повтори шаг bot до lockdown (kit 2.4 чинит права) или sudo brain-admin voice-venv"; rc=1; fi
       # kit 2.5: голос включён — пакеты должны реально импортироваться (до 2.5: нет requests, av 19)
       if grep -qs voice-venv /etc/systemd/system/brain-bot.service.d/voice.conf; then
-        if runuser -u "$BOT_USER" -- "$VOICE_VENV"/bin/python3 -I -c 'import requests, av, faster_whisper' >/dev/null 2>&1; then
-          ok "голос: faster-whisper, av, requests импортируются"
-        else echo "❌ голос включён, но пакеты не импортируются (до kit 2.5: нет requests / av 19) — повтори шаг bot --voice по киту 2.5 до lockdown"; rc=1; fi
+        # импорт + версии ровно как в root-копии списка (одно «import av» пропускает несовместимый av 19)
+        if runuser -u "$BOT_USER" -- "$VOICE_VENV"/bin/python3 -I -c 'import sys,importlib.metadata as m;N=lambda s:s.strip().lower().replace("_","-");R=[l.strip().split("==") for l in open(sys.argv[1]) if "==" in l and not l.lstrip().startswith("#")];D={N(d.metadata["Name"]):d.version for d in m.distributions()};B=[n for n,v in R if D.get(N(n))!=v];import requests,av,faster_whisper;sys.exit(1 if B else 0)' "$VOICE_REQ" >/dev/null 2>&1; then
+          ok "голос: пакеты совпадают со списком kit и импортируются"
+        else echo "❌ голос включён, но пакеты не те, что в списке kit (до 2.5: нет requests / av 19) — повтори шаг bot --voice по киту 2.5 до lockdown"; rc=1; fi
       fi
     fi
     wr=""
