@@ -1,0 +1,8 @@
+[Unit]
+Description=Student brain backup timer (chosen local schedule)
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+Unit=ikigai-backup.service
+[Install]
+WantedBy=timers.target

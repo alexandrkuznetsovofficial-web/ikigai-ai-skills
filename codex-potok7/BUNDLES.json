@@ -1,0 +1,54 @@
+{
+  "version": "0.2.0-draft",
+  "modules": [
+    {
+      "module": "module-00-preflight",
+      "skill": "ikigai-codex-preflight",
+      "resource_count": 2,
+      "start_bytes": 12130,
+      "functional_checks": "not_run"
+    },
+    {
+      "module": "module-02-founder-context",
+      "skill": "ikigai-founder-context",
+      "resource_count": 2,
+      "start_bytes": 21472,
+      "functional_checks": "not_run"
+    },
+    {
+      "module": "module-03-orchestrator",
+      "skill": "ikigai-team-orchestrator",
+      "resource_count": 2,
+      "start_bytes": 24555,
+      "functional_checks": "not_run"
+    },
+    {
+      "module": "module-04-brain-os",
+      "skill": "ikigai-brain-os",
+      "resource_count": 2,
+      "start_bytes": 23042,
+      "functional_checks": "not_run"
+    },
+    {
+      "module": "module-05-integrations",
+      "skill": "ikigai-connect-services",
+      "resource_count": 6,
+      "start_bytes": 45461,
+      "functional_checks": "not_run"
+    },
+    {
+      "module": "module-06-server-telegram",
+      "skill": "ikigai-server-telegram",
+      "resource_count": 10,
+      "start_bytes": 54284,
+      "functional_checks": "not_run"
+    },
+    {
+      "module": "module-07-operations",
+      "skill": "ikigai-brain-operations",
+      "resource_count": 9,
+      "start_bytes": 40539,
+      "functional_checks": "not_run"
+    }
+  ]
+}

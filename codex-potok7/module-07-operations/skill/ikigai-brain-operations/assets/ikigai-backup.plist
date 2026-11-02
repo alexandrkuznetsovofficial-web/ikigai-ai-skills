@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.ikigai.student-brain-backup</string>
+<key>ProgramArguments</key><array><string>/ABS_PYTHON</string><string>/ABS_SKILL/scripts/snapshots.py</string><string>snapshot</string><string>--source</string><string>/ABS_BRAIN</string><string>--dest</string><string>/ABS_BACKUPS</string><string>--apply</string></array>
+<key>StartCalendarInterval</key><dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
+<key>StandardOutPath</key><string>/ABS_LOG_DIR/backup.log</string>
+<key>StandardErrorPath</key><string>/ABS_LOG_DIR/backup-error.log</string>
+</dict></plist>
