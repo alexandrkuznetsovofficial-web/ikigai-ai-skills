@@ -1,10 +1,10 @@
 {
   "version": "0.1.0",
   "files": {
-    "README.md": "ba2daee54b48a24acb37bae44d11ae8c947af0c427752df0daba4e064c32fab5",
+    "README.md": "6fb1bd348382f8f97deb7e540c2717a4b4f2a6de8bfba09654c9581e1b9647af",
     "module-01-architecture/GLOSSARY.md": "da198f978e78f7c621da827116c5ea7a3db5921730c2bb81b962fb009028376a",
     "module-01-architecture/PARTICIPANT.md": "17e7efae0d5fe1da12a91fc8e44184a08e2234e9ad78fbee11d5ea52a8671d3e",
-    "module-01-architecture/START.md": "53fbfb49dcea13e22735026ce87a807eb2c267170862e9dfe35af65b95b9689a",
+    "module-01-architecture/START.md": "9752c7e903bf37311fd7b83e7b1d13beb23f9face52c740e9656fad87e5f5bb4",
     "module-01-architecture/pilot/TEST_PLAN.md": "2885d466da3dabef1ccb85c0cd91f1bf73057be21e685bd033b494083c1d1a0e",
     "module-01-architecture/pilot/VALIDATION.md": "4642ef56b8671bd80841e3bfc6a8520b9e4455d415d1c1ca9d86da11001f04c7",
     "module-01-architecture/presentation/SLIDES.md": "f8ce6cd23385a17b6c39eb8971229d39f79785a28cc11cdd8605ec321fdac3c9",
@@ -32,7 +32,7 @@
     "research/CHANGES_FROM_CLAUDE.md": "44ef60fab31361f7bf8e294aa055b0af8214671c75111586576045e394b8a60b",
     "research/SOURCES.md": "bcc8288fd1bf10c30499e809c35fb7e7e09691c7e8c908e3babc1fd308018bd4",
     "tools/build_presentation.py": "4b906be26009e66e82bab835c627dc783f4b61ad7bf9b07138fc19c6df60c0dd",
-    "tools/build_start.py": "8c9b9b30074afd084a4bb75b57e263b229128bbeec677061f41bf24c87094d97",
+    "tools/build_start.py": "a5e680faa6ccef9c558c438ff37ce021b6d09c64b6f9ca2fc29535e5fa520c1e",
     "tools/test_module01.py": "25f473177016af17d2a5b3ef5b1fbeb8133f38c4c10ab69a1dee5650e5890b1a"
   }
 }
