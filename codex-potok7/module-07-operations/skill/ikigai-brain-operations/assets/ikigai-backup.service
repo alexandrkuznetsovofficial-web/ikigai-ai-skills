@@ -1,0 +1,7 @@
+[Unit]
+Description=Student brain text snapshot (fill paths before enabling)
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /ABS_SKILL/scripts/snapshots.py snapshot --source /ABS_BRAIN --dest /ABS_BACKUPS --apply
+UMask=0077
+NoNewPrivileges=true

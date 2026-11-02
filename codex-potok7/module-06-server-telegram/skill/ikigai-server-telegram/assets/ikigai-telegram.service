@@ -1,0 +1,30 @@
+[Unit]
+Description=Personal student Telegram Codex bridge (unrun draft)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brain
+Group=brain
+EnvironmentFile=/etc/ikigai/bridge.env
+WorkingDirectory=/srv/ikigai
+ExecStart=/usr/bin/python3 /srv/ikigai/app/telegram_bridge.py
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/ikigai/state /srv/ikigai/codex-home
+ReadOnlyPaths=/srv/ikigai/approved /etc/ikigai
+MemoryMax=1G
+TasksMax=64
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
